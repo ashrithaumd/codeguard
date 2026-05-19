@@ -1,9 +1,5 @@
 # CodeGuard — AI-Powered Multi-Agent Code Review System
 
-> Built as part of the Wipro Junior FDE Pre-screening Assignment
-
----
-
 ## Overview
 
 CodeGuard is an end-to-end AI code review platform that submits code through a sequential pipeline of five specialized AI agents, each responsible for a distinct aspect of software quality. Within roughly 45–60 seconds of submission, a developer receives:
