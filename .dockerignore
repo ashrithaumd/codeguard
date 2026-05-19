@@ -1,0 +1,13 @@
+.env
+*.db
+*.sqlite
+codeguard/
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.git/
+.gitignore
+.DS_Store
+.streamlit/secrets.toml
