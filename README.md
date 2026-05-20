@@ -17,6 +17,8 @@ The problem CodeGuard solves is the gap between writing code and knowing whether
 
 ## Architecture
 
+![CodeGuard System Architecture](ArchitectureDiagram.png)
+
 ### Multi-Agent Pipeline
 
 CodeGuard uses a **sequential LangGraph pipeline** where each agent writes its findings into a shared state dictionary that all downstream agents can read. This mirrors how a real engineering review process works: the quality reviewer reads the security findings before writing their own, the fix agent reads both, and the summary agent compiles everything.
