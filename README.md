@@ -242,6 +242,17 @@ docker run -p 8501:8501 -e ANTHROPIC_API_KEY=your_key_here codeguard
 
 ---
 
+## Live Deployments
+
+| Platform | URL |
+|---|---|
+| **Streamlit Cloud** | https://codeguard-ashritha.streamlit.app |
+| **Azure Container Apps** | https://codeguard-app.kindsea-113305b4.eastus.azurecontainerapps.io |
+
+The Streamlit Cloud deployment runs directly from this repository's `main` branch and auto-deploys on every push. The Azure deployment runs as a containerized app using the `Dockerfile` in this repository, hosted on Azure Container Apps in the `eastus` region.
+
+---
+
 ## Running Tests
 
 ```bash
