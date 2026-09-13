@@ -3,7 +3,6 @@
 *.db
 *.sqlite
 *.sqlite3
-codeguard/
 venv/
 .venv/
 env/
@@ -23,3 +22,7 @@ Thumbs.db
 .streamlit/secrets.toml
 tests/
 .claude/
+before.txt
+after.txt
+before*.txt
+after*.txt

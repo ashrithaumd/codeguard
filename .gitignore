@@ -8,7 +8,6 @@
 *.sqlite3
 
 # Python virtual environments
-codeguard/
 venv/
 .venv/
 env/
