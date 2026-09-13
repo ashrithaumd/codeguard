@@ -1,4 +1,19 @@
+import os
 import logging
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# ── LangSmith tracing ────────────────────────────────────────────────────────
+# Must run before agent modules are imported so every chain, agent, and tool
+# created at import time is traced under LANGCHAIN_PROJECT.
+if os.getenv("LANGCHAIN_TRACING_V2", "false").lower() == "true":
+    os.environ["LANGCHAIN_TRACING_V2"] = "true"
+    os.environ.setdefault("LANGCHAIN_PROJECT", "codeguard")
+    print(f"[LangSmith] Tracing enabled for project '{os.environ['LANGCHAIN_PROJECT']}'")
+else:
+    print("[LangSmith] Tracing disabled (set LANGCHAIN_TRACING_V2=true in .env to enable)")
+
 from langgraph.graph import StateGraph, START, END
 from typing import TypedDict
 from agents.security_agent import security_agent

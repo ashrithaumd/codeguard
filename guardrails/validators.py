@@ -1,11 +1,14 @@
 import re
 import logging
+import tiktoken
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-MAX_CODE_LENGTH = 10000
+MAX_TOKENS = 50000
 MIN_CODE_LENGTH = 10
+
+_tokenizer = tiktoken.get_encoding("cl100k_base")
 
 PROMPT_INJECTION_PATTERNS = [
     r"ignore previous instructions",
@@ -82,9 +85,10 @@ def check_length(code: str) -> tuple[bool, str]:
         logger.warning("[Guardrails] Input too short.")
         return False, "Code is too short to review. Please submit at least 10 characters."
 
-    if len(code) > MAX_CODE_LENGTH:
-        logger.warning(f"[Guardrails] Input too large: {len(code)} characters.")
-        return False, f"Code exceeds maximum length of {MAX_CODE_LENGTH} characters. Please submit a smaller file."
+    token_count = len(_tokenizer.encode(code))
+    if token_count > MAX_TOKENS:
+        logger.warning(f"[Guardrails] Input too large: {token_count} tokens.")
+        return False, f"Code exceeds maximum size of {MAX_TOKENS} tokens ({token_count:,} tokens counted). Please submit a smaller file."
 
     return True, ""
 

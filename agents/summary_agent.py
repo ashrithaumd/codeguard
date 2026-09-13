@@ -9,7 +9,7 @@ load_dotenv()
 
 llm = ChatAnthropic(
     model="claude-sonnet-4-5",
-    max_tokens=1500,
+    max_tokens=2000,
     anthropic_api_key=os.getenv("ANTHROPIC_API_KEY")
 )
 

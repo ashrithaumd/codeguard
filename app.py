@@ -1,11 +1,36 @@
 import html
+import os
 import logging
 import time
 import threading
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# ── LangSmith tracing ────────────────────────────────────────────────────────
+# Must run before agent/pipeline modules are imported so every chain, agent,
+# and tool created at import time is traced under LANGCHAIN_PROJECT.
+if os.getenv("LANGCHAIN_TRACING_V2", "false").lower() == "true":
+    os.environ["LANGCHAIN_TRACING_V2"] = "true"
+    os.environ.setdefault("LANGCHAIN_PROJECT", "codeguard")
+    print(f"[LangSmith] Tracing enabled for project '{os.environ['LANGCHAIN_PROJECT']}'")
+else:
+    print("[LangSmith] Tracing disabled (set LANGCHAIN_TRACING_V2=true in .env to enable)")
+
 import streamlit as st
 from pipeline.graph import run_pipeline
 from agents.chat_agent import chat_agent
 from database import get_all_reviews, get_review_by_id
+from utils_github import parse_github_url, fetch_repo_files, filter_reviewable_files, fetch_file_content, build_code_bundle
+
+# ── Startup validation ─────────────────────────────────────────────────────────
+_anthropic_key = os.getenv("ANTHROPIC_API_KEY")
+if not _anthropic_key or _anthropic_key == "YOUR_KEY_HERE":
+    st.error(
+        "⚠️ ANTHROPIC_API_KEY is not configured. "
+        "Copy .env.example to .env and set your real Anthropic API key before running CodeGuard."
+    )
+    st.stop()
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
@@ -464,16 +489,18 @@ with review_tab:
 </p>""", unsafe_allow_html=True)
 
     # ── Input method ──────────────────────────────────────────────────────────
-    c_radio, _ = st.columns([3, 7])
+    c_radio, _ = st.columns([4, 6])
     with c_radio:
         input_method = st.radio(
             "Input method",
-            ["Paste Code", "Upload File"],
+            ["Paste Code", "Upload File", "GitHub Repository URL"],
             horizontal=True,
             label_visibility="collapsed",
         )
 
     code_input = ""
+    review_clicked = False
+    github_files_used: list[str] = []
 
     if input_method == "Paste Code":
         code_input = st.text_area(
@@ -485,7 +512,20 @@ with review_tab:
             ),
             label_visibility="collapsed",
         )
-    else:
+        btn_col, hint_col = st.columns([2, 8])
+        with btn_col:
+            review_clicked = st.button(
+                "🔍  Run Code Review", type="primary", use_container_width=True
+            )
+        with hint_col:
+            if not code_input.strip():
+                st.markdown(
+                    '<p style="color:#484f58;padding:10px 0;font-size:13px">'
+                    "← Paste or upload code, then click to start the review</p>",
+                    unsafe_allow_html=True,
+                )
+
+    elif input_method == "Upload File":
         uploaded_file = st.file_uploader(
             "Upload a code file",
             type=["py", "js", "java", "ts", "cpp", "c", "cs", "go", "rb", "php"],
@@ -494,19 +534,100 @@ with review_tab:
         if uploaded_file is not None:
             code_input = uploaded_file.read().decode("utf-8")
             st.code(code_input, language="python")
-
-    btn_col, hint_col = st.columns([2, 8])
-    with btn_col:
-        review_clicked = st.button(
-            "🔍  Run Code Review", type="primary", use_container_width=True
-        )
-    with hint_col:
-        if not code_input.strip():
-            st.markdown(
-                '<p style="color:#484f58;padding:10px 0;font-size:13px">'
-                "← Paste or upload code, then click to start the review</p>",
-                unsafe_allow_html=True,
+        btn_col, hint_col = st.columns([2, 8])
+        with btn_col:
+            review_clicked = st.button(
+                "🔍  Run Code Review", type="primary", use_container_width=True
             )
+        with hint_col:
+            if not code_input.strip():
+                st.markdown(
+                    '<p style="color:#484f58;padding:10px 0;font-size:13px">'
+                    "← Upload a file, then click to start the review</p>",
+                    unsafe_allow_html=True,
+                )
+
+    else:  # GitHub Repository URL
+        st.markdown(
+            '<p style="color:#8b949e;font-size:13px;margin-bottom:8px">'
+            "Enter a public GitHub repository URL to fetch and review its source files.</p>",
+            unsafe_allow_html=True,
+        )
+        gh_url = st.text_input(
+            "GitHub Repository URL",
+            placeholder="https://github.com/owner/repo",
+            label_visibility="collapsed",
+        )
+        gh_token = st.text_input(
+            "GitHub Token (optional — for private repos)",
+            type="password",
+            placeholder="ghp_xxxxxxxxxxxxxxxxxxxx",
+            label_visibility="collapsed",
+        )
+        st.caption("🔒 Token is used only for this request and never stored.")
+
+        max_files = st.slider(
+            "Max files to review",
+            min_value=5,
+            max_value=15,
+            value=10,
+            help="Limit how many source files are fetched from the repository.",
+        )
+
+        btn_col, hint_col = st.columns([2, 8])
+        with btn_col:
+            gh_clicked = st.button(
+                "🔍  Analyze Repository", type="primary", use_container_width=True
+            )
+        with hint_col:
+            if not gh_url.strip():
+                st.markdown(
+                    '<p style="color:#484f58;padding:10px 0;font-size:13px">'
+                    "← Enter a GitHub URL, then click to analyze</p>",
+                    unsafe_allow_html=True,
+                )
+
+        if gh_clicked:
+            if not gh_url.strip():
+                st.error("Please enter a GitHub repository URL.")
+            else:
+                token_arg = gh_token.strip() or None
+                with st.spinner("Fetching repository file list…"):
+                    try:
+                        owner, repo = parse_github_url(gh_url)
+                        all_files = fetch_repo_files(owner, repo, token=token_arg)
+                        selected = filter_reviewable_files(all_files, max_files=max_files)
+                    except ValueError as exc:
+                        st.error(f"❌ {exc}")
+                        selected = []
+
+                if selected:
+                    st.info(
+                        f"Found **{len(selected)} file(s)** to review from `{owner}/{repo}`:\n"
+                        + "\n".join(f"- `{f['path']}`" for f in selected)
+                    )
+                    fetched = []
+                    fetch_errors = []
+                    prog = st.progress(0, text="Fetching files…")
+                    for idx, f in enumerate(selected):
+                        try:
+                            content = fetch_file_content(owner, repo, f['path'], token=token_arg)
+                            fetched.append({'path': f['path'], 'content': content})
+                        except ValueError as exc:
+                            fetch_errors.append(f"{f['path']}: {exc}")
+                        prog.progress((idx + 1) / len(selected), text=f"Fetched {f['path']}")
+
+                    prog.empty()
+                    if fetch_errors:
+                        st.warning("Some files could not be fetched:\n" + "\n".join(fetch_errors))
+
+                    if fetched:
+                        code_input, github_files_used, truncation_warning = build_code_bundle(fetched)
+                        if truncation_warning:
+                            st.warning(truncation_warning)
+                        review_clicked = True
+                    else:
+                        st.error("No file content could be retrieved. Aborting review.")
 
     # ── Pipeline execution ────────────────────────────────────────────────────
     if review_clicked:
@@ -562,6 +683,8 @@ with review_tab:
                     unsafe_allow_html=True,
                 )
                 status_ph.success("✅ Review complete! Results are shown below.")
+                if github_files_used:
+                    result["github_files"] = github_files_used
                 st.session_state.review_result = result
                 st.session_state.chat_history   = []
                 st.session_state.chat_messages  = []
@@ -569,6 +692,11 @@ with review_tab:
     # ── Results ───────────────────────────────────────────────────────────────
     if st.session_state.review_result:
         r = st.session_state.review_result
+
+        if r.get("github_files"):
+            with st.expander(f"📁 {len(r['github_files'])} file(s) analyzed from GitHub", expanded=False):
+                for fpath in r["github_files"]:
+                    st.markdown(f"- `{fpath}`")
 
         if "pii_warning" in r:
             pii_types = ", ".join(r["pii_warning"].keys())
