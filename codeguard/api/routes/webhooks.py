@@ -75,6 +75,10 @@ async def webhook(request: Request, response: Response):
                     "pr_number": pr_number,
                     "action": action,
                     "head_sha": payload["pull_request"]["head"]["sha"],
+                    # Phase 3: .codeguard.yml is always read from this —
+                    # the base branch, never the head — see
+                    # codeguard/github/repo_config.py.
+                    "base_ref": payload["pull_request"]["base"]["ref"],
                 }
                 job, created = await enqueue(
                     request.app.state.pool,

@@ -29,10 +29,12 @@ import requests
 from prometheus_client import Counter, Histogram, start_http_server
 
 from codeguard.config import Settings, get_settings
+from codeguard.diff.ingest import ingest_pr_diff
 from codeguard.github.auth import get_installation_token
 from codeguard.github.comments import post_comment
 from codeguard.github.errors import extract_retry_after
 from codeguard.github.notifications import notify_dead_letter
+from codeguard.github.repo_config import load_repo_config
 from codeguard.queue.db import bootstrap_schema, create_pool
 from codeguard.queue.models import Job
 from codeguard.queue.queue import ack, claim_batch, extend_lease, nack
@@ -125,24 +127,61 @@ async def _record_comment_posted(pool, job: Job) -> None:
             )
 
 
+def _log_diff_ingestion_result(pr_number: int, repo_config, result) -> None:
+    """The Phase 3 done-when deliverable: a logged, structured,
+    filtered, budgeted representation of the PR — not posted anywhere
+    yet, just visible for verification. Later phases will feed this
+    into the actual review pipeline instead of just logging it.
+    """
+    logger.info(
+        "diff ingestion pr=%s: files_seen=%d files_reviewed=%d files_filtered=%d hunks=%d "
+        "budget_exceeded=%s fix_threshold=%s enable_ai_aware=%s",
+        pr_number, result.files_seen, len(result.files_reviewed), len(result.files_filtered),
+        len(result.hunks), result.budget_exceeded, repo_config.fix_threshold.name, repo_config.enable_ai_aware,
+    )
+    for path in result.files_reviewed:
+        logger.info("  reviewed: %s", path)
+    for f in result.files_filtered:
+        logger.info("  filtered: %s (%s)", f.path, f.reason)
+    for h in result.hunks:
+        logger.info("  hunk: %s:%d-%d [%s, %d chars]", h.path, h.start_line, h.end_line, h.content_hash[:12], len(h.content))
+
+
 async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -> bool:
-    """Phase 2 scope: fetch this job's own installation token (never
-    cached across jobs — see codeguard/github/auth.py) and post the
-    hardcoded "connected" comment. The actual review pipeline lands in
-    later phases; this proves the queue-backed round trip end to end.
+    """Fetches this job's own installation token (never cached across
+    jobs — see codeguard/github/auth.py), reused for both diff ingestion
+    and the comment post below. Phase 3 adds real diff ingestion
+    (fetch/filter/budget/log); the actual review pipeline and what gets
+    posted based on it land in later phases — this still just posts the
+    hardcoded "connected" comment regardless of what ingestion found.
     """
     payload = job.payload
     installation_id = payload["installation_id"]
     owner = payload["owner"]
     repo = payload["repo"]
     pr_number = payload["pr_number"]
+    head_sha = payload.get("head_sha")
+    base_ref = payload.get("base_ref")
 
     if await _comment_already_posted(pool, job):
         logger.info("job %s: comment already posted by a previous delivery attempt, skipping", job.id)
         return True
 
+    token = get_installation_token(installation_id)
+
+    if head_sha and base_ref:
+        try:
+            settings = get_settings()
+            repo_config = load_repo_config(token, owner, repo, base_ref)
+            result = ingest_pr_diff(token, owner, repo, pr_number, head_sha, repo_config, settings)
+            _log_diff_ingestion_result(pr_number, repo_config, result)
+        except Exception:
+            # Best-effort for now — a diff-ingestion failure shouldn't
+            # block the comment below from posting. Once later phases
+            # make the review depend on this, that changes.
+            logger.exception("diff ingestion failed for pr=%s — continuing without it", pr_number)
+
     try:
-        token = get_installation_token(installation_id)
         post_comment(token, owner, repo, pr_number, CONNECTED_COMMENT)
     except requests.HTTPError as exc:
         COMMENTS_FAILED.inc()

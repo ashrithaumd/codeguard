@@ -1,5 +1,5 @@
 from functools import lru_cache
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from codeguard.severity import Severity
@@ -82,6 +82,24 @@ class RepoConfig(BaseModel):
     max_tokens_per_pr: int = 40_000
     max_wall_clock_s: int = 120
     ignored_paths: list[str] = Field(default_factory=list)
+
+    @field_validator("fix_threshold", mode="before")
+    @classmethod
+    def _parse_severity_string(cls, v):
+        """A human writing .codeguard.yml writes `fix_threshold: high`,
+        a string — Severity itself is an IntEnum (see severity.py's own
+        docstring: this exact parsing was deliberately deferred to
+        Phase 3, when a real YAML loader would finally exist to need it).
+        Case-insensitive; anything not a valid name falls through to
+        pydantic's own validation, so a real typo still raises clearly
+        rather than being silently swallowed here.
+        """
+        if isinstance(v, str) and not v.isdigit():
+            try:
+                return Severity[v.upper()]
+            except KeyError:
+                pass
+        return v
 
 
 class Budget(BaseModel):
