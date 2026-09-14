@@ -22,7 +22,7 @@ import operator
 from typing import Annotated, TypedDict
 
 from codeguard.config import RepoConfig
-from codeguard.pipeline.models import DismissedFinding
+from codeguard.pipeline.models import CachedAgentResult, CacheKey, CacheWriteRecord, DismissedFinding, FixSuggestion
 from codeguard.tools.models import Finding
 
 
@@ -35,9 +35,11 @@ class NodeLatency(TypedDict):
 class FileReviewState(TypedDict):
     """Send payload for one per-file fan-out branch — a narrower slice
     of ReviewState, since each branch only needs this file's own data.
-    Phase 7's real per-file agents will use `content` and `patch`
-    directly; Phase 5's stub only needs `findings` (this file's slice
-    of the tool findings, pre-filtered by path before dispatch).
+    Used by review_file (Ruff passthrough), review_security (Bandit,
+    verdict contract) and review_ai_aware (Semgrep, verdict contract) —
+    the three agents scoped to a whole file's already file-level tool
+    findings, cached (see hunk_cache_hits) by the whole file's own
+    content hash.
     """
     owner: str
     repo: str
@@ -45,6 +47,24 @@ class FileReviewState(TypedDict):
     content: str
     patch: str
     findings: list[Finding]
+    hunk_cache_hits: dict[CacheKey, CachedAgentResult]  # copied in by the router, same dict every branch shares
+
+
+class HunkReviewState(TypedDict):
+    """Send payload for one per-HUNK fan-out branch — review_quality
+    and review_test, the two generative (not tool-verifying) agents,
+    each reviewing one ~30-line-expanded hunk (codeguard/diff/parse.py's
+    build_hunks) rather than a whole file. Cached by the hunk's own
+    content_hash, independent of the rest of the file.
+    """
+    owner: str
+    repo: str
+    path: str
+    content: str  # this hunk's own expanded content block, not the whole file
+    content_hash: str
+    start_line: int
+    end_line: int
+    hunk_cache_hits: dict[CacheKey, CachedAgentResult]
 
 
 class ReviewState(TypedDict):
@@ -65,6 +85,18 @@ class ReviewState(TypedDict):
     # False — worker/main.py skips the fetch entirely in that case.
     base_tree_files: dict[str, str]
 
+    # Phase 7: hunk-level result reuse (codeguard/pipeline/hunk_cache.py).
+    # hunk_cache_hits is fetched ONCE by worker/main.py before the graph
+    # runs (a node checking its own (path, content_hash, agent) key here
+    # instead of calling the LLM at all is what "no LLM call" means) —
+    # set once, not a reducer. cache_writes is the reverse direction:
+    # every node that made a FRESH call (a miss) appends the record it
+    # wants persisted; worker/main.py writes them all back after the
+    # graph completes. A cache-hit branch appends nothing here — there's
+    # nothing new to write.
+    hunk_cache_hits: dict[CacheKey, CachedAgentResult]
+    cache_writes: Annotated[list[CacheWriteRecord], operator.add]
+
     touches_ai_code: bool
 
     findings: Annotated[list[Finding], operator.add]
@@ -74,8 +106,19 @@ class ReviewState(TypedDict):
     # summarize()'s body. See codeguard/pipeline/models.py's
     # DismissedFinding and Settings.ai_aware_dismissals_enabled.
     dismissed_findings: Annotated[list[DismissedFinding], operator.add]
+    # Phase 7: propose_fix's suggestion-block output, one per confirmed
+    # finding at/above fix_threshold — never applied, just proposed.
+    fix_suggestions: Annotated[list[FixSuggestion], operator.add]
 
-    should_fix: bool
+    # Annotated, not plain: propose_fix fans out one Send per qualifying
+    # file (route_after_fanin), and LangGraph rejects two branches
+    # writing the SAME plain key in one superstep even when both would
+    # write the identical value True — confirmed the hard way, via a
+    # real INVALID_CONCURRENT_GRAPH_UPDATE on a live multi-file PR
+    # during Phase 7 verification, not assumed. operator.or_ combines
+    # any number of True/False writes correctly; a run where
+    # propose_fix never fires at all leaves this at its initial False.
+    should_fix: Annotated[bool, operator.or_]
     summary: str
     inline_findings: list[Finding]  # set once by summarize; what the worker actually posts inline
 

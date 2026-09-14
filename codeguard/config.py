@@ -77,6 +77,38 @@ class Settings(BaseSettings):
     # prompt or redeploying rules.
     ai_aware_dismissals_enabled: bool = True
 
+    # Phase 7: the generic per-file/per-hunk agents. Security shares the
+    # AI-aware node's Sonnet tier and verdict contract (it interprets a
+    # deterministic tool's real candidates — Bandit's, not Semgrep's).
+    # Quality/Test are generative, not verifying — Haiku tier, since
+    # they're the highest-volume calls (one per hunk, not per file) and
+    # a terse structured-findings task doesn't need Sonnet-level
+    # reasoning. Fix is Sonnet (writing a correct patch matters more
+    # than cost there); Summary is Haiku (one short paragraph).
+    security_agent_model: str = "claude-sonnet-4-5"
+    security_agent_max_tokens: int = 1024
+    security_agent_timeout_s: float = 30.0
+    # Its own fail-safe, independent of ai_aware_dismissals_enabled — an
+    # operator might trust one agent's dismissals and not the other's;
+    # see nodes.py's _apply_verdicts for what this actually gates.
+    security_agent_dismissals_enabled: bool = True
+
+    quality_agent_model: str = "claude-haiku-4-5-20251001"
+    quality_agent_max_tokens: int = 512
+    quality_agent_timeout_s: float = 20.0
+
+    test_agent_model: str = "claude-haiku-4-5-20251001"
+    test_agent_max_tokens: int = 512
+    test_agent_timeout_s: float = 20.0
+
+    fix_agent_model: str = "claude-sonnet-4-5"
+    fix_agent_max_tokens: int = 1024
+    fix_agent_timeout_s: float = 30.0
+
+    summary_agent_model: str = "claude-haiku-4-5-20251001"
+    summary_agent_max_tokens: int = 256
+    summary_agent_timeout_s: float = 15.0
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -37,6 +37,8 @@ from codeguard.github.notifications import notify_dead_letter
 from codeguard.github.repo_config import load_repo_config
 from codeguard.github.reviews import post_review
 from codeguard.pipeline.graph import review_graph
+from codeguard.pipeline.hunk_cache import fetch_cache_hits, write_cache_records
+from codeguard.pipeline.nodes import compute_cache_keys
 from codeguard.queue.db import bootstrap_schema, create_pool
 from codeguard.queue.models import Job
 from codeguard.queue.queue import ack, claim_batch, extend_lease, nack
@@ -162,16 +164,21 @@ def _log_findings(pr_number: int, findings) -> None:
                      f.file, f.start_line, f.end_line, f.source_tool, f.severity.name, f.rule_id, f.message)
 
 
-def _findings_to_review_comments(findings) -> list[dict]:
-    return [
-        {
-            "path": f.file,
-            "line": f.start_line,
-            "side": "RIGHT",
-            "body": f"**[{f.source_tool} / {f.severity.name}] {f.rule_id}**\n\n{f.message}",
-        }
-        for f in findings
-    ]
+def _findings_to_review_comments(findings, fix_suggestions) -> list[dict]:
+    """Phase 7: a finding with a matching FixSuggestion (by fingerprint)
+    gets its suggestion-block appended under the finding's own comment
+    body — one GitHub review comment, not two, and the suggestion never
+    exists without the finding's own explanation right above it.
+    """
+    suggestions_by_fingerprint = {s.fingerprint: s for s in fix_suggestions}
+    comments = []
+    for f in findings:
+        body = f"**[{f.source_tool} / {f.severity.name}] {f.rule_id}**\n\n{f.message}"
+        suggestion = suggestions_by_fingerprint.get(f.fingerprint)
+        if suggestion is not None:
+            body = f"{body}\n\n{suggestion.suggestion_body}"
+        comments.append({"path": f.file, "line": f.start_line, "side": "RIGHT", "body": body})
+    return comments
 
 
 async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -> bool:
@@ -221,26 +228,39 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
     base_tree_files = await base_tree_task if base_tree_task is not None else {}
     _log_findings(pr_number, tool_findings)
 
+    # Phase 7: prefetch every (path, content_hash, agent) this PR's
+    # agents could possibly check — computed the same way the graph's
+    # own route_to_* functions decide what to dispatch (compute_cache_keys),
+    # so this is exactly what's needed, not a broader guess. A hit means
+    # the corresponding node skips its LLM call entirely.
+    cache_keys = compute_cache_keys(diff_result.file_contents, diff_result.patches, tool_findings, repo_config.enable_ai_aware)
+    hunk_cache_hits = await fetch_cache_hits(pool, owner, repo, cache_keys)
+    logger.info("hunk cache pr=%s: %d key(s) checked, %d hit", pr_number, len(cache_keys), len(hunk_cache_hits))
+
     initial_state = {
         "owner": owner, "repo": repo, "pr_number": pr_number, "head_sha": head_sha,
         "installation_id": installation_id, "repo_config": repo_config,
         "files": diff_result.file_contents, "patches": diff_result.patches,
         "tool_findings": tool_findings, "base_tree_files": base_tree_files,
+        "hunk_cache_hits": hunk_cache_hits, "cache_writes": [],
         "touches_ai_code": False,
-        "findings": [], "repo_level_findings": [], "dismissed_findings": [],
+        "findings": [], "repo_level_findings": [], "dismissed_findings": [], "fix_suggestions": [],
         "should_fix": False, "summary": "", "inline_findings": [],
         "tokens_in": 0, "tokens_out": 0, "estimated_cost_usd": 0.0, "node_latencies": [],
     }
     final_state = await review_graph.ainvoke(initial_state)
     logger.info(
-        "pipeline pr=%s: touches_ai_code=%s should_fix=%s inline=%d total_findings=%d "
-        "tokens_in=%d tokens_out=%d estimated_cost_usd=%.4f",
+        "pipeline pr=%s: touches_ai_code=%s should_fix=%s inline=%d total_findings=%d fix_suggestions=%d "
+        "tokens_in=%d tokens_out=%d estimated_cost_usd=%.4f cache_writes=%d",
         pr_number, final_state["touches_ai_code"], final_state["should_fix"],
         len(final_state["inline_findings"]), len(final_state["findings"]) + len(final_state["repo_level_findings"]),
+        len(final_state["fix_suggestions"]),
         final_state["tokens_in"], final_state["tokens_out"], final_state["estimated_cost_usd"],
+        len(final_state["cache_writes"]),
     )
+    await write_cache_records(pool, final_state["cache_writes"])
 
-    comments = _findings_to_review_comments(final_state["inline_findings"])
+    comments = _findings_to_review_comments(final_state["inline_findings"], final_state["fix_suggestions"])
     try:
         post_review(token, owner, repo, pr_number, head_sha, final_state["summary"], comments)
     except requests.HTTPError as exc:

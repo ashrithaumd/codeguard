@@ -4,15 +4,28 @@ dedup by fingerprint, outside-diff findings routed to the summary body
 instead of inline, the inline-comment cap, and the always-post-a-body
 guarantee even with zero findings. No GitHub calls: summarize() is a
 plain function over state, posting happens in the worker afterward.
+
+Phase 7: summarize() also calls call_agent once (the Haiku summary
+intro) — mocked here (see _mock_summary_call) so this stays a
+zero-network-call test file; tests/pipeline/test_summary_intro.py
+covers that call's own behavior (success, failure, what it's given).
 """
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from codeguard.config import RepoConfig, get_settings
+from codeguard.pipeline.llm_call import AgentCallResult
 from codeguard.pipeline.models import DismissedFinding
 from codeguard.pipeline.nodes import summarize
 from codeguard.severity import Severity
 from tests.pipeline.conftest import make_finding
+
+
+def _mock_summary_call(*, agent, **kwargs):
+    assert agent == "summary"
+    return AgentCallResult(raw_text="Mock intro.", tokens_in=1, tokens_out=1, estimated_cost_usd=0.0, latency_s=0.0)
 
 
 def _state(findings, patches, files=None, repo_config=None, dismissed_findings=None):
@@ -24,9 +37,15 @@ def _state(findings, patches, files=None, repo_config=None, dismissed_findings=N
         "tool_findings": [],
         "touches_ai_code": False,
         "findings": findings, "repo_level_findings": [], "dismissed_findings": dismissed_findings or [],
+        "fix_suggestions": [],
         "should_fix": False, "summary": "", "inline_findings": [],
         "tokens_in": 0, "tokens_out": 0, "estimated_cost_usd": 0.0, "node_latencies": [],
     }
+
+
+def _summarize(state):
+    with patch("codeguard.pipeline.nodes.call_agent", side_effect=_mock_summary_call):
+        return summarize(state)
 
 
 def test_summarize_dedupes_by_fingerprint():
@@ -35,7 +54,7 @@ def test_summarize_dedupes_by_fingerprint():
     assert f1.fingerprint == f2.fingerprint  # sanity: these really are duplicates
 
     patches = {"a.py": "@@ -1,10 +1,10 @@\n context"}
-    result = summarize(_state([f1, f2], patches))
+    result = _summarize(_state([f1, f2], patches))
 
     assert len(result["inline_findings"]) == 1
     assert "found 1 issue" in result["summary"]
@@ -46,7 +65,7 @@ def test_finding_outside_diff_goes_to_summary_body_not_inline():
     f = make_finding(file="a.py", line=50, rule_id="B105", message="out of range")
     patches = {"a.py": "@@ -1,5 +1,5 @@\n context"}
 
-    result = summarize(_state([f], patches))
+    result = _summarize(_state([f], patches))
 
     assert result["inline_findings"] == []  # never dropped...
     assert "a.py:50" in result["summary"]   # ...just not inline
@@ -57,7 +76,7 @@ def test_finding_inside_diff_is_inlined():
     f = make_finding(file="a.py", line=3, rule_id="B105", message="in range")
     patches = {"a.py": "@@ -1,5 +1,5 @@\n context"}
 
-    result = summarize(_state([f], patches))
+    result = _summarize(_state([f], patches))
 
     assert len(result["inline_findings"]) == 1
     assert result["inline_findings"][0].fingerprint == f.fingerprint
@@ -74,7 +93,7 @@ def test_inline_comment_cap_keeps_top_n_by_severity_rest_in_body():
         findings.append(f)
         patches[f"f{i}.py"] = "@@ -1,3 +1,3 @@\n context"
 
-    result = summarize(_state(findings, patches))
+    result = _summarize(_state(findings, patches))
 
     assert len(result["inline_findings"]) == cap
     inlined_ids = {f.rule_id for f in result["inline_findings"]}
@@ -84,7 +103,7 @@ def test_inline_comment_cap_keeps_top_n_by_severity_rest_in_body():
 
 
 def test_zero_findings_still_produces_a_body():
-    result = summarize(_state([], {}, files={"a.py": "", "b.py": ""}))
+    result = _summarize(_state([], {}, files={"a.py": "", "b.py": ""}))
 
     assert result["inline_findings"] == []
     assert "no issues found" in result["summary"]
@@ -96,9 +115,9 @@ def test_dismissed_findings_appear_in_body_alongside_confirmed_ones():
     d = DismissedFinding(file="a.py", start_line=9, rule_id="llm-unpinned-model-alias", reason="pinned by internal proxy")
     patches = {"a.py": "@@ -1,10 +1,10 @@\n context"}
 
-    result = summarize(_state([f], patches, dismissed_findings=[d]))
+    result = _summarize(_state([f], patches, dismissed_findings=[d]))
 
-    assert "checked by the AI-aware agent, not flagged" in result["summary"]
+    assert "checked by an AI agent, not flagged" in result["summary"]
     assert "a.py:9" in result["summary"]
     assert "llm-unpinned-model-alias" in result["summary"]
     assert "pinned by internal proxy" in result["summary"]
@@ -109,10 +128,10 @@ def test_dismissed_findings_appear_in_body_alongside_confirmed_ones():
 def test_dismissed_findings_appear_even_with_zero_confirmed_findings():
     d = DismissedFinding(file="a.py", start_line=9, rule_id="llm-unpinned-model-alias", reason="pinned by internal proxy")
 
-    result = summarize(_state([], {}, files={"a.py": ""}, dismissed_findings=[d]))
+    result = _summarize(_state([], {}, files={"a.py": ""}, dismissed_findings=[d]))
 
     assert "no issues found" in result["summary"]
-    assert "checked by the AI-aware agent, not flagged" in result["summary"]
+    assert "checked by an AI agent, not flagged" in result["summary"]
     assert result["inline_findings"] == []
 
 
@@ -120,6 +139,30 @@ def test_no_dismissed_section_when_there_are_no_dismissals():
     f = make_finding(file="a.py", line=3, rule_id="B105", message="confirmed one")
     patches = {"a.py": "@@ -1,10 +1,10 @@\n context"}
 
-    result = summarize(_state([f], patches, dismissed_findings=[]))
+    result = _summarize(_state([f], patches, dismissed_findings=[]))
 
-    assert "checked by the AI-aware agent" not in result["summary"]
+    assert "checked by an AI agent" not in result["summary"]
+
+
+def test_summary_intro_prepended_when_call_succeeds():
+    f = make_finding(file="a.py", line=3, rule_id="B105", message="confirmed one")
+    patches = {"a.py": "@@ -1,10 +1,10 @@\n context"}
+
+    result = _summarize(_state([f], patches))
+
+    assert result["summary"].startswith("Mock intro.")
+    assert result["tokens_in"] == 1 and result["tokens_out"] == 1
+
+
+def test_summary_intro_omitted_when_call_fails():
+    f = make_finding(file="a.py", line=3, rule_id="B105", message="confirmed one")
+    patches = {"a.py": "@@ -1,10 +1,10 @@\n context"}
+
+    def _failing(*, agent, **kwargs):
+        return AgentCallResult(raw_text=None, error="boom")
+
+    with patch("codeguard.pipeline.nodes.call_agent", side_effect=_failing):
+        result = summarize(_state([f], patches))
+
+    assert result["summary"].startswith("CodeGuard reviewed")
+    assert "tokens_in" not in result
