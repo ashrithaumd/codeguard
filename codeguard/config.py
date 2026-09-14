@@ -53,6 +53,12 @@ class Settings(BaseSettings):
     queue_poll_interval_seconds: float = 1.0
     worker_metrics_port: int = 9000
 
+    # GitHub review reviews with hundreds of inline comments are
+    # unusable and can hit GitHub's own API limits. Above this many
+    # inlineable findings, the top-N by severity go inline; the rest
+    # are listed in the review's summary body instead of being dropped.
+    max_inline_comments: int = 25
+
 
 @lru_cache
 def get_settings() -> Settings:

@@ -25,3 +25,23 @@ class DiffPosition(BaseModel):
 
 def map_finding_to_diff_position(finding: Finding) -> DiffPosition:
     return DiffPosition(path=finding.file, line=finding.start_line, side="RIGHT")
+
+
+def is_line_in_diff(file: str, line: int, changed_ranges: dict[str, list[tuple[int, int]]]) -> bool:
+    """Whether `line` is actually part of the diff GitHub computed for
+    `file` — required for an inline review comment to succeed at all;
+    GitHub rejects a comment on a line outside the diff. Deliberately
+    NO extra margin here, unlike line_filter.py's relevance filtering
+    (which intentionally widens by LINE_CONTEXT to catch findings just
+    outside the exact change): changed_ranges already includes GitHub's
+    own small natural context from each hunk header, and widening
+    further would let us attempt a comment GitHub will actually 422 on.
+    A finding that fails this check still gets reported — see
+    codeguard/pipeline/nodes.py's summarize — just in the review's
+    summary body instead of inline, never silently dropped and never a
+    failed API call.
+    """
+    for start, count in changed_ranges.get(file, []):
+        if start <= line <= start + max(count, 1) - 1:
+            return True
+    return False

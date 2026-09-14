@@ -31,10 +31,11 @@ from prometheus_client import Counter, Histogram, start_http_server
 from codeguard.config import Settings, get_settings
 from codeguard.diff.ingest import ingest_pr_diff
 from codeguard.github.auth import get_installation_token
-from codeguard.github.comments import post_comment
 from codeguard.github.errors import extract_retry_after
 from codeguard.github.notifications import notify_dead_letter
 from codeguard.github.repo_config import load_repo_config
+from codeguard.github.reviews import post_review
+from codeguard.pipeline.graph import review_graph
 from codeguard.queue.db import bootstrap_schema, create_pool
 from codeguard.queue.models import Job
 from codeguard.queue.queue import ack, claim_batch, extend_lease, nack
@@ -44,8 +45,6 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger("codeguard.worker")
 
 WORKER_ID = socket.gethostname()
-
-CONNECTED_COMMENT = "CodeGuard v2 connected — review pipeline coming soon."
 
 JOBS_CLAIMED = Counter("codeguard_worker_jobs_claimed_total", "Jobs claimed by this worker (one per delivery attempt)")
 JOBS_COMPLETED = Counter("codeguard_worker_jobs_completed_total", "Jobs successfully acked by this worker")
@@ -60,8 +59,8 @@ LEASE_RECOVERY_SECONDS = Histogram(
     "codeguard_worker_lease_recovery_seconds",
     "Time from the reaper recovering an expired lease to the job being claimed again",
 )
-COMMENTS_POSTED = Counter("codeguard_worker_comments_posted_total", "Comments successfully posted to a PR")
-COMMENTS_FAILED = Counter("codeguard_worker_comments_failed_total", "Comment-post attempts that raised (token fetch or post itself)")
+REVIEWS_POSTED = Counter("codeguard_worker_reviews_posted_total", "PR Reviews successfully posted (one call, inline comments + summary)")
+REVIEWS_FAILED = Counter("codeguard_worker_reviews_failed_total", "Review-post attempts that raised (token fetch or post itself)")
 
 
 class RateLimited(Exception):
@@ -85,26 +84,28 @@ def _validate_config(settings: Settings) -> None:
         )
 
 
-async def _comment_already_posted(pool, job: Job) -> bool:
+async def _review_already_posted(pool, job: Job) -> bool:
     """Idempotency guard for the GitHub side effect itself — the queue
     guarantees at-least-once *delivery*, not at-most-once *side effect*.
     Without this, a worker that posts successfully and then crashes
-    before ack() causes a redelivery that posts the same comment again
-    (observed directly during Phase 2 verification: a killed worker's
-    already-successful post, followed by the recovering worker's second
-    post for the same job). Mirrors Reliqueue's sent_emails pattern.
+    before ack() causes a redelivery that posts the same review again
+    (observed directly during Phase 2 verification, back when this
+    guarded a single hardcoded comment — same guarantee, now guarding a
+    whole PR Review instead). Table name (posted_comments) predates
+    Phase 5's move to posting reviews rather than individual comments;
+    left as-is rather than a migration for a rename alone.
 
     Deliberately a plain read here, not a claiming INSERT — the insert
-    happens only in _record_comment_posted(), after a *confirmed*
-    successful post (see handle_pull_request_review). Recording before
-    attempting the post would be worse than the bug this fixes: a post
-    that then failed would be permanently, silently skipped on every
-    future retry instead of occasionally duplicated. The narrower
-    remaining race — two concurrent deliveries of the same job both
-    passing this check before either records — can't happen in
-    practice, because claim_batch()'s lease already serializes access
-    to a given job_id; the only way to reach a second delivery at all
-    is sequential (after the first lease expires), never concurrent.
+    happens only in _record_review_posted(), after a *confirmed*
+    successful post. Recording before attempting the post would be
+    worse than the bug this fixes: a post that then failed would be
+    permanently, silently skipped on every future retry instead of
+    occasionally duplicated. The narrower remaining race — two
+    concurrent deliveries of the same job both passing this check
+    before either records — can't happen in practice, because
+    claim_batch()'s lease already serializes access to a given job_id;
+    the only way to reach a second delivery at all is sequential (after
+    the first lease expires), never concurrent.
     """
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
@@ -115,7 +116,7 @@ async def _comment_already_posted(pool, job: Job) -> bool:
             return (await cur.fetchone()) is not None
 
 
-async def _record_comment_posted(pool, job: Job) -> None:
+async def _record_review_posted(pool, job: Job) -> None:
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -160,13 +161,26 @@ def _log_findings(pr_number: int, findings) -> None:
                      f.file, f.start_line, f.end_line, f.source_tool, f.severity.name, f.rule_id, f.message)
 
 
+def _findings_to_review_comments(findings) -> list[dict]:
+    return [
+        {
+            "path": f.file,
+            "line": f.start_line,
+            "side": "RIGHT",
+            "body": f"**[{f.source_tool} / {f.severity.name}] {f.rule_id}**\n\n{f.message}",
+        }
+        for f in findings
+    ]
+
+
 async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -> bool:
     """Fetches this job's own installation token (never cached across
-    jobs — see codeguard/github/auth.py), reused for diff ingestion, the
-    deterministic tool runs, and the comment post below. The actual
-    review pipeline and what gets posted based on findings land in later
-    phases — this still just posts the hardcoded "connected" comment
-    regardless of what ingestion and tooling found.
+    jobs — see codeguard/github/auth.py): diff ingestion -> deterministic
+    tools -> the review graph (codeguard/pipeline/) -> one posted PR
+    Review. Unlike Phase 1-4, a failure anywhere in ingestion/tooling/the
+    graph now propagates instead of being swallowed — the review IS the
+    deliverable this phase, so a failure should nack and retry through
+    the normal queue path, not silently post nothing.
     """
     payload = job.payload
     installation_id = payload["installation_id"]
@@ -176,42 +190,54 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
     head_sha = payload.get("head_sha")
     base_ref = payload.get("base_ref")
 
-    if await _comment_already_posted(pool, job):
-        logger.info("job %s: comment already posted by a previous delivery attempt, skipping", job.id)
+    if await _review_already_posted(pool, job):
+        logger.info("job %s: review already posted by a previous delivery attempt, skipping", job.id)
+        return True
+
+    if not (head_sha and base_ref):
+        logger.warning("job %s missing head_sha/base_ref, nothing to review", job.id)
         return True
 
     token = get_installation_token(installation_id)
+    settings = get_settings()
 
-    if head_sha and base_ref:
-        try:
-            settings = get_settings()
-            repo_config = load_repo_config(token, owner, repo, base_ref)
-            result = await ingest_pr_diff(token, owner, repo, pr_number, head_sha, repo_config, settings)
-            _log_diff_ingestion_result(pr_number, repo_config, result)
+    repo_config = load_repo_config(token, owner, repo, base_ref)
+    diff_result = await ingest_pr_diff(token, owner, repo, pr_number, head_sha, repo_config, settings)
+    _log_diff_ingestion_result(pr_number, repo_config, diff_result)
 
-            # Phase 4: run Semgrep/Bandit/Ruff on the same file content
-            # diff ingestion already fetched (no second round of GitHub
-            # calls) and the same patches (for exact changed-line
-            # filtering). Same best-effort posture as ingestion itself.
-            findings = await run_tools_on_files(result.file_contents, result.patches)
-            _log_findings(pr_number, findings)
-        except Exception:
-            # Best-effort for now — a diff-ingestion or tooling failure
-            # shouldn't block the comment below from posting. Once later
-            # phases make the review depend on this, that changes.
-            logger.exception("diff ingestion or tooling failed for pr=%s — continuing without it", pr_number)
+    # Semgrep/Bandit/Ruff on the same file content diff ingestion already
+    # fetched (no second round of GitHub calls) and the same patches
+    # (for exact changed-line filtering).
+    tool_findings = await run_tools_on_files(diff_result.file_contents, diff_result.patches)
+    _log_findings(pr_number, tool_findings)
 
+    initial_state = {
+        "owner": owner, "repo": repo, "pr_number": pr_number, "head_sha": head_sha,
+        "installation_id": installation_id, "repo_config": repo_config,
+        "files": diff_result.file_contents, "patches": diff_result.patches,
+        "tool_findings": tool_findings,
+        "touches_ai_code": False,
+        "findings": [], "repo_level_findings": [],
+        "should_fix": False, "summary": "", "inline_findings": [],
+        "tokens_in": 0, "tokens_out": 0, "estimated_cost_usd": 0.0, "node_latencies": [],
+    }
+    final_state = await review_graph.ainvoke(initial_state)
+    logger.info("pipeline pr=%s: touches_ai_code=%s should_fix=%s inline=%d total_findings=%d",
+                pr_number, final_state["touches_ai_code"], final_state["should_fix"],
+                len(final_state["inline_findings"]), len(final_state["findings"]) + len(final_state["repo_level_findings"]))
+
+    comments = _findings_to_review_comments(final_state["inline_findings"])
     try:
-        post_comment(token, owner, repo, pr_number, CONNECTED_COMMENT)
+        post_review(token, owner, repo, pr_number, head_sha, final_state["summary"], comments)
     except requests.HTTPError as exc:
-        COMMENTS_FAILED.inc()
+        REVIEWS_FAILED.inc()
         retry_after = extract_retry_after(exc.response) if exc.response is not None else None
         if retry_after is not None:
             raise RateLimited(retry_after) from exc
         raise
 
-    await _record_comment_posted(pool, job)
-    COMMENTS_POSTED.inc()
+    await _record_review_posted(pool, job)
+    REVIEWS_POSTED.inc()
     return True
 
 
