@@ -12,6 +12,14 @@ class Finding(BaseModel):
     Semgrep, Bandit, and Ruff each have their own output shape; nothing
     downstream of this module should need to know which tool produced
     a given finding beyond `source_tool`.
+
+    SECURITY: `message` is tool-generated but can echo fragments of the
+    actual scanned code (e.g. Bandit's own hardcoded-secret message
+    literally includes the matched string). It is derived from PR
+    content, not written by us, and must be treated as untrusted the
+    moment it enters an LLM prompt (Phase 5+) — delimited as data, never
+    concatenated in as an instruction — the same discipline raw hunk
+    content already requires.
     """
     file: str
     start_line: int

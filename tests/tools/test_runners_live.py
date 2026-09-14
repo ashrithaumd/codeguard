@@ -1,5 +1,5 @@
-"""Runs the real Semgrep/Bandit/Ruff binaries against a small known-bad
-snippet — not mocked — so a broken CLI invocation or output-parsing
+"""Runs the real Semgrep/Bandit/Ruff binaries against small known-bad
+snippets — not mocked — so a broken CLI invocation or output-parsing
 regression is caught here, not only discoverable via a live PR.
 
 Asserting "no internal.tool_unavailable finding" rather than asserting
@@ -8,6 +8,12 @@ every exception (including a parsing bug) into that fallback finding, so
 a naive "did it crash" test would pass even with broken parsing. This
 is the assertion that actually proves the real subprocess ran AND this
 module's own parsing succeeded.
+
+Phase 4.1: each runner now takes a `files: dict[path, content]` and is
+invoked once for a whole "PR" (possibly one file), not per file — these
+tests exercise that multi-file path directly, including the path being
+correctly resolved back from the tool's temp-directory-relative report
+to the original relative path.
 """
 
 import sys
@@ -32,18 +38,45 @@ def get_user(username):
     return cursor.fetchall()
 '''
 
+# Matches rules/placeholder.yaml's pattern ($CLIENT.messages.create(...))
+# — Semgrep's role as of Phase 4.1 is custom rulesets only, so its live
+# test exercises that mechanism, not generic security (Bandit's job now).
+LLM_CALL_SNIPPET = '''\
+import anthropic
+
+client = anthropic.Anthropic()
+
+
+def ask(question):
+    return client.messages.create(model="claude-3-5-sonnet-latest", messages=[{"role": "user", "content": question}])
+'''
+
 
 def _ran_successfully(findings):
     return not any(f.rule_id == "internal.tool_unavailable" for f in findings)
 
 
 def test_bandit_runs_and_finds_the_sql_injection():
-    findings = run_bandit("app/db.py", SQL_INJECTION_SNIPPET)
+    findings = run_bandit({"app/db.py": SQL_INJECTION_SNIPPET})
     assert _ran_successfully(findings), findings
     assert any(f.rule_id.startswith("B6") for f in findings), findings  # B608: SQL injection
     for f in findings:
         assert f.file == "app/db.py"
         assert f.start_line > 0
+
+
+def test_bandit_partitions_findings_across_multiple_files_correctly():
+    """The core Phase 4.1 guarantee: one invocation over several files
+    must attribute each finding back to the RIGHT original file, not
+    just any file that happened to be in the batch.
+    """
+    findings = run_bandit({
+        "app/db.py": SQL_INJECTION_SNIPPET,
+        "app/clean.py": "def add(a: int, b: int) -> int:\n    return a + b\n",
+    })
+    assert _ran_successfully(findings), findings
+    files_with_findings = {f.file for f in findings}
+    assert files_with_findings == {"app/db.py"}
 
 
 @pytest.mark.skipif(
@@ -54,15 +87,16 @@ def test_bandit_runs_and_finds_the_sql_injection():
            "actual deployment target is Linux containers, where this doesn't occur; "
            "verified separately there, not skipped on faith.",
 )
-def test_semgrep_runs_and_parses_successfully():
-    findings = run_semgrep("app/db.py", SQL_INJECTION_SNIPPET)
+def test_semgrep_runs_custom_ruleset_and_matches_placeholder_rule():
+    findings = run_semgrep({"app/assistant.py": LLM_CALL_SNIPPET})
     assert _ran_successfully(findings), findings
+    assert any(f.rule_id == "placeholder-llm-call-example" for f in findings), findings
     for f in findings:
-        assert f.file == "app/db.py"
+        assert f.file == "app/assistant.py"
 
 
 def test_ruff_runs_and_parses_successfully():
-    findings = run_ruff("app/db.py", SQL_INJECTION_SNIPPET)
+    findings = run_ruff({"app/db.py": SQL_INJECTION_SNIPPET})
     assert _ran_successfully(findings), findings
     for f in findings:
         assert f.file == "app/db.py"
@@ -70,6 +104,6 @@ def test_ruff_runs_and_parses_successfully():
 
 def test_a_clean_file_produces_no_bandit_findings():
     clean = "def add(a: int, b: int) -> int:\n    return a + b\n"
-    findings = run_bandit("app/utils.py", clean)
+    findings = run_bandit({"app/utils.py": clean})
     assert _ran_successfully(findings), findings
     assert findings == []

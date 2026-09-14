@@ -1,0 +1,22 @@
+# Placeholder (Phase 4.1) proving Semgrep loads project-local custom
+# rules correctly, end to end — not itself the AI-aware ruleset.
+#
+# Phase 6 replaces/expands this directory with rules/llm-security.yaml:
+# prompt-injection surface, LLM calls with no timeout/retry/max_tokens,
+# unsafe use of model output (eval/exec/subprocess/raw SQL), hardcoded
+# secrets in LLM client setup. Semgrep's role as of Phase 4.1 is custom
+# rulesets only — generic Python security (SQL injection, hardcoded
+# credentials, etc.) is Bandit's job; see the Phase 4.1 review for why
+# the two registry packs tried in Phase 4 (p/security-audit, p/python)
+# were dropped: their Python SQL-injection coverage is entirely
+# Django/SQLAlchemy-specific and never matched raw stdlib sqlite3 usage,
+# the exact pattern Bandit's B608 already covers well.
+rules:
+  - id: placeholder-llm-call-example
+    languages: [python]
+    severity: WARNING
+    message: >
+      Placeholder custom rule proving Semgrep's project-local ruleset
+      loads and matches correctly. Replaced by the real AI-aware
+      ruleset in Phase 6 (rules/llm-security.yaml).
+    pattern: $CLIENT.messages.create(...)

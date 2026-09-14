@@ -1,5 +1,11 @@
 """Orchestrates all three deterministic tool runners against a PR's
 reviewed files and filters the combined output down to changed lines.
+
+Phase 4.1: each tool is invoked ONCE for the whole PR (see base.py's
+run_tool_on_pr) rather than once per file, and the three tools run
+CONCURRENTLY with each other via asyncio.gather — Semgrep, Bandit, and
+Ruff have no shared state, so there's no reason one has to wait on
+another.
 """
 
 from __future__ import annotations
@@ -27,13 +33,11 @@ async def run_tools_on_files(files: dict[str, str], patches: dict[str, str]) -> 
     """
     changed_ranges = {path: parse_hunk_ranges(patch) for path, patch in patches.items()}
 
-    all_findings: list[Finding] = []
-    for path, content in files.items():
-        for runner in RUNNERS:
-            # Each is a blocking subprocess call — to_thread keeps the
-            # event loop (and this job's heartbeat task) unblocked.
-            findings = await asyncio.to_thread(runner, path, content)
-            all_findings.extend(findings)
+    # Each runner is a blocking subprocess call — to_thread keeps the
+    # event loop (and this job's heartbeat task) unblocked; gather runs
+    # all three tools concurrently with each other, not sequentially.
+    results = await asyncio.gather(*(asyncio.to_thread(runner, files) for runner in RUNNERS))
+    all_findings: list[Finding] = [f for tool_findings in results for f in tool_findings]
 
     filtered = filter_findings_to_changed_lines(all_findings, changed_ranges)
     for f in filtered:

@@ -1,21 +1,30 @@
-"""Shared execution harness for all three tool runners: writes file
-content to a temp file (these are CLI tools operating on files, not
-libraries taking a string), runs the tool under a timeout, and hands
-stdout to a tool-specific parser. A crash or timeout NEVER aborts the
-review — it produces a single "tool unavailable" Finding and increments
-a failure counter, same as any other tool output would be handled.
+"""Shared execution harness for all three tool runners.
 
-Deliberately does NOT check the subprocess's exit code: Semgrep, Bandit,
-and Ruff all conventionally exit non-zero when they *find issues* — that
-is their normal, successful behavior, not a failure. Only a real
-execution problem (timeout, the binary missing, unparseable output)
-counts as "tool unavailable" here.
+Phase 4.1 change from Phase 4's first pass: every reviewed file is
+written into ONE temp directory (preserving relative paths), and the
+tool is invoked ONCE for the whole PR, not once per file. Semgrep's
+rule-loading overhead measured at ~2s *per file* in Phase 4 — almost
+entirely fixed cost paid again on every single file. Amortizing it
+across all of a PR's files in one invocation is the single biggest
+lever on tooling latency; see the Phase 4.1 review for before/after
+numbers.
+
+A crash or timeout still never aborts the review — it produces one
+"tool unavailable" Finding (now PR-wide, not per-file, since there's
+only one invocation to fail) and increments a failure counter.
+
+Deliberately does NOT check the subprocess's exit code: Semgrep,
+Bandit, and Ruff all conventionally exit non-zero when they *find
+issues* — that is their normal, successful behavior, not a failure.
+Only a real execution problem (timeout, the binary missing, unparseable
+output) counts as "tool unavailable" here.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -65,41 +74,55 @@ def resolve_tool_command(name: str) -> list[str]:
     return [name]
 
 
-def _unavailable_finding(tool_name: str, file_path: str, reason: str) -> Finding:
+def resolve_original_path(tmp_dir: str, reported_path: str) -> str:
+    """Tool output reports paths inside the temp directory tools were
+    invoked against; convert back to the PR's real relative path,
+    forward-slash-normalized regardless of host OS, since findings need
+    to match the same path strings diff ingestion already uses.
+    """
+    try:
+        rel = os.path.relpath(reported_path, tmp_dir)
+    except ValueError:
+        rel = reported_path
+    return Path(rel).as_posix()
+
+
+def _unavailable_finding(tool_name: str, reason: str) -> Finding:
     return Finding.create(
-        file=file_path, start_line=0, end_line=0, severity=Severity.LOW,
+        file="<pr>", start_line=0, end_line=0, severity=Severity.LOW,
         source_tool=tool_name, rule_id="internal.tool_unavailable",
         message=f"{tool_name} unavailable: {reason}",
     )
 
 
-def run_tool_on_file(
+def run_tool_on_pr(
     tool_name: str,
     build_cmd: Callable[[str], list[str]],
     parse_output: Callable[[str, str], list[Finding]],
-    file_path: str,
-    content: str,
+    files: dict[str, str],
     timeout: int,
 ) -> list[Finding]:
-    suffix = Path(file_path).suffix or ".py"
-    tmp_path = None
+    if not files:
+        return []
+
+    tmp_dir = tempfile.mkdtemp(prefix=f"codeguard-{tool_name}-")
     start = time.perf_counter()
     try:
-        with tempfile.NamedTemporaryFile(mode="w", suffix=suffix, delete=False, encoding="utf-8") as tmp:
-            tmp.write(content)
-            tmp_path = tmp.name
+        for rel_path, content in files.items():
+            dest = Path(tmp_dir) / rel_path
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(content, encoding="utf-8")
 
-        proc = subprocess.run(build_cmd(tmp_path), capture_output=True, text=True, timeout=timeout)
-        return parse_output(proc.stdout, file_path)
+        proc = subprocess.run(build_cmd(tmp_dir), capture_output=True, text=True, timeout=timeout)
+        return parse_output(proc.stdout, tmp_dir)
     except subprocess.TimeoutExpired:
         tool_failures_total.labels(tool=tool_name).inc()
-        logger.warning("%s timed out after %ds on %s", tool_name, timeout, file_path)
-        return [_unavailable_finding(tool_name, file_path, f"timed out after {timeout}s")]
+        logger.warning("%s timed out after %ds on %d file(s)", tool_name, timeout, len(files))
+        return [_unavailable_finding(tool_name, f"timed out after {timeout}s")]
     except Exception as exc:
         tool_failures_total.labels(tool=tool_name).inc()
-        logger.exception("%s crashed on %s", tool_name, file_path)
-        return [_unavailable_finding(tool_name, file_path, str(exc))]
+        logger.exception("%s crashed on %d file(s)", tool_name, len(files))
+        return [_unavailable_finding(tool_name, str(exc))]
     finally:
         tool_run_duration_seconds.labels(tool=tool_name).observe(time.perf_counter() - start)
-        if tmp_path is not None:
-            Path(tmp_path).unlink(missing_ok=True)
+        shutil.rmtree(tmp_dir, ignore_errors=True)

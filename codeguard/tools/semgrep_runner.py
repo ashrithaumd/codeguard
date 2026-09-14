@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from codeguard.severity import Severity
-from codeguard.tools.base import resolve_tool_command, run_tool_on_file
+from codeguard.tools.base import resolve_original_path, resolve_tool_command, run_tool_on_pr
 from codeguard.tools.models import Finding
 
 TOOL_NAME = "semgrep"
@@ -11,16 +12,18 @@ DEFAULT_TIMEOUT = 60
 
 _SEVERITY_MAP = {"ERROR": Severity.HIGH, "WARNING": Severity.MEDIUM, "INFO": Severity.LOW}
 
-
-def _build_cmd(tmp_path: str) -> list[str]:
-    # p/security-audit: a pre-packaged, general-purpose security ruleset
-    # (SQL injection, hardcoded secrets, etc.) — not the project's own
-    # rules/llm-security.yaml, which is Phase 6's AI-aware agent, not
-    # this generic deterministic layer.
-    return resolve_tool_command(TOOL_NAME) + ["--config=p/security-audit", "--json", "--quiet", "--metrics=off", tmp_path]
+# Custom rulesets only, per the Phase 4.1 decision — Bandit owns generic
+# Python security. Phase 6 populates this directory with the real
+# AI-aware ruleset (rules/llm-security.yaml); see rules/placeholder.yaml
+# for why the two registry packs tried in Phase 4 were dropped.
+RULES_DIR = Path(__file__).resolve().parent.parent.parent / "rules"
 
 
-def _parse(stdout: str, file_path: str) -> list[Finding]:
+def _build_cmd(tmp_dir: str) -> list[str]:
+    return resolve_tool_command(TOOL_NAME) + [f"--config={RULES_DIR}", "--json", "--quiet", "--metrics=off", tmp_dir]
+
+
+def _parse(stdout: str, tmp_dir: str) -> list[Finding]:
     data = json.loads(stdout)
     findings = []
     for r in data.get("results", []):
@@ -29,12 +32,13 @@ def _parse(stdout: str, file_path: str) -> list[Finding]:
         start = r.get("start", {}).get("line", 0)
         end = r.get("end", {}).get("line", start)
         findings.append(Finding.create(
-            file=file_path, start_line=start, end_line=end, severity=severity,
+            file=resolve_original_path(tmp_dir, r.get("path", "")),
+            start_line=start, end_line=end, severity=severity,
             source_tool=TOOL_NAME, rule_id=r.get("check_id", "unknown"),
             message=(extra.get("message") or "").strip(),
         ))
     return findings
 
 
-def run_semgrep(file_path: str, content: str, timeout: int = DEFAULT_TIMEOUT) -> list[Finding]:
-    return run_tool_on_file(TOOL_NAME, _build_cmd, _parse, file_path, content, timeout)
+def run_semgrep(files: dict[str, str], timeout: int = DEFAULT_TIMEOUT) -> list[Finding]:
+    return run_tool_on_pr(TOOL_NAME, _build_cmd, _parse, files, timeout)
