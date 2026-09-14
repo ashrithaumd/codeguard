@@ -40,7 +40,7 @@ services:
   worker:
     build: .
     restart: unless-stopped
-    command: ["sleep", "infinity"]  # placeholder — real worker loop lands in Phase 2
+    command: ["python", "-m", "codeguard.worker.main"]
     env_file:
       - .env
     environment:
@@ -51,8 +51,16 @@ services:
       db:
         condition: service_healthy
     healthcheck:
-      disable: true  # image's baked-in HEALTHCHECK checks :8501 (Streamlit) —
-                      # meaningless here; re-enable with a real check in Phase 2
+      # Overrides the image's baked-in HEALTHCHECK (which checks :8501,
+      # Streamlit — meaningless here). :9000 is this replica's own
+      # metrics server (start_http_server in worker/main.py) — Docker
+      # evaluates HEALTHCHECK inside each container's own network
+      # namespace, so this correctly checks each --scale'd replica
+      # independently, not some shared host port.
+      test: ["CMD", "curl", "-f", "http://localhost:9000/metrics"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
 
 volumes:
   postgres_data:

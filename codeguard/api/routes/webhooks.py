@@ -5,8 +5,7 @@ from prometheus_client import Counter, Histogram
 
 from codeguard.api.signature import is_valid_signature
 from codeguard.config import get_settings
-from codeguard.github.auth import get_installation_token
-from codeguard.github.comments import post_comment
+from codeguard.queue.queue import enqueue
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -62,26 +61,29 @@ async def webhook(request: Request, response: Response):
             pr_number = payload.get("number")
             logger.info("pull_request event: action=%s pr=%s", action, pr_number)
 
-            # Temporary: posting synchronously in the request handler.
-            # Moves behind the queue in Phase 2 — a slow/failed GitHub
-            # API call shouldn't hold up webhook ack, and this is
-            # exactly the ack-latency cost that motivates the queue.
+            # Phase 2: enqueue and return immediately — no GitHub API call
+            # happens on this request path at all. delivery_id (GitHub's
+            # own X-GitHub-Delivery) is the idempotency key, so a webhook
+            # redelivery of the same delivery is a no-op enqueue, not a
+            # duplicate job.
             if action in ("opened", "synchronize"):
-                try:
-                    installation_id = payload["installation"]["id"]
-                    owner = payload["repository"]["owner"]["login"]
-                    repo = payload["repository"]["name"]
-                    token = get_installation_token(installation_id)
-                    post_comment(
-                        token, owner, repo, pr_number,
-                        "CodeGuard v2 connected — review pipeline coming soon.",
-                    )
-                    logger.info("Posted comment on pr=%s", pr_number)
-                except Exception:
-                    # Best-effort: a failure here shouldn't turn into a
-                    # non-2xx response — GitHub already got a valid,
-                    # verified delivery; retrying it wouldn't help.
-                    logger.exception("Failed to post comment on pr=%s", pr_number)
+                delivery_id = request.headers.get("X-GitHub-Delivery")
+                job_payload = {
+                    "installation_id": payload["installation"]["id"],
+                    "owner": payload["repository"]["owner"]["login"],
+                    "repo": payload["repository"]["name"],
+                    "pr_number": pr_number,
+                    "action": action,
+                    "head_sha": payload["pull_request"]["head"]["sha"],
+                }
+                job, created = await enqueue(
+                    request.app.state.pool,
+                    type="pull_request_review",
+                    payload=job_payload,
+                    idempotency_key=delivery_id,
+                )
+                logger.info("%s job %s for pr=%s (delivery=%s)",
+                            "enqueued" if created else "already enqueued", job.id, pr_number, delivery_id)
 
             return {"status": "ok"}
 

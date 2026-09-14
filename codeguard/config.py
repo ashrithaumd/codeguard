@@ -24,6 +24,35 @@ class Settings(BaseSettings):
     max_tokens_per_pr_ceiling: int = 200_000
     max_wall_clock_s_ceiling: int = 300
 
+    # Queue / connection pool. Small per-process max_size is deliberate:
+    # Azure Database for PostgreSQL Flexible Server has a hard total
+    # connection cap, and this pool size is per *replica* — at
+    # `--scale worker=N`, total worker connections alone are
+    # N * queue_pool_max_size, before the api service's own pool or
+    # Postgres's reserved superuser connections. Each worker only ever
+    # holds ~1 connection at a time given batch_size=1, so this can stay
+    # small without hurting throughput.
+    queue_pool_min_size: int = 1
+    queue_pool_max_size: int = 5
+    # "prefer" (not "require") so local docker-compose Postgres — which
+    # has no SSL configured at all — keeps working over plaintext.
+    # Azure Flexible Server does offer SSL, so "prefer" already upgrades
+    # automatically there; set DB_SSLMODE=require via env in that
+    # deployment specifically to make it mandatory rather than best-effort.
+    db_sslmode: str = "prefer"
+
+    # Lease / heartbeat. Startup validation (see codeguard/worker/main.py)
+    # enforces heartbeat_interval_seconds well below lease_seconds.
+    lease_seconds: int = 30
+    heartbeat_interval_seconds: int = 10
+    reaper_interval_seconds: float = 1.0
+    max_delivery_attempts: int = 5
+    base_backoff_seconds: float = 1.0
+    max_backoff_delay_seconds: float = 60.0
+    queue_batch_size: int = 1
+    queue_poll_interval_seconds: float = 1.0
+    worker_metrics_port: int = 9000
+
 
 @lru_cache
 def get_settings() -> Settings:

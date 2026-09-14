@@ -16,7 +16,7 @@ dependencies = [
     "langsmith>=0.3.45,<0.4",
     "pydantic>=2.13,<3",
     "pydantic-settings>=2.6,<3",
-    "psycopg[binary]>=3,<4",
+    "psycopg[binary,pool]>=3,<4",
     "prometheus-client>=0.20,<1",
     "python-dotenv>=0.21.0",
     "tiktoken>=0.13.0",
@@ -26,6 +26,25 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
 ]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3,<9",
+    "pytest-asyncio>=0.24,<1",
+]
+
+[tool.pytest.ini_options]
+# Deliberately scoped to just the new queue tests. tests/e2e_test.py and
+# tests/test_guardrails.py are old script-style "tests" (top-level code that
+# runs on import, no test_ functions) predating real pytest usage in this
+# project — letting pytest's default collection reach them would execute
+# that top-level code (including, for e2e_test.py, a real live-API pipeline
+# run if RUN_PIPELINE is set) as a side effect of collection, not a deliberate
+# test run. Narrowing testpaths avoids that entirely without needing to fix
+# those files in this phase.
+testpaths = ["tests/queue"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.hatch.build.targets.wheel]
 packages = ["codeguard"]
