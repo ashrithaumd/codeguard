@@ -38,9 +38,10 @@ def get_user(username):
     return cursor.fetchall()
 '''
 
-# Matches rules/placeholder.yaml's pattern ($CLIENT.messages.create(...))
-# — Semgrep's role as of Phase 4.1 is custom rulesets only, so its live
-# test exercises that mechanism, not generic security (Bandit's job now).
+# Real content from rules/llm-security.yaml's own domain (Phase 6) — a
+# floating model alias, no system prompt, no max_tokens. Semgrep's role
+# since Phase 4.1 is custom rulesets only (Bandit owns generic security);
+# this exercises that real ruleset, not a placeholder.
 LLM_CALL_SNIPPET = '''\
 import anthropic
 
@@ -87,10 +88,11 @@ def test_bandit_partitions_findings_across_multiple_files_correctly():
            "actual deployment target is Linux containers, where this doesn't occur; "
            "verified separately there, not skipped on faith.",
 )
-def test_semgrep_runs_custom_ruleset_and_matches_placeholder_rule():
+def test_semgrep_runs_llm_security_ruleset_and_catches_unpinned_model():
     findings = run_semgrep({"app/assistant.py": LLM_CALL_SNIPPET})
     assert _ran_successfully(findings), findings
-    assert any(f.rule_id == "placeholder-llm-call-example" for f in findings), findings
+    rule_ids = {f.rule_id for f in findings}
+    assert "rules.llm-unpinned-model-alias" in rule_ids or "llm-unpinned-model-alias" in rule_ids, findings
     for f in findings:
         assert f.file == "app/assistant.py"
 

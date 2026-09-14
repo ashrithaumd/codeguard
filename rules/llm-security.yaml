@@ -1,0 +1,154 @@
+rules:
+  - id: llm-prompt-injection-concatenation
+    languages: [python]
+    severity: ERROR
+    message: >
+      Untrusted input concatenated directly into an LLM prompt's content
+      with no delimiting — string concatenation or an f-string embedding
+      a variable. An attacker who controls that variable can inject
+      instructions the model will treat as part of the prompt, not as
+      data. Delimit untrusted content explicitly (e.g. XML-ish tags) or
+      pass it as a separate, clearly-labeled section instead of
+      splicing it into the instruction text itself.
+    patterns:
+      - pattern-either:
+          - pattern: '$CLIENT.messages.create(..., messages=[..., {"role": "user", "content": $A + $B}, ...], ...)'
+          - pattern: '$CLIENT.messages.create(..., messages=[..., {"role": "user", "content": f"..."}, ...], ...)'
+
+  - id: llm-missing-system-user-separation
+    languages: [python]
+    severity: WARNING
+    message: >
+      An Anthropic messages.create() call with no `system` parameter —
+      every instruction ends up folded into the user turn, with no
+      structural separation between "what the model should do" and
+      "what the user/PR/untrusted content said." A real system prompt
+      is the first line of defense against a user turn trying to
+      override instructions.
+    patterns:
+      - pattern: '$CLIENT.messages.create(..., model=$M, messages=$MSGS, ...)'
+      - pattern-not: '$CLIENT.messages.create(..., system=$S, ...)'
+
+  - id: llm-output-to-dangerous-sink
+    languages: [python]
+    severity: ERROR
+    message: >
+      LLM response content flows into eval(), exec(), subprocess, or
+      os.system() with no validation in between — the model's output is
+      treated as trusted code/commands. A prompt-injected model response
+      becomes arbitrary code execution. Never execute model output
+      directly; if the model must trigger an action, route it through an
+      explicit allowlist of safe operations, never a raw eval/exec/shell.
+    mode: taint
+    pattern-sources:
+      - pattern: '$RESP.content[0].text'
+    pattern-sinks:
+      - pattern: 'eval(...)'
+      - pattern: 'exec(...)'
+      - pattern: 'subprocess.run(...)'
+      - pattern: 'os.system(...)'
+
+  - id: llm-output-to-sql
+    languages: [python]
+    severity: ERROR
+    message: >
+      LLM response content flows into a raw SQL execute() call — the
+      model's output is treated as trusted SQL. Same class of bug as
+      llm-output-to-dangerous-sink, specifically for the DB-API cursor
+      sink: parameterize the query, never interpolate model output into
+      SQL text directly.
+    mode: taint
+    pattern-sources:
+      - pattern: '$RESP.content[0].text'
+    pattern-sinks:
+      - pattern: '$CURSOR.execute(...)'
+
+  - id: llm-call-missing-max-tokens
+    languages: [python]
+    severity: WARNING
+    message: >
+      messages.create() with no max_tokens — an unbounded response size
+      is an unbounded cost and latency tail per call. Set max_tokens
+      explicitly on every LLM call.
+    patterns:
+      - pattern: '$CLIENT.messages.create(...)'
+      - pattern-not: '$CLIENT.messages.create(..., max_tokens=$N, ...)'
+
+  - id: llm-unpinned-model-alias
+    languages: [python]
+    severity: WARNING
+    message: >
+      A floating model alias ("-latest") instead of a pinned version.
+      The model backing a "-latest" alias can change without warning,
+      silently changing review behavior, cost, and latency — pin an
+      exact, dated model version instead.
+    patterns:
+      - pattern-regex: 'model\s*=\s*["''][^"'']*-latest["'']'
+
+  - id: llm-hardcoded-api-key
+    languages: [python]
+    severity: ERROR
+    message: >
+      An API key passed as a literal string instead of read from the
+      environment/secret store. Hardcoded credentials end up in git
+      history and logs.
+    patterns:
+      - pattern-either:
+          - pattern: 'anthropic.Anthropic(api_key="...")'
+          - pattern: 'openai.OpenAI(api_key="...")'
+          - pattern-regex: '(?i)(anthropic|openai)_api_key\s*=\s*["''][A-Za-z0-9\-_]{16,}["'']'
+
+  - id: llm-logging-full-prompt-or-response
+    languages: [python]
+    severity: WARNING
+    message: >
+      Logging or printing the full prompt or model response text. Both
+      routinely contain PII, secrets echoed back from context, or
+      injected content — logs are a durable, often broadly-readable
+      sink. Log a hash, length, or explicitly-redacted summary instead
+      of the raw text.
+    patterns:
+      - pattern-either:
+          - pattern: 'print($RESP.content[0].text)'
+          - pattern: 'logging.info(..., $RESP.content[0].text, ...)'
+          - pattern: 'logger.info(..., $RESP.content[0].text, ...)'
+
+  - id: llm-call-missing-timeout
+    languages: [python]
+    severity: WARNING
+    message: >
+      messages.create() with no explicit timeout — a hung upstream
+      connection blocks this call indefinitely instead of failing fast,
+      which is an unbounded latency tail for whatever's waiting on it
+      (a job's lease, an HTTP request). Pass timeout= explicitly rather
+      than relying on the SDK's default.
+    patterns:
+      - pattern: '$CLIENT.messages.create(...)'
+      - pattern-not: '$CLIENT.messages.create(..., timeout=$T, ...)'
+
+  - id: llm-sync-call-in-async-handler
+    languages: [python]
+    severity: ERROR
+    message: >
+      A blocking messages.create() call made directly inside an `async
+      def` function with no `await`/`to_thread` around it. The
+      Anthropic SDK's sync client performs a real blocking network
+      call; invoked straight inside an async handler (an HTTP route, an
+      async worker task) it blocks the whole event loop for the
+      duration of the LLM call, stalling every other concurrent
+      request/heartbeat on that process. Use the async client (`await
+      $CLIENT.messages.create(...)`) or push the sync call through
+      `asyncio.to_thread`.
+    patterns:
+      - pattern: |
+          async def $FUNC(...):
+            ...
+            $CLIENT.messages.create(...)
+      - pattern-not: |
+          async def $FUNC(...):
+            ...
+            await $CLIENT.messages.create(...)
+      - pattern-not: |
+          async def $FUNC(...):
+            ...
+            asyncio.to_thread($CLIENT.messages.create, ...)

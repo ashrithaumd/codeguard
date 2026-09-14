@@ -12,6 +12,7 @@ import requests
 
 PR_FILES_URL = "https://api.github.com/repos/{owner}/{repo}/pulls/{pr_number}/files"
 CONTENTS_URL = "https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+TREE_URL = "https://api.github.com/repos/{owner}/{repo}/git/trees/{ref}"
 
 
 def get_pr_files(token: str, owner: str, repo: str, pr_number: int) -> list[dict]:
@@ -57,3 +58,25 @@ def get_file_content(token: str, owner: str, repo: str, path: str, ref: str) -> 
     if data.get("encoding") != "base64":
         raise ValueError(f"unexpected encoding for {path!r}: {data.get('encoding')}")
     return base64.b64decode(data["content"]).decode("utf-8", errors="replace")
+
+
+def get_repo_tree(token: str, owner: str, repo: str, ref: str) -> list[dict]:
+    """Full recursive file listing (path + type) at `ref` — no content,
+    one call regardless of repo size. Used by Phase 6's eval-hygiene
+    checks to enumerate the base tree; `ref` must be the PR's base
+    branch for the same reason load_repo_config's base_ref must be
+    (repo_config.py) — repo-level checks describe the target repo's own
+    practices, not whatever an untrusted PR head wants them to look
+    like. GitHub marks very large trees `truncated: true` rather than
+    erroring; not handled specially here since the caller's own file
+    cap already bounds how much of this gets acted on regardless.
+    """
+    resp = requests.get(
+        TREE_URL.format(owner=owner, repo=repo, ref=ref),
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+        params={"recursive": "1"},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    return [e for e in data.get("tree", []) if e.get("type") == "blob"]

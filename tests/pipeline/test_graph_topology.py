@@ -28,7 +28,7 @@ def _base_state(files, tool_findings=None, repo_config=None):
             path: f"@@ -1,{len(content.splitlines()) or 1} +1,{len(content.splitlines()) or 1} @@\n context"
             for path, content in files.items()
         },
-        "tool_findings": tool_findings or [],
+        "tool_findings": tool_findings or [], "base_tree_files": {},
         "touches_ai_code": False, "findings": [], "repo_level_findings": [],
         "should_fix": False, "summary": "", "inline_findings": [],
         "tokens_in": 0, "tokens_out": 0, "estimated_cost_usd": 0.0, "node_latencies": [],

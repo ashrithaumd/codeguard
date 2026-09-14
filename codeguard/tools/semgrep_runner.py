@@ -14,8 +14,11 @@ _SEVERITY_MAP = {"ERROR": Severity.HIGH, "WARNING": Severity.MEDIUM, "INFO": Sev
 
 # Custom rulesets only, per the Phase 4.1 decision — Bandit owns generic
 # Python security. Phase 6 populates this directory with the real
-# AI-aware ruleset (rules/llm-security.yaml); see rules/placeholder.yaml
-# for why the two registry packs tried in Phase 4 were dropped.
+# AI-aware ruleset (rules/llm-security.yaml, 10 rules covering
+# prompt-injection concatenation, missing system/user separation,
+# LLM-output-to-dangerous-sink/SQL taint, missing max_tokens/timeout,
+# sync calls in async handlers, unpinned model aliases, hardcoded API
+# keys, and logging full prompts/responses).
 RULES_DIR = Path(__file__).resolve().parent.parent.parent / "rules"
 
 

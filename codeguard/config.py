@@ -59,6 +59,15 @@ class Settings(BaseSettings):
     # are listed in the review's summary body instead of being dropped.
     max_inline_comments: int = 25
 
+    # Model per-agent, never hardcoded in the node itself — Phase 6's
+    # AI-aware agent is the first real LLM call; Phase 7's Security/
+    # Quality/Test/Fix agents get their own *_agent_model fields here
+    # rather than sharing one, so cost/quality tuning per agent doesn't
+    # require touching node code.
+    ai_aware_agent_model: str = "claude-sonnet-4-5"
+    ai_aware_agent_max_tokens: int = 2048
+    ai_aware_agent_timeout_s: float = 30.0
+
 
 @lru_cache
 def get_settings() -> Settings:

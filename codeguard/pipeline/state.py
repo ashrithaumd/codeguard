@@ -58,6 +58,12 @@ class ReviewState(TypedDict):
     patches: dict[str, str]      # path -> GitHub patch text
     tool_findings: list[Finding]  # Phase 4's pre-computed findings for the whole PR, set once
 
+    # Phase 6: bounded Python-file sample from the PR's BASE branch (see
+    # codeguard/github/base_tree.py), used only by review_repo_level's
+    # eval-hygiene checks. Empty dict when repo_config.enable_ai_aware is
+    # False — worker/main.py skips the fetch entirely in that case.
+    base_tree_files: dict[str, str]
+
     touches_ai_code: bool
 
     findings: Annotated[list[Finding], operator.add]

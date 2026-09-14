@@ -31,6 +31,7 @@ from prometheus_client import Counter, Histogram, start_http_server
 from codeguard.config import Settings, get_settings
 from codeguard.diff.ingest import ingest_pr_diff
 from codeguard.github.auth import get_installation_token
+from codeguard.github.base_tree import fetch_base_tree_python_files
 from codeguard.github.errors import extract_retry_after
 from codeguard.github.notifications import notify_dead_letter
 from codeguard.github.repo_config import load_repo_config
@@ -207,24 +208,37 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
 
     # Semgrep/Bandit/Ruff on the same file content diff ingestion already
     # fetched (no second round of GitHub calls) and the same patches
-    # (for exact changed-line filtering).
-    tool_findings = await run_tools_on_files(diff_result.file_contents, diff_result.patches)
+    # (for exact changed-line filtering). base-tree eval-hygiene fetch
+    # runs concurrently with the tool run — independent GitHub/subprocess
+    # work, no reason to serialize them. Skipped (empty dict, no GitHub
+    # calls at all) when the repo has opted out of the AI-aware agent.
+    tool_findings_task = asyncio.ensure_future(run_tools_on_files(diff_result.file_contents, diff_result.patches))
+    if repo_config.enable_ai_aware:
+        base_tree_task = asyncio.ensure_future(fetch_base_tree_python_files(token, owner, repo, base_ref))
+    else:
+        base_tree_task = None
+    tool_findings = await tool_findings_task
+    base_tree_files = await base_tree_task if base_tree_task is not None else {}
     _log_findings(pr_number, tool_findings)
 
     initial_state = {
         "owner": owner, "repo": repo, "pr_number": pr_number, "head_sha": head_sha,
         "installation_id": installation_id, "repo_config": repo_config,
         "files": diff_result.file_contents, "patches": diff_result.patches,
-        "tool_findings": tool_findings,
+        "tool_findings": tool_findings, "base_tree_files": base_tree_files,
         "touches_ai_code": False,
         "findings": [], "repo_level_findings": [],
         "should_fix": False, "summary": "", "inline_findings": [],
         "tokens_in": 0, "tokens_out": 0, "estimated_cost_usd": 0.0, "node_latencies": [],
     }
     final_state = await review_graph.ainvoke(initial_state)
-    logger.info("pipeline pr=%s: touches_ai_code=%s should_fix=%s inline=%d total_findings=%d",
-                pr_number, final_state["touches_ai_code"], final_state["should_fix"],
-                len(final_state["inline_findings"]), len(final_state["findings"]) + len(final_state["repo_level_findings"]))
+    logger.info(
+        "pipeline pr=%s: touches_ai_code=%s should_fix=%s inline=%d total_findings=%d "
+        "tokens_in=%d tokens_out=%d estimated_cost_usd=%.4f",
+        pr_number, final_state["touches_ai_code"], final_state["should_fix"],
+        len(final_state["inline_findings"]), len(final_state["findings"]) + len(final_state["repo_level_findings"]),
+        final_state["tokens_in"], final_state["tokens_out"], final_state["estimated_cost_usd"],
+    )
 
     comments = _findings_to_review_comments(final_state["inline_findings"])
     try:
