@@ -38,6 +38,7 @@ from codeguard.github.repo_config import load_repo_config
 from codeguard.queue.db import bootstrap_schema, create_pool
 from codeguard.queue.models import Job
 from codeguard.queue.queue import ack, claim_batch, extend_lease, nack
+from codeguard.tools.run_all import run_tools_on_files
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("codeguard.worker")
@@ -147,13 +148,25 @@ def _log_diff_ingestion_result(pr_number: int, repo_config, result) -> None:
         logger.info("  hunk: %s:%d-%d [%s, %d chars]", h.path, h.start_line, h.end_line, h.content_hash[:12], len(h.content))
 
 
+def _log_findings(pr_number: int, findings) -> None:
+    """Phase 4's done-when deliverable: structured Findings with correct
+    line numbers, logged for verification — no LLM involved, and nothing
+    posted to GitHub yet. Phase 5 posts these inline via
+    codeguard/tools/diff_position.py.
+    """
+    logger.info("tool findings pr=%s: %d finding(s) after changed-line filtering", pr_number, len(findings))
+    for f in findings:
+        logger.info("  finding: %s:%d-%d [%s/%s] %s: %s",
+                     f.file, f.start_line, f.end_line, f.source_tool, f.severity.name, f.rule_id, f.message)
+
+
 async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -> bool:
     """Fetches this job's own installation token (never cached across
-    jobs — see codeguard/github/auth.py), reused for both diff ingestion
-    and the comment post below. Phase 3 adds real diff ingestion
-    (fetch/filter/budget/log); the actual review pipeline and what gets
-    posted based on it land in later phases — this still just posts the
-    hardcoded "connected" comment regardless of what ingestion found.
+    jobs — see codeguard/github/auth.py), reused for diff ingestion, the
+    deterministic tool runs, and the comment post below. The actual
+    review pipeline and what gets posted based on findings land in later
+    phases — this still just posts the hardcoded "connected" comment
+    regardless of what ingestion and tooling found.
     """
     payload = job.payload
     installation_id = payload["installation_id"]
@@ -173,13 +186,20 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
         try:
             settings = get_settings()
             repo_config = load_repo_config(token, owner, repo, base_ref)
-            result = ingest_pr_diff(token, owner, repo, pr_number, head_sha, repo_config, settings)
+            result = await ingest_pr_diff(token, owner, repo, pr_number, head_sha, repo_config, settings)
             _log_diff_ingestion_result(pr_number, repo_config, result)
+
+            # Phase 4: run Semgrep/Bandit/Ruff on the same file content
+            # diff ingestion already fetched (no second round of GitHub
+            # calls) and the same patches (for exact changed-line
+            # filtering). Same best-effort posture as ingestion itself.
+            findings = await run_tools_on_files(result.file_contents, result.patches)
+            _log_findings(pr_number, findings)
         except Exception:
-            # Best-effort for now — a diff-ingestion failure shouldn't
-            # block the comment below from posting. Once later phases
-            # make the review depend on this, that changes.
-            logger.exception("diff ingestion failed for pr=%s — continuing without it", pr_number)
+            # Best-effort for now — a diff-ingestion or tooling failure
+            # shouldn't block the comment below from posting. Once later
+            # phases make the review depend on this, that changes.
+            logger.exception("diff ingestion or tooling failed for pr=%s — continuing without it", pr_number)
 
     try:
         post_comment(token, owner, repo, pr_number, CONNECTED_COMMENT)

@@ -26,6 +26,15 @@ dependencies = [
     "cryptography>=42,<44",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
+    # Exact pins, not the floor+cap convention used above: these are
+    # analysis tools whose *output* (which rules fire, message wording)
+    # can shift between versions in ways that make review results
+    # non-reproducible — unlike an SDK/framework version bump, a rules
+    # engine version bump is a behavior change we want to opt into
+    # deliberately, not absorb silently on the next `pip install`.
+    "semgrep==1.45.0",
+    "bandit==1.7.9",
+    "ruff==0.6.9",
 ]
 
 [project.optional-dependencies]
@@ -43,7 +52,7 @@ dev = [
 # run if RUN_PIPELINE is set) as a side effect of collection, not a deliberate
 # test run. Narrowing testpaths avoids that entirely without needing to fix
 # those files in this phase.
-testpaths = ["tests/queue"]
+testpaths = ["tests/queue", "tests/diff", "tests/tools"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 

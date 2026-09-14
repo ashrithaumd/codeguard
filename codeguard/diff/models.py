@@ -32,6 +32,18 @@ class DiffIngestionResult(BaseModel):
     files_filtered: list[FilteredFile] = Field(default_factory=list)
     hunks: list[Hunk] = Field(default_factory=list)
     budget_exceeded: bool = False
+    # Full file content at head_sha, keyed by path, for every kept file
+    # that was successfully fetched — populated during hunk-context
+    # expansion. Phase 4's tool runners reuse this directly rather than
+    # re-fetching the same content a second time. A path missing here
+    # (vs. present with a falsy value) means the fetch failed and hunk
+    # building fell back to patch-only context for that file.
+    file_contents: dict[str, str] = Field(default_factory=dict)
+    # Each kept file's raw GitHub patch text, keyed by path — needed by
+    # Phase 4's tool runners to compute exact changed-line ranges
+    # (narrower than a Hunk's ~30-line context window) for filtering
+    # findings down to what the PR actually touched.
+    patches: dict[str, str] = Field(default_factory=dict)
 
     @property
     def files_reviewed(self) -> list[str]:
