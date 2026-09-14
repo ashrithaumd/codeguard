@@ -1,6 +1,7 @@
 # Secrets and environment
 .env
 .streamlit/secrets.toml
+secrets/
 
 # Database files
 *.db

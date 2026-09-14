@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     database_url: str
     github_app_id: str
     github_webhook_secret: str
+    github_private_key_path: str
 
     # Global hard ceilings — operator-controlled, override-able via env
     # vars, but never per-repo. A repo's RepoConfig can only ask for
