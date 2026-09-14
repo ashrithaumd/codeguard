@@ -6,7 +6,8 @@ Confirmed happening live against a real installed GitHub App (two
 identical comments landed on the same PR from one kill-mid-job test) and
 fixed with an idempotency guard (posted_comments, mirroring Reliqueue's
 sent_emails pattern) — see codeguard/worker/main.py's
-_comment_already_posted / _record_comment_posted.
+_review_already_posted / _record_review_posted (renamed in Phase 5 when
+posting moved from a single comment to a full PR Review; same guard).
 
 This test proves the guard deterministically rather than via a real
 timing race (which is inherently flaky here — the actual "post succeeded,
@@ -25,7 +26,7 @@ import asyncio
 import uuid
 
 from codeguard.queue.queue import enqueue
-from codeguard.worker.main import handle_pull_request_review, _comment_already_posted, _record_comment_posted
+from codeguard.worker.main import handle_pull_request_review, _review_already_posted, _record_review_posted
 
 
 async def test_comment_not_reposted_when_already_recorded(pool):
@@ -35,10 +36,10 @@ async def test_comment_not_reposted_when_already_recorded(pool):
         idempotency_key=f"guard-test-{uuid.uuid4().hex[:8]}",
     )
 
-    assert await _comment_already_posted(pool, job) is False
+    assert await _review_already_posted(pool, job) is False
 
-    await _record_comment_posted(pool, job)
-    assert await _comment_already_posted(pool, job) is True
+    await _record_review_posted(pool, job)
+    assert await _review_already_posted(pool, job) is True
 
     # Would raise requests.HTTPError (404) if the guard failed to skip
     # and this actually hit GitHub's API with a nonexistent installation.

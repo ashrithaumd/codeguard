@@ -52,7 +52,7 @@ dev = [
 # run if RUN_PIPELINE is set) as a side effect of collection, not a deliberate
 # test run. Narrowing testpaths avoids that entirely without needing to fix
 # those files in this phase.
-testpaths = ["tests/queue", "tests/diff", "tests/tools", "tests/github"]
+testpaths = ["tests/queue", "tests/diff", "tests/tools", "tests/github", "tests/pipeline"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 
