@@ -227,7 +227,7 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
         "files": diff_result.file_contents, "patches": diff_result.patches,
         "tool_findings": tool_findings, "base_tree_files": base_tree_files,
         "touches_ai_code": False,
-        "findings": [], "repo_level_findings": [],
+        "findings": [], "repo_level_findings": [], "dismissed_findings": [],
         "should_fix": False, "summary": "", "inline_findings": [],
         "tokens_in": 0, "tokens_out": 0, "estimated_cost_usd": 0.0, "node_latencies": [],
     }

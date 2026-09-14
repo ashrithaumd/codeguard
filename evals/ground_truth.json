@@ -1,38 +1,62 @@
 {
-  "fixture_01_unpinned_model_and_missing_max_tokens.py": [
-    {"rule_id": "llm-unpinned-model-alias", "line": 12},
-    {"rule_id": "llm-call-missing-max-tokens", "line": 12}
-  ],
-  "fixture_02_missing_system_and_hardcoded_key.py": [
-    {"rule_id": "llm-hardcoded-api-key", "line": 7},
-    {"rule_id": "llm-missing-system-user-separation", "line": 11}
-  ],
-  "fixture_03_prompt_injection_and_logging_response.py": [
-    {"rule_id": "llm-prompt-injection-concatenation", "line": 12},
-    {"rule_id": "llm-logging-full-prompt-or-response", "line": 17}
-  ],
-  "fixture_04_output_to_eval_and_sql.py": [
-    {"rule_id": "llm-output-to-dangerous-sink", "line": 18},
-    {"rule_id": "llm-output-to-sql", "line": 23}
-  ],
-  "fixture_05_missing_timeout_in_async_handler.py": [
-    {"rule_id": "llm-sync-call-in-async-handler", "line": 12},
-    {"rule_id": "llm-call-missing-timeout", "line": 13}
-  ],
-  "fixture_06_three_weaknesses_one_call.py": [
-    {"rule_id": "llm-unpinned-model-alias", "line": 13},
-    {"rule_id": "llm-call-missing-max-tokens", "line": 13},
-    {"rule_id": "llm-missing-system-user-separation", "line": 13}
-  ],
-  "fixture_07_injection_missing_system_and_sink.py": [
-    {"rule_id": "llm-prompt-injection-concatenation", "line": 15},
-    {"rule_id": "llm-missing-system-user-separation", "line": 15},
-    {"rule_id": "llm-output-to-dangerous-sink", "line": 20}
-  ],
-  "fixture_08_logging_timeout_and_async_sink.py": [
-    {"rule_id": "llm-sync-call-in-async-handler", "line": 15},
-    {"rule_id": "llm-call-missing-timeout", "line": 16},
-    {"rule_id": "llm-logging-full-prompt-or-response", "line": 17}
-  ],
-  "fixture_09_clean.py": []
+  "fixture_01_unpinned_model_and_missing_max_tokens.py": {
+    "confirmed": ["llm-unpinned-model-alias", "llm-call-missing-max-tokens"],
+    "dismissed": []
+  },
+  "fixture_02_missing_system_and_hardcoded_key.py": {
+    "confirmed": ["llm-hardcoded-api-key", "llm-missing-system-user-separation"],
+    "dismissed": []
+  },
+  "fixture_03_prompt_injection_and_logging_response.py": {
+    "confirmed": ["llm-prompt-injection-concatenation", "llm-logging-full-prompt-or-response"],
+    "dismissed": []
+  },
+  "fixture_04_output_to_eval_and_sql.py": {
+    "confirmed": ["llm-output-to-dangerous-sink", "llm-output-to-sql"],
+    "dismissed": []
+  },
+  "fixture_05_missing_timeout_in_async_handler.py": {
+    "confirmed": ["llm-sync-call-in-async-handler", "llm-call-missing-timeout"],
+    "dismissed": []
+  },
+  "fixture_06_three_weaknesses_one_call.py": {
+    "confirmed": ["llm-unpinned-model-alias", "llm-call-missing-max-tokens", "llm-missing-system-user-separation"],
+    "dismissed": []
+  },
+  "fixture_07_injection_missing_system_and_sink.py": {
+    "confirmed": ["llm-prompt-injection-concatenation", "llm-missing-system-user-separation", "llm-output-to-dangerous-sink"],
+    "dismissed": []
+  },
+  "fixture_08_logging_timeout_and_async_sink.py": {
+    "confirmed": ["llm-sync-call-in-async-handler", "llm-call-missing-timeout", "llm-logging-full-prompt-or-response"],
+    "dismissed": []
+  },
+  "fixture_09_clean.py": {
+    "confirmed": [],
+    "dismissed": []
+  },
+  "near_miss_01_max_tokens_via_kwargs.py": {
+    "confirmed": [],
+    "dismissed": ["llm-call-missing-max-tokens", "llm-call-missing-timeout"]
+  },
+  "near_miss_02_dead_code_unpinned_model.py": {
+    "confirmed": [],
+    "dismissed": ["llm-unpinned-model-alias"]
+  },
+  "near_miss_03_wrapped_client_injects_system_prompt.py": {
+    "confirmed": [],
+    "dismissed": ["llm-missing-system-user-separation"]
+  },
+  "near_miss_04_test_dummy_api_key.py": {
+    "confirmed": [],
+    "dismissed": ["llm-hardcoded-api-key"]
+  },
+  "near_miss_05_trusted_constant_interpolation.py": {
+    "confirmed": [],
+    "dismissed": ["llm-prompt-injection-concatenation"]
+  },
+  "near_miss_06_client_level_timeout.py": {
+    "confirmed": [],
+    "dismissed": ["llm-call-missing-timeout"]
+  }
 }

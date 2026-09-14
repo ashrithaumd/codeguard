@@ -22,6 +22,7 @@ import operator
 from typing import Annotated, TypedDict
 
 from codeguard.config import RepoConfig
+from codeguard.pipeline.models import DismissedFinding
 from codeguard.tools.models import Finding
 
 
@@ -68,6 +69,11 @@ class ReviewState(TypedDict):
 
     findings: Annotated[list[Finding], operator.add]
     repo_level_findings: Annotated[list[Finding], operator.add]
+    # Phase 6.1: Semgrep findings the AI-aware agent judged, in context,
+    # not to be real issues — never posted inline, surfaced only in
+    # summarize()'s body. See codeguard/pipeline/models.py's
+    # DismissedFinding and Settings.ai_aware_dismissals_enabled.
+    dismissed_findings: Annotated[list[DismissedFinding], operator.add]
 
     should_fix: bool
     summary: str

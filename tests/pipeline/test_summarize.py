@@ -9,12 +9,13 @@ plain function over state, posting happens in the worker afterward.
 from __future__ import annotations
 
 from codeguard.config import RepoConfig, get_settings
+from codeguard.pipeline.models import DismissedFinding
 from codeguard.pipeline.nodes import summarize
 from codeguard.severity import Severity
 from tests.pipeline.conftest import make_finding
 
 
-def _state(findings, patches, files=None, repo_config=None):
+def _state(findings, patches, files=None, repo_config=None, dismissed_findings=None):
     return {
         "owner": "o", "repo": "r", "pr_number": 1, "head_sha": "sha", "installation_id": 1,
         "repo_config": repo_config or RepoConfig(),
@@ -22,7 +23,7 @@ def _state(findings, patches, files=None, repo_config=None):
         "patches": patches,
         "tool_findings": [],
         "touches_ai_code": False,
-        "findings": findings, "repo_level_findings": [],
+        "findings": findings, "repo_level_findings": [], "dismissed_findings": dismissed_findings or [],
         "should_fix": False, "summary": "", "inline_findings": [],
         "tokens_in": 0, "tokens_out": 0, "estimated_cost_usd": 0.0, "node_latencies": [],
     }
@@ -88,3 +89,37 @@ def test_zero_findings_still_produces_a_body():
     assert result["inline_findings"] == []
     assert "no issues found" in result["summary"]
     assert "2 file(s)" in result["summary"]
+
+
+def test_dismissed_findings_appear_in_body_alongside_confirmed_ones():
+    f = make_finding(file="a.py", line=3, rule_id="B105", message="confirmed one")
+    d = DismissedFinding(file="a.py", start_line=9, rule_id="llm-unpinned-model-alias", reason="pinned by internal proxy")
+    patches = {"a.py": "@@ -1,10 +1,10 @@\n context"}
+
+    result = summarize(_state([f], patches, dismissed_findings=[d]))
+
+    assert "checked by the AI-aware agent, not flagged" in result["summary"]
+    assert "a.py:9" in result["summary"]
+    assert "llm-unpinned-model-alias" in result["summary"]
+    assert "pinned by internal proxy" in result["summary"]
+    # the dismissal never displaces the confirmed finding from inline
+    assert len(result["inline_findings"]) == 1
+
+
+def test_dismissed_findings_appear_even_with_zero_confirmed_findings():
+    d = DismissedFinding(file="a.py", start_line=9, rule_id="llm-unpinned-model-alias", reason="pinned by internal proxy")
+
+    result = summarize(_state([], {}, files={"a.py": ""}, dismissed_findings=[d]))
+
+    assert "no issues found" in result["summary"]
+    assert "checked by the AI-aware agent, not flagged" in result["summary"]
+    assert result["inline_findings"] == []
+
+
+def test_no_dismissed_section_when_there_are_no_dismissals():
+    f = make_finding(file="a.py", line=3, rule_id="B105", message="confirmed one")
+    patches = {"a.py": "@@ -1,10 +1,10 @@\n context"}
+
+    result = summarize(_state([f], patches, dismissed_findings=[]))
+
+    assert "checked by the AI-aware agent" not in result["summary"]

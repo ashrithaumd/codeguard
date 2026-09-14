@@ -68,6 +68,15 @@ class Settings(BaseSettings):
     ai_aware_agent_max_tokens: int = 2048
     ai_aware_agent_timeout_s: float = 30.0
 
+    # Phase 6.1 fail-safe: when False, the AI-aware agent's "dismissed"
+    # verdicts are ignored entirely — every Semgrep finding it doesn't
+    # explicitly confirm still gets posted, via the same unaddressed-
+    # rule_id fallback that already covers a finding the model just
+    # never mentions. An operator worried about the agent talking
+    # itself out of a real issue can flip this without touching a
+    # prompt or redeploying rules.
+    ai_aware_dismissals_enabled: bool = True
+
 
 @lru_cache
 def get_settings() -> Settings:

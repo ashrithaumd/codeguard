@@ -1,8 +1,9 @@
-"""Precision/recall harness for the AI-aware agent (codeguard.pipeline.
-nodes.review_ai_aware). Makes REAL Semgrep subprocess calls and REAL
-Anthropic API calls — this is the eval harness Phase 6 asked for, not a
-unit test; tests/pipeline/test_ai_aware.py covers the node's logic with
-a mocked client for CI, with no live calls and no cost.
+"""Precision/recall/dismissal-accuracy harness for the AI-aware agent
+(codeguard.pipeline.nodes.review_ai_aware). Makes REAL Semgrep
+subprocess calls and REAL Anthropic API calls — this is the eval
+harness Phase 6/6.1 asked for, not a unit test; tests/pipeline/
+test_ai_aware.py covers the node's logic with a mocked client for CI,
+with no live calls and no cost.
 
 Usage: python evals/run_eval.py   (run from the repo root; needs
 ANTHROPIC_API_KEY set, and Semgrep's native scan engine, which is only
@@ -10,12 +11,23 @@ available on Linux — see rules/llm-security.py's own skip note — so
 this runs inside the worker container in dev:
     docker exec codeguard-worker-1 python evals/run_eval.py
 
-Matching a predicted finding to a ground-truth weakness is by (file,
-line-within-tolerance) — not exact rule_id string equality. The
-AI-aware agent's whole job is to interpret/merge/re-rank Semgrep's raw
-output; a renamed or merged rule_id is expected, sometimes correct,
-behavior, not a matching failure. TOLERANCE_LINES bounds "close enough
-to be the same weakness."
+Two fixture families, evals/ground_truth.json:
+- fixture_*.py: planted weaknesses that ARE real — "confirmed" lists
+  the rule_id(s) the agent should flag.
+- near_miss_*.py: code that syntactically matches a rule but isn't a
+  real issue in context — "dismissed" lists the rule_id(s) a
+  context-aware reviewer (the agent) should recognize as false
+  positives; raw Semgrep has no way to do this, so near-miss fixtures
+  are exactly where raw Semgrep's precision should suffer relative to
+  the agent's.
+
+Matching is by rule_id set membership per fixture, not by line — the
+Phase 6.1 verdict contract is one verdict per distinct rule_id in a
+file (see _apply_verdicts in codeguard/pipeline/nodes.py), so rule_id
+is the unit both ground truth and the agent's output are expressed in.
+
+See README.md in this directory for what these numbers do and do not
+prove.
 """
 
 from __future__ import annotations
@@ -28,23 +40,18 @@ from codeguard.tools.semgrep_runner import run_semgrep
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 GROUND_TRUTH_PATH = Path(__file__).parent / "ground_truth.json"
-TOLERANCE_LINES = 3
 
 
-def _match(ground_truth: list[dict], predicted_lines: list[int]) -> tuple[int, int, int]:
-    """Greedy line-tolerance matching. Returns (tp, fp, fn)."""
-    unmatched_gt = list(range(len(ground_truth)))
-    tp = 0
-    fp = 0
-    for line in predicted_lines:
-        hit = next((i for i in unmatched_gt if abs(line - ground_truth[i]["line"]) <= TOLERANCE_LINES), None)
-        if hit is not None:
-            unmatched_gt.remove(hit)
-            tp += 1
-        else:
-            fp += 1
-    fn = len(unmatched_gt)
-    return tp, fp, fn
+def _bare_rule_id(rule_id: str) -> str:
+    """Semgrep prefixes every rule_id with the loaded ruleset directory
+    name — "rules." for rules/llm-security.yaml (confirmed empirically
+    during Phase 6, not assumed) — while ground_truth.json is written in
+    terms of the rule's own id, directory-name-independent. Strip it
+    before comparing so a ruleset directory rename doesn't silently
+    break every match.
+    """
+    prefix = "rules."
+    return rule_id[len(prefix):] if rule_id.startswith(prefix) else rule_id
 
 
 def _precision_recall_f1(tp: int, fp: int, fn: int) -> tuple[float, float, float]:
@@ -61,7 +68,12 @@ def main() -> None:
         raise SystemExit(f"no fixtures found under {FIXTURES_DIR}")
 
     raw_totals = {"tp": 0, "fp": 0, "fn": 0}
-    ai_totals = {"tp": 0, "fp": 0, "fn": 0}
+    agent_totals = {"tp": 0, "fp": 0, "fn": 0}
+    near_miss_dismissal_expected = 0
+    near_miss_dismissal_correct = 0
+    near_miss_false_confirm: list[tuple[str, str]] = []
+    dangerous_false_dismissals: list[tuple[str, str]] = []
+
     total_tokens_in = total_tokens_out = 0
     total_cost = 0.0
     total_latency = 0.0
@@ -69,26 +81,36 @@ def main() -> None:
     rows = []
     for path in fixture_paths:
         name = path.name
+        is_near_miss = name.startswith("near_miss_")
         content = path.read_text(encoding="utf-8")
-        gt = ground_truth.get(name, [])
+        gt = ground_truth.get(name, {"confirmed": [], "dismissed": []})
+        expected_confirmed = set(gt["confirmed"])
+        expected_dismissed = set(gt["dismissed"])
 
         semgrep_findings = run_semgrep({name: content})
-        raw_lines = [f.start_line for f in semgrep_findings]
-        raw_tp, raw_fp, raw_fn = _match(gt, raw_lines)
-        raw_totals["tp"] += raw_tp
-        raw_totals["fp"] += raw_fp
-        raw_totals["fn"] += raw_fn
+        raw_rule_ids = {_bare_rule_id(f.rule_id) for f in semgrep_findings}
+        raw_totals["tp"] += len(raw_rule_ids & expected_confirmed)
+        raw_totals["fp"] += len(raw_rule_ids - expected_confirmed)
+        raw_totals["fn"] += len(expected_confirmed - raw_rule_ids)
 
         ai_result = review_ai_aware({
             "owner": "eval", "repo": "eval", "path": name,
             "content": content, "patch": "", "findings": semgrep_findings,
         })
-        ai_findings = ai_result.get("findings", [])
-        ai_lines = [f.start_line for f in ai_findings]
-        ai_tp, ai_fp, ai_fn = _match(gt, ai_lines)
-        ai_totals["tp"] += ai_tp
-        ai_totals["fp"] += ai_fp
-        ai_totals["fn"] += ai_fn
+        agent_confirmed_ids = {_bare_rule_id(f.rule_id) for f in ai_result.get("findings", [])}
+        agent_dismissed_ids = {_bare_rule_id(d.rule_id) for d in ai_result.get("dismissed_findings", [])}
+        agent_totals["tp"] += len(agent_confirmed_ids & expected_confirmed)
+        agent_totals["fp"] += len(agent_confirmed_ids - expected_confirmed)
+        agent_totals["fn"] += len(expected_confirmed - agent_confirmed_ids)
+
+        if is_near_miss:
+            near_miss_dismissal_expected += len(expected_dismissed)
+            near_miss_dismissal_correct += len(expected_dismissed & agent_dismissed_ids)
+            for rule_id in sorted(expected_dismissed & agent_confirmed_ids):
+                near_miss_false_confirm.append((name, rule_id))
+        else:
+            for rule_id in sorted(expected_confirmed & agent_dismissed_ids):
+                dangerous_false_dismissals.append((name, rule_id))
 
         total_tokens_in += ai_result.get("tokens_in", 0)
         total_tokens_out += ai_result.get("tokens_out", 0)
@@ -96,20 +118,44 @@ def main() -> None:
         for lat in ai_result.get("node_latencies", []):
             total_latency += lat["seconds"]
 
-        rows.append((name, len(gt), len(semgrep_findings), raw_tp, raw_fp, raw_fn, len(ai_findings), ai_tp, ai_fp, ai_fn))
+        rows.append((
+            name, "near-miss" if is_near_miss else "real",
+            len(expected_confirmed), len(expected_dismissed),
+            len(raw_rule_ids), len(agent_confirmed_ids), len(agent_dismissed_ids),
+        ))
 
-    print(f"{'fixture':<52} {'gt':>3} {'raw#':>5} {'raw_tp':>6} {'raw_fp':>6} {'raw_fn':>6}   {'ai#':>4} {'ai_tp':>5} {'ai_fp':>5} {'ai_fn':>5}")
-    for name, n_gt, n_raw, raw_tp, raw_fp, raw_fn, n_ai, ai_tp, ai_fp, ai_fn in rows:
-        print(f"{name:<52} {n_gt:>3} {n_raw:>5} {raw_tp:>6} {raw_fp:>6} {raw_fn:>6}   {n_ai:>4} {ai_tp:>5} {ai_fp:>5} {ai_fn:>5}")
+    header = f"{'fixture':<52} {'type':<10} {'exp_conf':>8} {'exp_dism':>8} {'raw#':>5} {'ai_conf#':>8} {'ai_dism#':>8}"
+    print(header)
+    for name, kind, n_conf, n_dism, n_raw, n_ai_conf, n_ai_dism in rows:
+        print(f"{name:<52} {kind:<10} {n_conf:>8} {n_dism:>8} {n_raw:>5} {n_ai_conf:>8} {n_ai_dism:>8}")
 
     raw_p, raw_r, raw_f1 = _precision_recall_f1(**raw_totals)
-    ai_p, ai_r, ai_f1 = _precision_recall_f1(**ai_totals)
+    agent_p, agent_r, agent_f1 = _precision_recall_f1(**agent_totals)
+    dismissal_recall = near_miss_dismissal_correct / near_miss_dismissal_expected if near_miss_dismissal_expected else 1.0
 
     print()
-    print(f"raw Semgrep (pre-AI):   precision={raw_p:.2f} recall={raw_r:.2f} f1={raw_f1:.2f} "
+    print(f"raw Semgrep:            precision={raw_p:.2f} recall={raw_r:.2f} f1={raw_f1:.2f} "
           f"(tp={raw_totals['tp']} fp={raw_totals['fp']} fn={raw_totals['fn']})")
-    print(f"AI-aware agent:         precision={ai_p:.2f} recall={ai_r:.2f} f1={ai_f1:.2f} "
-          f"(tp={ai_totals['tp']} fp={ai_totals['fp']} fn={ai_totals['fn']})")
+    print(f"AI-aware agent:         precision={agent_p:.2f} recall={agent_r:.2f} f1={agent_f1:.2f} "
+          f"(tp={agent_totals['tp']} fp={agent_totals['fp']} fn={agent_totals['fn']})")
+    print(f"dismissal accuracy (near-miss fixtures only): "
+          f"{near_miss_dismissal_correct}/{near_miss_dismissal_expected} = {dismissal_recall:.2f} "
+          "expected dismissals correctly identified")
+
+    if near_miss_false_confirm:
+        print()
+        print(f"WARNING: {len(near_miss_false_confirm)} near-miss finding(s) the agent CONFIRMED instead of "
+              "dismissing (noisy, not dangerous — a real reviewer would just dismiss it themselves):")
+        for name, rule_id in near_miss_false_confirm:
+            print(f"  - {name}: {rule_id}")
+
+    if dangerous_false_dismissals:
+        print()
+        print(f"WARNING: {len(dangerous_false_dismissals)} REAL finding(s) the agent DISMISSED instead of "
+              "confirming — a genuine weakness the agent talked itself out of flagging:")
+        for name, rule_id in dangerous_false_dismissals:
+            print(f"  - {name}: {rule_id}")
+
     print()
     print(f"tokens_in={total_tokens_in} tokens_out={total_tokens_out} "
           f"estimated_cost_usd={total_cost:.4f} total_latency_s={total_latency:.2f} "
