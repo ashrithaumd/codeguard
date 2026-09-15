@@ -32,13 +32,15 @@ from codeguard.config import Settings, get_settings
 from codeguard.diff.ingest import ingest_pr_diff
 from codeguard.github.auth import get_installation_token
 from codeguard.github.base_tree import fetch_base_tree_python_files
+from codeguard.github.checks import complete_check_run, start_check_run
 from codeguard.github.errors import extract_retry_after
 from codeguard.github.notifications import notify_dead_letter
 from codeguard.github.repo_config import load_repo_config
-from codeguard.github.reviews import post_review
+from codeguard.github.reviews import fetch_review_comments, post_review
+from codeguard.pipeline.feedback import FINGERPRINT_MARKER_RE, fetch_suppressed_fingerprints, fingerprint_marker, record_posted_finding_comments
 from codeguard.pipeline.graph import review_graph
 from codeguard.pipeline.hunk_cache import fetch_cache_hits, write_cache_records
-from codeguard.pipeline.nodes import compute_cache_keys
+from codeguard.pipeline.nodes import _exclude_suppressed, compute_cache_keys
 from codeguard.queue.db import bootstrap_schema, create_pool
 from codeguard.queue.models import Job
 from codeguard.queue.queue import ack, claim_batch, extend_lease, nack
@@ -64,6 +66,15 @@ LEASE_RECOVERY_SECONDS = Histogram(
 )
 REVIEWS_POSTED = Counter("codeguard_worker_reviews_posted_total", "PR Reviews successfully posted (one call, inline comments + summary)")
 REVIEWS_FAILED = Counter("codeguard_worker_reviews_failed_total", "Review-post attempts that raised (token fetch or post itself)")
+CHECK_RUNS_COMPLETED = Counter(
+    "codeguard_worker_check_runs_completed_total",
+    "Check Runs successfully completed, by conclusion.", ["conclusion"],
+)
+CHECK_RUNS_FAILED = Counter(
+    "codeguard_worker_check_runs_failed_total",
+    "Check Run start/complete calls that raised (most commonly: App missing the checks:write permission).",
+    ["stage"],  # stage: start | complete
+)
 
 
 class RateLimited(Exception):
@@ -169,6 +180,11 @@ def _findings_to_review_comments(findings, fix_suggestions) -> list[dict]:
     gets its suggestion-block appended under the finding's own comment
     body — one GitHub review comment, not two, and the suggestion never
     exists without the finding's own explanation right above it.
+
+    Phase 10: every body also carries a hidden fingerprint_marker() —
+    invisible in GitHub's rendered markdown, recovered after posting
+    (see _record_posted_finding_comments) so a later threaded reply can
+    be traced back to the specific finding it's feedback about.
     """
     suggestions_by_fingerprint = {s.fingerprint: s for s in fix_suggestions}
     comments = []
@@ -177,8 +193,32 @@ def _findings_to_review_comments(findings, fix_suggestions) -> list[dict]:
         suggestion = suggestions_by_fingerprint.get(f.fingerprint)
         if suggestion is not None:
             body = f"{body}\n\n{suggestion.suggestion_body}"
+        body = f"{body}\n\n{fingerprint_marker(f.fingerprint)}"
         comments.append({"path": f.file, "line": f.start_line, "side": "RIGHT", "body": body})
     return comments
+
+
+def _check_run_conclusion(all_findings, gate_threshold) -> tuple[str, str, str]:
+    """Phase 10: the Check Run's conclusion, derived purely from max
+    confirmed severity vs repo_config.gate_threshold — the same
+    all_findings set (findings + repo_level_findings) fix_threshold
+    already reads, so "would this have gotten a fix suggestion" and
+    "does this block the check" are computed the same way, just against
+    two independently-configurable thresholds (see RepoConfig.gate_threshold's
+    own docstring for why they're separate).
+    """
+    blocking = [f for f in all_findings if f.severity >= gate_threshold]
+    if not blocking:
+        return "success", "No blocking findings", f"No confirmed finding at or above {gate_threshold.name} severity."
+
+    worst = max(blocking, key=lambda f: f.severity)
+    title = f"{len(blocking)} finding(s) at or above {gate_threshold.name}"
+    summary = (
+        f"Worst: [{worst.source_tool}/{worst.severity.name}] {worst.rule_id} at {worst.file}:{worst.start_line}.\n\n"
+        f"{len(blocking)} confirmed finding(s) at or above the repo's gate_threshold ({gate_threshold.name}). "
+        "See the PR Review comments for details."
+    )
+    return "failure", title, summary
 
 
 async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -> bool:
@@ -210,6 +250,21 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
     settings = get_settings()
 
     repo_config = load_repo_config(token, owner, repo, base_ref)
+
+    # Started as early as possible — before the potentially 100+ second
+    # ingestion+review-graph run below — purely so the PR shows
+    # "CodeGuard Review — in progress" instead of nothing while a
+    # webhook-triggered review is in flight. A missing checks:write
+    # permission (or any other failure) degrades to "no check run for
+    # this PR," never a failed review — the PR Review below is the
+    # actual content and is always attempted regardless.
+    try:
+        check_run_id = start_check_run(token, owner, repo, head_sha)
+    except requests.HTTPError:
+        CHECK_RUNS_FAILED.labels(stage="start").inc()
+        logger.warning("failed to start check run for pr=%s (missing checks:write permission?)", pr_number, exc_info=True)
+        check_run_id = None
+
     diff_result = await ingest_pr_diff(token, owner, repo, pr_number, head_sha, repo_config, settings)
     _log_diff_ingestion_result(pr_number, repo_config, diff_result)
 
@@ -237,12 +292,19 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
     hunk_cache_hits = await fetch_cache_hits(pool, owner, repo, cache_keys)
     logger.info("hunk cache pr=%s: %d key(s) checked, %d hit", pr_number, len(cache_keys), len(hunk_cache_hits))
 
+    # Phase 10: fingerprints this repo has already marked false_positive
+    # via a reply on a past PR — see codeguard/pipeline/feedback.py.
+    suppressed_fingerprints = frozenset(await fetch_suppressed_fingerprints(pool, owner, repo))
+    if suppressed_fingerprints:
+        logger.info("pr=%s: %d suppressed fingerprint(s) for %s/%s", pr_number, len(suppressed_fingerprints), owner, repo)
+
     initial_state = {
         "owner": owner, "repo": repo, "pr_number": pr_number, "head_sha": head_sha,
         "installation_id": installation_id, "repo_config": repo_config,
         "files": diff_result.file_contents, "patches": diff_result.patches,
         "tool_findings": tool_findings, "base_tree_files": base_tree_files,
         "hunk_cache_hits": hunk_cache_hits, "cache_writes": [],
+        "suppressed_fingerprints": suppressed_fingerprints,
         "touches_ai_code": False,
         "findings": [], "repo_level_findings": [], "dismissed_findings": [], "fix_suggestions": [],
         "should_fix": False, "summary": "", "inline_findings": [],
@@ -262,7 +324,7 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
 
     comments = _findings_to_review_comments(final_state["inline_findings"], final_state["fix_suggestions"])
     try:
-        post_review(token, owner, repo, pr_number, head_sha, final_state["summary"], comments)
+        review_id = post_review(token, owner, repo, pr_number, head_sha, final_state["summary"], comments)
     except requests.HTTPError as exc:
         REVIEWS_FAILED.inc()
         retry_after = extract_retry_after(exc.response) if exc.response is not None else None
@@ -272,6 +334,32 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
 
     await _record_review_posted(pool, job)
     REVIEWS_POSTED.inc()
+
+    # Phase 10: best-effort — a failure here only costs future feedback
+    # on this PR's comments (the reply -> fingerprint lookup will simply
+    # miss), never the review itself, which already posted successfully.
+    if comments:
+        try:
+            posted = fetch_review_comments(token, owner, repo, pr_number, review_id)
+            comment_fingerprints = {}
+            for c in posted:
+                match = FINGERPRINT_MARKER_RE.search(c["body"])
+                if match:
+                    comment_fingerprints[c["id"]] = match.group(1)
+            await record_posted_finding_comments(pool, owner, repo, pr_number, comment_fingerprints)
+        except requests.HTTPError:
+            logger.warning("failed to fetch/record posted finding comments for pr=%s", pr_number, exc_info=True)
+
+    if check_run_id is not None:
+        all_findings = _exclude_suppressed(final_state["findings"] + final_state["repo_level_findings"], suppressed_fingerprints)
+        conclusion, title, summary = _check_run_conclusion(all_findings, repo_config.gate_threshold)
+        try:
+            complete_check_run(token, owner, repo, check_run_id, conclusion=conclusion, title=title, summary=summary)
+            CHECK_RUNS_COMPLETED.labels(conclusion=conclusion).inc()
+        except requests.HTTPError:
+            CHECK_RUNS_FAILED.labels(stage="complete").inc()
+            logger.warning("failed to complete check run %s for pr=%s", check_run_id, pr_number, exc_info=True)
+
     return True
 
 

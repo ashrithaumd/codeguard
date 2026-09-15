@@ -96,6 +96,34 @@ def test_call_agent_degenerate_output_fails_validation():
     assert result.error is not None
 
 
+def test_call_agent_does_not_wrap_client_when_tracing_disabled(monkeypatch):
+    """Default/test env: LANGSMITH_TRACING unset — wrap_anthropic should
+    never even be invoked, which is also what keeps every mock-based
+    test in this file working (see llm_call.py's own _build_client
+    docstring for why wrapping a mock breaks it)."""
+    monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+    with patch("codeguard.pipeline.llm_call.anthropic.Anthropic") as mock_cls, \
+         patch("codeguard.pipeline.llm_call.wrap_anthropic") as mock_wrap:
+        mock_cls.return_value.messages.create.return_value = _fake_response("[]")
+        result = _call()
+
+    assert result.ok
+    mock_wrap.assert_not_called()
+
+
+def test_call_agent_adds_langsmith_extra_only_when_tracing_enabled(monkeypatch):
+    monkeypatch.setenv("LANGSMITH_TRACING", "true")
+    with patch("codeguard.pipeline.llm_call.anthropic.Anthropic") as mock_cls, \
+         patch("codeguard.pipeline.llm_call.wrap_anthropic") as mock_wrap:
+        mock_wrap.return_value = mock_cls.return_value
+        mock_cls.return_value.messages.create.return_value = _fake_response("[]")
+        _call()
+
+    mock_wrap.assert_called_once()
+    _, kwargs = mock_cls.return_value.messages.create.call_args
+    assert kwargs["langsmith_extra"]["tags"] == ["test-agent"]
+
+
 def test_call_agent_oversized_input_skips_the_call_entirely():
     with patch("codeguard.pipeline.llm_call.anthropic.Anthropic") as mock_cls:
         result = _call(user_content="x " * 50_000)

@@ -679,6 +679,21 @@ def check_findings(state: ReviewState) -> dict:
     return {}
 
 
+def _exclude_suppressed(findings: list[Finding], suppressed_fingerprints: frozenset[str]) -> list[Finding]:
+    """Phase 10: a fingerprint a repo maintainer has already marked
+    false_positive (via a reply on a past PR — see
+    codeguard/pipeline/feedback.py) never resurfaces — not inline, not
+    in the summary body, not counted toward fix_threshold or the Check
+    Run's gate_threshold. Applied wherever a node is about to decide
+    something FROM a findings list, not by mutating state["findings"]
+    itself (LangGraph's operator.add reducer only ever appends to that
+    list; nothing removes from it mid-graph — see state.py's own note).
+    """
+    if not suppressed_fingerprints:
+        return findings
+    return [f for f in findings if f.fingerprint not in suppressed_fingerprints]
+
+
 def route_after_fanin(state: ReviewState) -> str | list[Send]:
     """Conditional edge doing double duty: decides whether ANY
     confirmed finding meets fix_threshold, and if so, fans out
@@ -689,7 +704,7 @@ def route_after_fanin(state: ReviewState) -> str | list[Send]:
     same shape route_to_file_reviews-style fan-out already uses when it
     has nothing to dispatch.
     """
-    all_findings = state["findings"] + state["repo_level_findings"]
+    all_findings = _exclude_suppressed(state["findings"] + state["repo_level_findings"], state["suppressed_fingerprints"])
     threshold = state["repo_config"].fix_threshold
     qualifying = [f for f in all_findings if f.severity >= threshold and f.file in state["files"]]
     if not qualifying:
@@ -857,7 +872,7 @@ def summarize(state: ReviewState) -> dict:
     counts only. Always produces a body, even with zero findings.
     """
     settings = get_settings()
-    all_findings = state["findings"] + state["repo_level_findings"]
+    all_findings = _exclude_suppressed(state["findings"] + state["repo_level_findings"], state["suppressed_fingerprints"])
     dismissed = state["dismissed_findings"]
 
     seen: set[str] = set()

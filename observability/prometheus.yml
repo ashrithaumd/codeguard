@@ -1,0 +1,42 @@
+# Phase 10: scrapes api's and worker's /metrics endpoints. Local dev
+# targets (container DNS names on the docker-compose network) are
+# active by default. Once the Azure Container Apps deployment is live
+# (see docs/AZURE_DEPLOYMENT.md), add its public FQDNs as additional
+# static_configs targets below (or duplicate the job with a distinct
+# job_name like "codeguard-api-azure") — Prometheus doesn't do
+# env-var interpolation in this file, so that edit is manual, not
+# scripted, on purpose (this file is committed; production hostnames
+# usually shouldn't silently vary by environment without a visible diff).
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: codeguard-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8000"]
+        labels:
+          env: local
+
+  - job_name: codeguard-worker
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["worker:9000"]
+        labels:
+          env: local
+
+  # --- Azure targets: uncomment and fill in after deployment ---
+  # - job_name: codeguard-api-azure
+  #   scheme: https
+  #   metrics_path: /metrics
+  #   static_configs:
+  #     - targets: ["codeguard-api.<region>.azurecontainerapps.io"]
+  #       labels:
+  #         env: azure
+  # Note: worker has no public ingress in the Azure deployment (see
+  # docs/AZURE_DEPLOYMENT.md) — its :9000 metrics port isn't reachable
+  # from outside the Container Apps environment. Enable internal
+  # ingress + a private scrape path (e.g. a VNet-joined Prometheus, or
+  # Container Apps' own built-in metrics export to Azure Monitor)
+  # if worker-level metrics are needed from outside Azure; the
+  # dashboard's worker panels will simply show "no data" without it.

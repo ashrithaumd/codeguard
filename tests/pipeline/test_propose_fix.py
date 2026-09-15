@@ -26,6 +26,7 @@ def test_route_after_fanin_returns_summarize_when_nothing_qualifies():
     state = {
         "findings": [make_finding(severity=Severity.LOW)], "repo_level_findings": [],
         "repo_config": RepoConfig(fix_threshold=Severity.HIGH), "files": {"a.py": "x"}, "owner": "o", "repo": "r",
+        "suppressed_fingerprints": frozenset(),
     }
 
     assert route_after_fanin(state) == "summarize"
@@ -39,6 +40,7 @@ def test_route_after_fanin_dispatches_one_send_per_qualifying_file():
         "findings": [high_a, high_b, low_c], "repo_level_findings": [],
         "repo_config": RepoConfig(fix_threshold=Severity.HIGH),
         "files": {"a.py": "x", "b.py": "y", "c.py": "z"}, "patches": {}, "owner": "o", "repo": "r",
+        "suppressed_fingerprints": frozenset(),
     }
 
     result = route_after_fanin(state)
@@ -83,6 +85,20 @@ def test_propose_fix_call_failure_still_marks_should_fix():
 
     assert result["should_fix"] is True
     assert "fix_suggestions" not in result
+
+
+def test_route_after_fanin_excludes_a_suppressed_fingerprint():
+    """Phase 10: a suppressed fingerprint doesn't qualify for a fix
+    suggestion even if its severity would otherwise meet fix_threshold."""
+    suppressed = make_finding(file="a.py", severity=Severity.CRITICAL)
+    state = {
+        "findings": [suppressed], "repo_level_findings": [],
+        "repo_config": RepoConfig(fix_threshold=Severity.HIGH),
+        "files": {"a.py": "x"}, "patches": {}, "owner": "o", "repo": "r",
+        "suppressed_fingerprints": frozenset({suppressed.fingerprint}),
+    }
+
+    assert route_after_fanin(state) == "summarize"
 
 
 def test_propose_fix_drops_a_suggestion_for_a_line_outside_the_diff():

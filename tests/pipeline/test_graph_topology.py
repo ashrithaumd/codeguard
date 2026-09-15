@@ -51,6 +51,7 @@ def _base_state(files, tool_findings=None, repo_config=None):
         },
         "tool_findings": tool_findings or [], "base_tree_files": {},
         "hunk_cache_hits": {}, "cache_writes": [],
+        "suppressed_fingerprints": frozenset(),
         "touches_ai_code": False,
         "findings": [], "repo_level_findings": [], "dismissed_findings": [], "fix_suggestions": [],
         "should_fix": False, "summary": "", "inline_findings": [],

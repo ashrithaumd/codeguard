@@ -79,6 +79,17 @@ class ReviewState(TypedDict):
     patches: dict[str, str]      # path -> GitHub patch text
     tool_findings: list[Finding]  # Phase 4's pre-computed findings for the whole PR, set once
 
+    # Phase 10: fingerprints a repo maintainer has marked false_positive
+    # via a reply on a past PR (codeguard/pipeline/feedback.py) — fetched
+    # ONCE by worker/main.py before the graph runs, same "set once, not a
+    # reducer" shape as hunk_cache_hits. route_after_fanin and summarize
+    # both exclude these before deciding fix eligibility / what to show;
+    # worker/main.py applies the identical exclusion again on
+    # final_state's own findings before computing the Check Run
+    # conclusion, since that reads state after the graph has already
+    # returned (see _check_run_conclusion's own call site).
+    suppressed_fingerprints: frozenset[str]
+
     # Phase 6: bounded Python-file sample from the PR's BASE branch (see
     # codeguard/github/base_tree.py), used only by review_repo_level's
     # eval-hygiene checks. Empty dict when repo_config.enable_ai_aware is

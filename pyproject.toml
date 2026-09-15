@@ -44,14 +44,13 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-# Deliberately scoped to just the new queue tests. tests/e2e_test.py and
-# tests/test_guardrails.py are old script-style "tests" (top-level code that
-# runs on import, no test_ functions) predating real pytest usage in this
-# project — letting pytest's default collection reach them would execute
-# that top-level code (including, for e2e_test.py, a real live-API pipeline
-# run if RUN_PIPELINE is set) as a side effect of collection, not a deliberate
-# test run. Narrowing testpaths avoids that entirely without needing to fix
-# those files in this phase.
+# Phase 10 removed v1's tests/e2e_test.py and tests/test_guardrails.py
+# (old script-style "tests" predating real pytest usage, which this
+# testpaths list originally existed to avoid collecting) along with the
+# rest of v1 — every real test now lives under one of these, so this
+# could become the default (bare `pytest`) again, but there's no
+# benefit to widening it back until something actually needs to live
+# outside these directories.
 testpaths = ["tests/queue", "tests/diff", "tests/tools", "tests/github", "tests/pipeline"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

@@ -181,8 +181,21 @@ class RepoConfig(BaseModel):
     max_tokens_per_pr: int = 40_000
     max_wall_clock_s: int = 120
     ignored_paths: list[str] = Field(default_factory=list)
+    # Phase 10: the GitHub Check Run's conclusion — "failure" (blocks a
+    # merge, if the repo turns this into a required check in its branch
+    # protection rules) when ANY confirmed finding (across every agent,
+    # same set fix_threshold reads) is >= this severity, else "success".
+    # Deliberately its own field, not reusing fix_threshold: a repo
+    # might want fixes proposed at HIGH but only actually GATE a merge
+    # at CRITICAL — conflating the two would force one severity to serve
+    # both a "trust this enough to auto-suggest a fix" decision and a
+    # "trust this enough to block a human's merge" decision, which are
+    # different bars. Defaults conservative (CRITICAL only) since this
+    # is a new, unproven-in-the-wild feature — a repo can tighten it
+    # once they trust the false-positive rate for their own codebase.
+    gate_threshold: Severity = Severity.CRITICAL
 
-    @field_validator("fix_threshold", mode="before")
+    @field_validator("fix_threshold", "gate_threshold", mode="before")
     @classmethod
     def _parse_severity_string(cls, v):
         """A human writing .codeguard.yml writes `fix_threshold: high`,

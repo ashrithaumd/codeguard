@@ -5,6 +5,12 @@ from prometheus_client import Counter, Histogram
 
 from codeguard.api.signature import is_valid_signature
 from codeguard.config import get_settings
+from codeguard.pipeline.feedback import (
+    fetch_fingerprint_for_comment,
+    parse_feedback_signal,
+    record_feedback,
+    suppress_fingerprint,
+)
 from codeguard.queue.queue import enqueue
 
 logger = logging.getLogger(__name__)
@@ -25,6 +31,15 @@ webhooks_rejected_total = Counter(
 webhook_ack_latency_seconds = Histogram(
     "codeguard_webhook_ack_latency_seconds",
     "Time from receiving a webhook delivery to acknowledging it.",
+)
+feedback_signals_total = Counter(
+    "codeguard_feedback_signals_total",
+    "Recognized feedback comments, by signal and which webhook event carried them.",
+    ["signal", "source_event"],
+)
+feedback_suppressions_total = Counter(
+    "codeguard_feedback_suppressions_total",
+    "Fingerprints newly suppressed via a false_positive reply.",
 )
 
 
@@ -91,5 +106,83 @@ async def webhook(request: Request, response: Response):
 
             return {"status": "ok"}
 
+        if event == "pull_request_review_comment":
+            await _handle_feedback_comment(request, payload, event)
+            return {"status": "ok"}
+
+        if event == "issue_comment":
+            await _handle_feedback_comment(request, payload, event)
+            return {"status": "ok"}
+
         logger.info("Ignoring unhandled event type: %s", event)
         return {"status": "ignored"}
+
+
+async def _handle_feedback_comment(request: Request, payload: dict, event: str) -> None:
+    """Phase 10 feedback loop. Handles both events that can carry a
+    reply to one of CodeGuard's own comments:
+
+    - pull_request_review_comment (action="created"): a threaded reply
+      under one of our INLINE finding comments. `comment.in_reply_to_id`
+      is the parent comment's id — if that parent is one we posted (see
+      posted_finding_comments, populated right after post_review()),
+      the reply is tied to a specific fingerprint and a "false_positive"
+      signal actually suppresses it for this repo.
+    - issue_comment (action="created"): general PR-conversation comment,
+      never threaded to a specific inline comment — GitHub gives no way
+      to associate it with one finding. Recorded (fingerprint=None) for
+      visibility/metrics only; never triggers suppression.
+
+    Deliberately best-effort and NEVER raises back to the webhook
+    handler: a DB hiccup here should never turn into a 500 on a webhook
+    delivery GitHub would otherwise just retry pointlessly (this isn't
+    the core review flow, unlike the pull_request branch above).
+
+    NOTE on 👍/👎: GitHub has no webhook event for someone adding an
+    emoji REACTION to a comment (checked against GitHub's own webhook
+    event catalog, not assumed) — only these two comment-created events
+    exist. What this actually recognizes is a THUMBS EMOJI TYPED INTO A
+    REPLY's text (or the phrase "false positive"), not the reaction
+    picker. Capturing true reactions would need polling each posted
+    comment's reactions endpoint, which isn't implemented here.
+    """
+    comment = payload.get("comment")
+    if payload.get("action") != "created" or comment is None:
+        return
+    if comment.get("user", {}).get("type") == "Bot":
+        return  # never treat our own (or any bot's) comment as feedback
+
+    body = comment.get("body", "")
+    signal = parse_feedback_signal(body)
+    if signal is None:
+        return
+
+    owner = payload["repository"]["owner"]["login"]
+    repo = payload["repository"]["name"]
+    commenter = comment.get("user", {}).get("login", "unknown")
+    comment_id = comment["id"]
+    pr_number = payload.get("pull_request", {}).get("number") or payload.get("issue", {}).get("number")
+    pool = request.app.state.pool
+
+    fingerprint = None
+    if event == "pull_request_review_comment":
+        in_reply_to = comment.get("in_reply_to_id")
+        if in_reply_to is not None:
+            fingerprint = await fetch_fingerprint_for_comment(pool, owner, repo, in_reply_to)
+
+    try:
+        await record_feedback(
+            pool, owner=owner, repo=repo, fingerprint=fingerprint, pr_number=pr_number,
+            comment_id=comment_id, commenter=commenter, signal=signal, body=body, source_event=event,
+        )
+        feedback_signals_total.labels(signal=signal, source_event=event).inc()
+
+        if signal == "false_positive" and fingerprint is not None:
+            await suppress_fingerprint(
+                pool, owner=owner, repo=repo, fingerprint=fingerprint,
+                reason=f"reply from {commenter} on PR #{pr_number}: {body[:200]}", suppressed_by=commenter,
+            )
+            feedback_suppressions_total.inc()
+            logger.info("suppressed fingerprint %s for %s/%s (reported by %s)", fingerprint, owner, repo, commenter)
+    except Exception:
+        logger.warning("failed to record feedback for %s/%s comment=%s", owner, repo, comment_id, exc_info=True)

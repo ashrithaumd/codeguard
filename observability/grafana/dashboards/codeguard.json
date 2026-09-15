@@ -1,0 +1,166 @@
+{
+  "title": "CodeGuard",
+  "uid": "codeguard-overview",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "timezone": "browser",
+  "panels": [
+    { "type": "row", "title": "Queue", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }, "id": 100 },
+    {
+      "id": 1, "type": "timeseries", "title": "Queue depth by status",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "targets": [{ "expr": "codeguard_queue_depth", "legendFormat": "{{status}}" }]
+    },
+    {
+      "id": 2, "type": "timeseries", "title": "Active leases vs dead-letter depth",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "targets": [
+        { "expr": "codeguard_queue_active_leases", "legendFormat": "active leases" },
+        { "expr": "codeguard_queue_dead_letter_depth", "legendFormat": "dead-letters" }
+      ]
+    },
+    {
+      "id": 3, "type": "stat", "title": "Dead-letters (current)",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 9 },
+      "targets": [{ "expr": "codeguard_queue_dead_letter_depth" }],
+      "fieldConfig": { "defaults": { "thresholds": { "steps": [
+        { "color": "green", "value": null }, { "color": "red", "value": 1 }
+      ] } } }
+    },
+    {
+      "id": 4, "type": "timeseries", "title": "Lease recovery time (reaper -> reclaim)",
+      "gridPos": { "h": 8, "w": 12, "x": 4, "y": 9 },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(codeguard_worker_lease_recovery_seconds_bucket[5m])) by (le))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.50, sum(rate(codeguard_worker_lease_recovery_seconds_bucket[5m])) by (le))", "legendFormat": "p50" }
+      ]
+    },
+    {
+      "id": 5, "type": "timeseries", "title": "Heartbeats vs leases lost (rate)",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 9 },
+      "targets": [
+        { "expr": "rate(codeguard_worker_heartbeats_total[5m])", "legendFormat": "heartbeats/s" },
+        { "expr": "rate(codeguard_worker_leases_lost_total[5m])", "legendFormat": "leases lost/s" }
+      ]
+    },
+
+    { "type": "row", "title": "Review latency & throughput", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 }, "id": 101 },
+    {
+      "id": 6, "type": "timeseries", "title": "Job processing time (p50/p95/p99)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(codeguard_worker_job_processing_seconds_bucket[5m])) by (le, type))", "legendFormat": "p50 {{type}}" },
+        { "expr": "histogram_quantile(0.95, sum(rate(codeguard_worker_job_processing_seconds_bucket[5m])) by (le, type))", "legendFormat": "p95 {{type}}" },
+        { "expr": "histogram_quantile(0.99, sum(rate(codeguard_worker_job_processing_seconds_bucket[5m])) by (le, type))", "legendFormat": "p99 {{type}}" }
+      ]
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "Reviews posted vs failed (rate)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "targets": [
+        { "expr": "rate(codeguard_worker_reviews_posted_total[5m])", "legendFormat": "posted/s" },
+        { "expr": "rate(codeguard_worker_reviews_failed_total[5m])", "legendFormat": "failed/s" }
+      ]
+    },
+    {
+      "id": 8, "type": "timeseries", "title": "Webhook throughput (received/verified/rejected)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 26 },
+      "targets": [
+        { "expr": "rate(codeguard_webhooks_received_total[5m])", "legendFormat": "received/s" },
+        { "expr": "rate(codeguard_webhooks_verified_total[5m])", "legendFormat": "verified/s" },
+        { "expr": "rate(codeguard_webhooks_rejected_total[5m])", "legendFormat": "rejected/s" }
+      ]
+    },
+    {
+      "id": 9, "type": "timeseries", "title": "Agent call latency by agent (p95)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 26 },
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(codeguard_agent_call_duration_seconds_bucket[5m])) by (le, agent))", "legendFormat": "{{agent}}" }
+      ]
+    },
+
+    { "type": "row", "title": "Tokens & cost per PR", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 34 }, "id": 102 },
+    {
+      "id": 10, "type": "stat", "title": "Avg cost per reviewed PR (last 1h)",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 35 },
+      "targets": [{ "expr": "sum(increase(codeguard_agent_cost_usd_total[1h])) / clamp_min(sum(increase(codeguard_worker_reviews_posted_total[1h])), 1)" }],
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 4 } }
+    },
+    {
+      "id": 11, "type": "stat", "title": "Avg tokens per reviewed PR (last 1h)",
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 35 },
+      "targets": [{ "expr": "sum(increase(codeguard_agent_tokens_total[1h])) / clamp_min(sum(increase(codeguard_worker_reviews_posted_total[1h])), 1)" }],
+      "fieldConfig": { "defaults": { "decimals": 0 } }
+    },
+    {
+      "id": 12, "type": "timeseries", "title": "Cost by agent (rate, $/s)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 35 },
+      "targets": [{ "expr": "sum(rate(codeguard_agent_cost_usd_total[5m])) by (agent)", "legendFormat": "{{agent}}" }],
+      "fieldConfig": { "defaults": { "unit": "currencyUSD" } }
+    },
+    {
+      "id": 13, "type": "timeseries", "title": "Tokens by agent and direction (rate)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 40 },
+      "targets": [{ "expr": "sum(rate(codeguard_agent_tokens_total[5m])) by (agent, direction)", "legendFormat": "{{agent}}/{{direction}}" }]
+    },
+    {
+      "id": 14, "type": "timeseries", "title": "Agent call failures (rate)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 43 },
+      "targets": [{ "expr": "sum(rate(codeguard_agent_call_failures_total[5m])) by (agent)", "legendFormat": "{{agent}}" }]
+    },
+
+    { "type": "row", "title": "Cache hit rate", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 51 }, "id": 103 },
+    {
+      "id": 15, "type": "timeseries", "title": "Anthropic prompt-cache hit rate, by agent",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 52 },
+      "targets": [{
+        "expr": "sum(rate(codeguard_prompt_cache_hit_total{outcome=\"hit\"}[15m])) by (agent) / sum(rate(codeguard_prompt_cache_hit_total[15m])) by (agent)",
+        "legendFormat": "{{agent}}"
+      }],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "max": 1, "min": 0 } }
+    },
+    {
+      "id": 16, "type": "timeseries", "title": "Hunk-result cache hit rate, by agent",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 52 },
+      "targets": [{
+        "expr": "sum(rate(codeguard_hunk_cache_total{outcome=\"hit\"}[15m])) by (agent) / sum(rate(codeguard_hunk_cache_total[15m])) by (agent)",
+        "legendFormat": "{{agent}}"
+      }],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "max": 1, "min": 0 } }
+    },
+
+    { "type": "row", "title": "Guardrails", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 60 }, "id": 104 },
+    {
+      "id": 17, "type": "stat", "title": "Injection attempts blocked (last 24h)",
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 61 },
+      "targets": [{ "expr": "sum(increase(codeguard_injection_attempts_total[24h]))" }],
+      "fieldConfig": { "defaults": { "thresholds": { "steps": [
+        { "color": "green", "value": null }, { "color": "orange", "value": 1 }
+      ] } } }
+    },
+    {
+      "id": 18, "type": "timeseries", "title": "Injection attempts by pattern (rate)",
+      "gridPos": { "h": 8, "w": 9, "x": 6, "y": 61 },
+      "targets": [{ "expr": "sum(rate(codeguard_injection_attempts_total[15m])) by (pattern)", "legendFormat": "{{pattern}}" }]
+    },
+    {
+      "id": 19, "type": "timeseries", "title": "PII guardrail flags by type (rate)",
+      "gridPos": { "h": 8, "w": 9, "x": 15, "y": 61 },
+      "targets": [{ "expr": "sum(rate(codeguard_guardrail_flags_total[15m])) by (flag_type)", "legendFormat": "{{flag_type}}" }]
+    },
+
+    { "type": "row", "title": "Deterministic tools & findings", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 69 }, "id": 105 },
+    {
+      "id": 20, "type": "timeseries", "title": "Findings by tool and severity (rate)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 70 },
+      "targets": [{ "expr": "sum(rate(codeguard_tools_findings_total[15m])) by (tool, severity)", "legendFormat": "{{tool}}/{{severity}}" }]
+    },
+    {
+      "id": 21, "type": "timeseries", "title": "Tool failures (rate)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 70 },
+      "targets": [{ "expr": "sum(rate(codeguard_tools_failures_total[15m])) by (tool)", "legendFormat": "{{tool}}" }]
+    }
+  ]
+}

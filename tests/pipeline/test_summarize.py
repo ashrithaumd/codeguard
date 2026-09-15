@@ -28,7 +28,7 @@ def _mock_summary_call(*, agent, **kwargs):
     return AgentCallResult(raw_text="Mock intro.", tokens_in=1, tokens_out=1, estimated_cost_usd=0.0, latency_s=0.0)
 
 
-def _state(findings, patches, files=None, repo_config=None, dismissed_findings=None):
+def _state(findings, patches, files=None, repo_config=None, dismissed_findings=None, suppressed_fingerprints=None):
     return {
         "owner": "o", "repo": "r", "pr_number": 1, "head_sha": "sha", "installation_id": 1,
         "repo_config": repo_config or RepoConfig(),
@@ -40,6 +40,7 @@ def _state(findings, patches, files=None, repo_config=None, dismissed_findings=N
         "fix_suggestions": [],
         "should_fix": False, "summary": "", "inline_findings": [],
         "tokens_in": 0, "tokens_out": 0, "estimated_cost_usd": 0.0, "node_latencies": [],
+        "suppressed_fingerprints": suppressed_fingerprints or frozenset(),
     }
 
 
@@ -159,6 +160,31 @@ def test_high_confidence_finding_is_still_inlined():
     result = _summarize(_state([f], patches))
 
     assert len(result["inline_findings"]) == 1
+
+
+def test_suppressed_fingerprint_never_appears_inline_or_in_summary():
+    """Phase 10: a fingerprint a maintainer already marked false_positive
+    on a past PR is excluded before dedup — not demoted like a
+    low-confidence or out-of-diff finding, fully absent."""
+    f = make_finding(file="a.py", line=3, rule_id="B105", message="suppressed one")
+    patches = {"a.py": "@@ -1,10 +1,10 @@\n context"}
+
+    result = _summarize(_state([f], patches, suppressed_fingerprints=frozenset({f.fingerprint})))
+
+    assert result["inline_findings"] == []
+    assert "B105" not in result["summary"]
+    assert "no issues found" in result["summary"]
+
+
+def test_unsuppressed_fingerprint_alongside_a_suppressed_one_still_shows():
+    suppressed = make_finding(file="a.py", line=3, rule_id="B105", message="suppressed one")
+    real = make_finding(file="a.py", line=5, rule_id="B608", message="real issue")
+    patches = {"a.py": "@@ -1,10 +1,10 @@\n context"}
+
+    result = _summarize(_state([suppressed, real], patches, suppressed_fingerprints=frozenset({suppressed.fingerprint})))
+
+    assert len(result["inline_findings"]) == 1
+    assert result["inline_findings"][0].rule_id == "B608"
 
 
 def test_no_dismissed_section_when_there_are_no_dismissals():

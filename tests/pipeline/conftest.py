@@ -40,7 +40,7 @@ async def pool():
     async with p.connection() as conn:
         for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
             await conn.execute(path.read_text())
-        await conn.execute("TRUNCATE hunk_findings")
+        await conn.execute("TRUNCATE hunk_findings, posted_finding_comments, finding_feedback, suppressed_findings")
     yield p
     await p.close()
 

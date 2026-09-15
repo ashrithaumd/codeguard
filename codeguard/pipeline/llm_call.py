@@ -15,10 +15,12 @@ network failure.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 
 import anthropic
+from langsmith.wrappers import wrap_anthropic
 
 from codeguard.pipeline import guardrails
 from codeguard.pipeline.metrics import (
@@ -32,6 +34,41 @@ from codeguard.pipeline.metrics import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _tracing_enabled() -> bool:
+    return os.environ.get("LANGSMITH_TRACING", "").strip().lower() in ("true", "1")
+
+
+def _build_client(api_key: str) -> tuple[anthropic.Anthropic, bool]:
+    """Phase 10: LangSmith tracing, wired at the one real call site
+    rather than switching to langchain's ChatAnthropic — this pipeline
+    deliberately calls the raw Anthropic SDK directly for precise
+    cache-control and cost accounting (see this module's own docstring
+    history), and wrap_anthropic() traces a raw client without changing
+    any of that.
+
+    Only wraps when LANGSMITH_TRACING is actually on (see .env.example)
+    — not just because it's pointless overhead otherwise, but because
+    wrap_anthropic() mutates the client object in a way that broke this
+    module's own mocked-client unit tests (it doesn't behave as a
+    transparent passthrough on a test double the way its "no-op when
+    unconfigured" framing might suggest). Checking the env var directly
+    ourselves, rather than trusting the wrapped client to no-op
+    cleanly, keeps every existing mock-based test working unchanged.
+    Wrapping failing at all when tracing IS on never blocks a real
+    review — falls back to the unwrapped client, same "observability is
+    best-effort, never load-bearing" discipline as the rest of this
+    pipeline.
+    """
+    raw = anthropic.Anthropic(api_key=api_key)
+    if not _tracing_enabled():
+        return raw, False
+    try:
+        return wrap_anthropic(raw), True
+    except Exception:
+        logger.warning("langsmith wrap_anthropic failed, proceeding without tracing", exc_info=True)
+        return raw, False
 
 # Published per-million-token pricing by model — a cost *signal* for
 # observability (state["estimated_cost_usd"], the per-agent metric),
@@ -139,19 +176,25 @@ def call_agent(
             guardrail_flags=flags, injection_attempt_fingerprints=injection_fingerprints,
         )
 
-    client = anthropic.Anthropic(api_key=api_key)
+    client, traced = _build_client(api_key)
+    create_kwargs = dict(
+        model=model,
+        system=[
+            {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}},
+            {"type": "text", "text": repo_context, "cache_control": {"type": "ephemeral"}},
+        ],
+        messages=[{"role": "user", "content": user_content}],
+        max_tokens=max_tokens,
+        timeout=timeout,
+    )
+    if traced:
+        # Only added once wrap_anthropic actually succeeded — the raw
+        # (unwrapped) client raises on this kwarg, it doesn't ignore it.
+        create_kwargs["langsmith_extra"] = {"tags": [agent], "metadata": {"repo_context": repo_context}}
+
     start = time.perf_counter()
     try:
-        response = client.messages.create(
-            model=model,
-            system=[
-                {"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}},
-                {"type": "text", "text": repo_context, "cache_control": {"type": "ephemeral"}},
-            ],
-            messages=[{"role": "user", "content": user_content}],
-            max_tokens=max_tokens,
-            timeout=timeout,
-        )
+        response = client.messages.create(**create_kwargs)
     except Exception as exc:
         elapsed = time.perf_counter() - start
         agent_call_duration_seconds.labels(agent=agent).observe(elapsed)
