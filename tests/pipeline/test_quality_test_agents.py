@@ -12,6 +12,7 @@ from unittest.mock import patch
 from codeguard.pipeline.llm_call import AgentCallResult
 from codeguard.pipeline.models import CachedAgentResult
 from codeguard.pipeline.nodes import review_quality, review_test, route_to_quality_reviews, route_to_test_reviews
+from codeguard.severity import Severity
 from tests.pipeline.conftest import make_finding
 
 
@@ -108,3 +109,61 @@ def test_review_test_hunk_cache_hit_skips_the_call():
 
     mock_call.assert_not_called()
     assert result["findings"] == [cached_finding]
+
+
+# --- Phase 8: noise budget (Quality/Test are the only ungrounded agents) ---
+
+def test_review_quality_parses_confidence_field():
+    items = [{"line": 1, "severity": "low", "category": "naming", "message": "x", "confidence": 0.4}]
+
+    with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)):
+        result = review_quality(_hunk_state())
+
+    assert result["findings"][0].confidence == 0.4
+
+
+def test_review_quality_missing_confidence_defaults_to_1():
+    items = [{"line": 1, "severity": "low", "category": "naming", "message": "x"}]
+
+    with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)):
+        result = review_quality(_hunk_state())
+
+    assert result["findings"][0].confidence == 1.0
+
+
+def test_review_quality_clamps_confidence_into_0_1_range():
+    items = [{"line": 1, "severity": "low", "category": "naming", "message": "a", "confidence": 5.0}]
+
+    with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)):
+        result = review_quality(_hunk_state())
+
+    assert result["findings"][0].confidence == 1.0
+
+
+def test_review_quality_clamps_severity_to_settings_max_severity():
+    """An LLM's own opinion is never HIGH/CRITICAL, no matter what it
+    reports — settings.quality_test_max_severity defaults to MEDIUM."""
+    items = [{"line": 1, "severity": "critical", "category": "structure", "message": "x"}]
+
+    with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)):
+        result = review_quality(_hunk_state())
+
+    assert result["findings"][0].severity == Severity.MEDIUM
+
+
+def test_review_quality_caps_findings_per_hunk_keeping_the_most_severe_and_confident():
+    items = [
+        {"line": 1, "severity": "low", "category": "naming", "message": "1", "confidence": 0.9},
+        {"line": 1, "severity": "medium", "category": "naming", "message": "2", "confidence": 0.9},
+        {"line": 1, "severity": "low", "category": "naming", "message": "3", "confidence": 0.1},
+        {"line": 1, "severity": "low", "category": "naming", "message": "4", "confidence": 0.5},
+        {"line": 1, "severity": "low", "category": "naming", "message": "5", "confidence": 0.6},
+    ]
+
+    with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)):
+        result = review_quality(_hunk_state())
+
+    findings = result["findings"]
+    assert len(findings) == 3  # default noise budget cap
+    messages = {f.message for f in findings}
+    assert messages == {"2", "1", "5"}  # medium first, then the two highest-confidence lows

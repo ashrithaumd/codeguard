@@ -38,7 +38,7 @@ def test_route_after_fanin_dispatches_one_send_per_qualifying_file():
     state = {
         "findings": [high_a, high_b, low_c], "repo_level_findings": [],
         "repo_config": RepoConfig(fix_threshold=Severity.HIGH),
-        "files": {"a.py": "x", "b.py": "y", "c.py": "z"}, "owner": "o", "repo": "r",
+        "files": {"a.py": "x", "b.py": "y", "c.py": "z"}, "patches": {}, "owner": "o", "repo": "r",
     }
 
     result = route_after_fanin(state)
@@ -83,3 +83,48 @@ def test_propose_fix_call_failure_still_marks_should_fix():
 
     assert result["should_fix"] is True
     assert "fix_suggestions" not in result
+
+
+def test_propose_fix_drops_a_suggestion_for_a_line_outside_the_diff():
+    """Phase 8: GitHub's suggestion-block API can only attach to a diff
+    line — a suggestion for an unchanged line is dropped, but the
+    finding itself is untouched (still reported elsewhere)."""
+    finding = make_finding(file="a.py", rule_id="B105", line=50, message="hardcoded secret")
+    items = [{"fingerprint": finding.fingerprint, "replacement": "x = 1"}]
+    patch_text = "@@ -1,5 +1,5 @@\n context"  # only lines 1-5 are in the diff; line 50 is not
+
+    with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)):
+        result = propose_fix({
+            "owner": "o", "repo": "r", "path": "a.py", "content": "x\n" * 60,
+            "findings": [finding], "patch": patch_text,
+        })
+
+    assert result["fix_suggestions"] == []
+
+
+def test_propose_fix_keeps_a_suggestion_for_a_line_inside_the_diff():
+    finding = make_finding(file="a.py", rule_id="B105", line=3, message="hardcoded secret")
+    items = [{"fingerprint": finding.fingerprint, "replacement": "x = 1"}]
+    patch_text = "@@ -1,5 +1,5 @@\n context"
+
+    with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)):
+        result = propose_fix({
+            "owner": "o", "repo": "r", "path": "a.py", "content": "x\n" * 10,
+            "findings": [finding], "patch": patch_text,
+        })
+
+    assert len(result["fix_suggestions"]) == 1
+
+
+def test_propose_fix_drops_a_suggestion_whose_finding_targets_a_different_file():
+    """Defense-in-depth: route_after_fanin already guarantees every
+    finding passed to one propose_fix branch shares that branch's own
+    path, but a suggestion is still verified against state["path"]
+    directly rather than trusted implicitly."""
+    finding = make_finding(file="other.py", rule_id="B105", line=1, message="hardcoded secret")
+    items = [{"fingerprint": finding.fingerprint, "replacement": "x = 1"}]
+
+    with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)):
+        result = propose_fix({"owner": "o", "repo": "r", "path": "a.py", "content": "x\n", "findings": [finding]})
+
+    assert result["fix_suggestions"] == []

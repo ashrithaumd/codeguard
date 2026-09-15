@@ -32,8 +32,15 @@ agent_call_failures_total = Counter(
 )
 guardrail_flags_total = Counter(
     "codeguard_guardrail_flags_total",
-    "Prompt-injection/PII pattern hits flagged before a call (never blocks it).",
+    "PII pattern hits flagged before a call (never blocks it) — see injection_attempts_total "
+    "for the separate, blocking, prompt-injection path.",
     ["agent", "flag_type"],
+)
+injection_attempts_total = Counter(
+    "codeguard_injection_attempts_total",
+    "Phase 8: prompt-injection pattern matches neutralized before the prompt was built. Each "
+    "increment is one blocked attempt that never reached the model's instruction context.",
+    ["agent", "pattern"],
 )
 prompt_cache_hit_total = Counter(
     "codeguard_prompt_cache_hit_total",

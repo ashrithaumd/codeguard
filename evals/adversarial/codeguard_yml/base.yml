@@ -1,0 +1,5 @@
+# Legitimate .codeguard.yml as it exists on the PR's base branch.
+fix_threshold: high
+enable_ai_aware: true
+max_files_per_pr: 15
+max_tokens_per_pr: 40000

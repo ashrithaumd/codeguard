@@ -52,8 +52,9 @@ def make_finding(
     tool: str = "bandit",
     rule_id: str = "B000",
     message: str = "issue",
+    confidence: float = 1.0,
 ) -> Finding:
     return Finding.create(
         file=file, start_line=line, end_line=line, severity=severity,
-        source_tool=tool, rule_id=rule_id, message=message,
+        source_tool=tool, rule_id=rule_id, message=message, confidence=confidence,
     )

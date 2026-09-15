@@ -109,6 +109,36 @@ class Settings(BaseSettings):
     summary_agent_max_tokens: int = 256
     summary_agent_timeout_s: float = 15.0
 
+    # Phase 8: Quality/Test are the only ungrounded agents — no
+    # deterministic tool sits in front of them, so they're the only
+    # source of findings this pipeline invents from scratch rather than
+    # verifies. Three controls bound the noise that can introduce:
+    # a hard per-hunk cap (the worst single hunk can still only produce
+    # this many findings, sorted by severity/confidence before the
+    # cut — see nodes.py's _parse_direct_findings), a severity ceiling
+    # (an LLM's opinion on naming/structure is never HIGH/CRITICAL —
+    # clamped down to this even if the model reports higher), and a
+    # confidence-gated inline/summary split so a low-confidence finding
+    # still gets reported, just not inline (see summarize()). The
+    # threshold starts at a guess; Phase 9's eval harness is what tunes
+    # it against a real false-positive rate.
+    quality_test_max_findings_per_hunk: int = 3
+    quality_test_max_severity: Severity = Severity.MEDIUM
+    quality_test_min_inline_confidence: float = 0.5
+
+    @field_validator("quality_test_max_severity", mode="before")
+    @classmethod
+    def _parse_quality_test_max_severity(cls, v):
+        """Same string-to-Severity parsing as RepoConfig.fix_threshold —
+        an operator setting this via env var writes QUALITY_TEST_MAX_SEVERITY=medium,
+        a string, not the IntEnum value."""
+        if isinstance(v, str) and not v.isdigit():
+            try:
+                return Severity[v.upper()]
+            except KeyError:
+                pass
+        return v
+
 
 @lru_cache
 def get_settings() -> Settings:

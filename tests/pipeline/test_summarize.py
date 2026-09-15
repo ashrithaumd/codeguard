@@ -135,6 +135,32 @@ def test_dismissed_findings_appear_even_with_zero_confirmed_findings():
     assert result["inline_findings"] == []
 
 
+def test_low_confidence_finding_goes_to_summary_body_not_inline():
+    """Phase 8: a Quality/Test finding below quality_test_min_inline_confidence
+    is demoted to the summary body even though it's on a real diff line —
+    the same demotion an out-of-diff finding already gets, never dropped."""
+    threshold = get_settings().quality_test_min_inline_confidence
+    f = make_finding(file="a.py", line=3, rule_id="quality.naming", tool="quality-agent",
+                      message="low confidence", confidence=threshold - 0.01)
+    patches = {"a.py": "@@ -1,5 +1,5 @@\n context"}
+
+    result = _summarize(_state([f], patches))
+
+    assert result["inline_findings"] == []
+    assert "quality.naming" in result["summary"]
+
+
+def test_high_confidence_finding_is_still_inlined():
+    threshold = get_settings().quality_test_min_inline_confidence
+    f = make_finding(file="a.py", line=3, rule_id="quality.naming", tool="quality-agent",
+                      message="confident", confidence=threshold)
+    patches = {"a.py": "@@ -1,5 +1,5 @@\n context"}
+
+    result = _summarize(_state([f], patches))
+
+    assert len(result["inline_findings"]) == 1
+
+
 def test_no_dismissed_section_when_there_are_no_dismissals():
     f = make_finding(file="a.py", line=3, rule_id="B105", message="confirmed one")
     patches = {"a.py": "@@ -1,10 +1,10 @@\n context"}

@@ -27,6 +27,7 @@ from codeguard.pipeline.metrics import (
     agent_cost_usd_total,
     agent_tokens_total,
     guardrail_flags_total,
+    injection_attempts_total,
     prompt_cache_hit_total,
 )
 
@@ -61,6 +62,11 @@ class AgentCallResult:
     latency_s: float = 0.0
     error: str | None = None
     guardrail_flags: list[str] = field(default_factory=list)
+    # Phase 8: how many prompt-injection matches were neutralized out of
+    # user_content before the prompt was ever built — 0 in the common
+    # case. The raw matched text itself is never carried on this result
+    # (see guardrails.InjectionAttempt); fingerprints only.
+    injection_attempt_fingerprints: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
@@ -99,13 +105,28 @@ def call_agent(
     later, hit Anthropic's own cache for everything except the part
     that actually changed.
 
-    guardrails.scan_for_flags runs against user_content before the call
-    — logged and counted, never blocking (see guardrails.py's own
-    docstring for why blocking doesn't make sense here). A chunk over
-    guardrails.MAX_CHUNK_TOKENS skips the call entirely and returns an
-    error result, the same shape as any other failure.
+    Phase 8: guardrails.neutralize_injections runs against user_content
+    BEFORE anything else — every matched span is stripped out and
+    replaced with a marker, logged with its fingerprint, and counted in
+    injection_attempts_total. The neutralized text (never the original)
+    is what actually goes into the API request; the review continues on
+    whatever's left rather than the call being skipped. PII pattern hits
+    (guardrails.scan_for_pii) are still flagged, not blocked, against
+    that same neutralized text. A chunk over guardrails.MAX_CHUNK_TOKENS
+    (measured on the neutralized text, since that's what's actually
+    sent) skips the call entirely and returns an error result, the same
+    shape as any other failure.
     """
-    flags = guardrails.scan_for_flags(user_content)
+    user_content, injection_attempts = guardrails.neutralize_injections(user_content)
+    for attempt in injection_attempts:
+        injection_attempts_total.labels(agent=agent, pattern=attempt.pattern).inc()
+        logger.warning(
+            "blocked prompt-injection attempt in %s input: pattern=%r fingerprint=%s",
+            agent, attempt.pattern, attempt.fingerprint,
+        )
+    injection_fingerprints = [a.fingerprint for a in injection_attempts]
+
+    flags = guardrails.scan_for_pii(user_content)
     if flags:
         for f in flags:
             guardrail_flags_total.labels(agent=agent, flag_type=f.split(":", 1)[0]).inc()
@@ -113,7 +134,10 @@ def call_agent(
 
     if guardrails.chunk_exceeds_token_budget(user_content):
         agent_call_failures_total.labels(agent=agent).inc()
-        return AgentCallResult(raw_text=None, error="input exceeds MAX_CHUNK_TOKENS", guardrail_flags=flags)
+        return AgentCallResult(
+            raw_text=None, error="input exceeds MAX_CHUNK_TOKENS",
+            guardrail_flags=flags, injection_attempt_fingerprints=injection_fingerprints,
+        )
 
     client = anthropic.Anthropic(api_key=api_key)
     start = time.perf_counter()
@@ -133,14 +157,20 @@ def call_agent(
         agent_call_duration_seconds.labels(agent=agent).observe(elapsed)
         agent_call_failures_total.labels(agent=agent).inc()
         logger.exception("%s call failed", agent)
-        return AgentCallResult(raw_text=None, latency_s=elapsed, error=str(exc), guardrail_flags=flags)
+        return AgentCallResult(
+            raw_text=None, latency_s=elapsed, error=str(exc),
+            guardrail_flags=flags, injection_attempt_fingerprints=injection_fingerprints,
+        )
     elapsed = time.perf_counter() - start
     agent_call_duration_seconds.labels(agent=agent).observe(elapsed)
 
     raw_text = response.content[0].text if response.content else ""
     if not guardrails.validate_output(raw_text):
         agent_call_failures_total.labels(agent=agent).inc()
-        return AgentCallResult(raw_text=None, latency_s=elapsed, error="output failed validation (empty/degenerate)", guardrail_flags=flags)
+        return AgentCallResult(
+            raw_text=None, latency_s=elapsed, error="output failed validation (empty/degenerate)",
+            guardrail_flags=flags, injection_attempt_fingerprints=injection_fingerprints,
+        )
 
     usage = response.usage
     tokens_in = usage.input_tokens
@@ -160,4 +190,5 @@ def call_agent(
         raw_text=raw_text, tokens_in=tokens_in, tokens_out=tokens_out,
         cache_write_tokens=cache_write, cache_read_tokens=cache_read,
         estimated_cost_usd=cost, latency_s=elapsed, guardrail_flags=flags,
+        injection_attempt_fingerprints=injection_fingerprints,
     )

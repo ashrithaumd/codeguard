@@ -92,15 +92,27 @@ You will be given the file's content and Semgrep's own findings for it, grouped 
 {_VERDICT_CONTRACT}
 """
 
+_NOISE_BUDGET_CONTRACT = (
+    "Report AT MOST 3 issues — if you find more, report only the 3 you're most confident about. "
+    'Severity is capped at "medium": this is your own opinion, not a verified fact the way a '
+    'deterministic scanner\'s finding is, so never report "high" or "critical" — the most severe '
+    'you may report is "medium". Every issue also needs a "confidence" field (a number from 0.0 to '
+    "1.0): how sure you are this is a real, actionable issue and not a stylistic nitpick or "
+    "something reasonable people could disagree on."
+)
+
 _QUALITY_SYSTEM_PROMPT = f"""You are a code quality reviewer. Your only job is to review one diff hunk (a small slice of a file, shown with surrounding context for orientation) for quality issues in its own changed lines — you do not comment on security (separate agents already cover that) and you do not invent issues outside: poor naming, missing error handling, excessive complexity, duplication, missing/misleading comments, poor structure, obvious performance problems.
 
 {_DATA_FRAMING}
 
+{_NOISE_BUDGET_CONTRACT}
+
 Respond with ONLY a JSON array (no prose, no markdown code fences), one object per issue found, each with exactly these keys:
 "line" (integer, a real line number within the hunk shown),
-"severity" ("low"|"medium"|"high"),
+"severity" ("low"|"medium"),
 "category" (short string: "naming"|"error-handling"|"complexity"|"duplication"|"docs"|"structure"|"performance"),
-"message" (string, one sentence, plain language, with a concrete suggestion).
+"message" (string, one sentence, plain language, with a concrete suggestion),
+"confidence" (number, 0.0-1.0).
 
 If there are no real issues, respond with exactly: []
 """
@@ -111,10 +123,13 @@ Flag a gap only when the hunk adds a new function, branch, or edge case with no 
 
 {_DATA_FRAMING}
 
+{_NOISE_BUDGET_CONTRACT}
+
 Respond with ONLY a JSON array (no prose, no markdown code fences), one object per coverage gap found, each with exactly these keys:
 "line" (integer, a real line number within the hunk shown),
-"severity" ("low"|"medium"|"high"),
-"message" (string, one sentence: what's untested and what a test for it should check).
+"severity" ("low"|"medium"),
+"message" (string, one sentence: what's untested and what a test for it should check),
+"confidence" (number, 0.0-1.0).
 
 If coverage looks adequate, respond with exactly: []
 """
@@ -498,7 +513,10 @@ def review_ai_aware(state: dict) -> dict:
     )
 
 
-def _parse_direct_findings(items: list[dict], path: str, agent: str, hunk_start: int, hunk_end: int) -> list[Finding]:
+def _parse_direct_findings(
+    items: list[dict], path: str, agent: str, hunk_start: int, hunk_end: int,
+    max_severity: Severity, max_findings: int,
+) -> list[Finding]:
     """Direct-findings contract (review_quality/review_test): the agent
     generates findings from scratch, no raw tool baseline to fall back
     to — a call failure or empty response just means zero findings from
@@ -506,11 +524,22 @@ def _parse_direct_findings(items: list[dict], path: str, agent: str, hunk_start:
     hunk's own range is clamped into range rather than trusted verbatim
     (self-reported line numbers are exactly what Phase 6 learned not to
     trust from a model).
+
+    Phase 8 noise budget, since these two agents are the only ones that
+    invent findings rather than verify a scanner's: severity is clamped
+    to max_severity even if the model reports higher (an LLM's own
+    opinion is never HIGH/CRITICAL, regardless of what it claims), a
+    missing/malformed confidence defaults to 1.0 (never silently
+    dropped for that alone), and the result is capped at max_findings —
+    worst severity/confidence first, so a hunk with more real issues
+    than the budget still surfaces its most important ones, not
+    whichever happened to come first in the model's own response order.
     """
     results: list[Finding] = []
     for item in items:
         try:
             severity = Severity[str(item["severity"]).upper()]
+            severity = min(severity, max_severity)
             line = int(item["line"])
             if hunk_end > 0:
                 line = min(max(line, hunk_start), hunk_end)
@@ -519,17 +548,31 @@ def _parse_direct_findings(items: list[dict], path: str, agent: str, hunk_start:
         except (KeyError, ValueError, TypeError):
             logger.warning("skipping malformed %s finding for %s: %r", agent, path, item)
             continue
+        try:
+            confidence = max(0.0, min(1.0, float(item.get("confidence", 1.0))))
+        except (TypeError, ValueError):
+            confidence = 1.0
         results.append(Finding.create(
             file=path, start_line=line, end_line=line, severity=severity,
             source_tool=f"{agent}-agent", rule_id=f"{agent}.{category}", message=message,
+            confidence=confidence,
         ))
+
+    if len(results) > max_findings:
+        dropped = len(results) - max_findings
+        logger.info(
+            "%s agent: %d finding(s) for %s exceeds noise budget (%d), dropping %d least severe/confident",
+            agent, len(results), path, max_findings, dropped,
+        )
+        results.sort(key=lambda f: (-f.severity, -f.confidence))
+        results = results[:max_findings]
     return results
 
 
 def _run_generative_agent(
     *, agent: str, owner: str, repo: str, path: str, hunk_content: str, hunk_start: int, hunk_end: int,
     content_hash: str, system_prompt: str, model: str, max_tokens: int, timeout: float,
-    hunk_cache_hits: dict[CacheKey, CachedAgentResult],
+    hunk_cache_hits: dict[CacheKey, CachedAgentResult], max_severity: Severity, max_findings: int,
 ) -> dict:
     """Shared body for review_quality and review_test: check the hunk's
     own content-hash cache first, and on a miss, call the agent, parse
@@ -555,7 +598,7 @@ def _run_generative_agent(
         return {"node_latencies": [node_latency]}
 
     items = _parse_json_array(result.raw_text, f"{path}:{hunk_start}-{hunk_end}", agent)
-    findings = _parse_direct_findings(items, path, agent, hunk_start, hunk_end)
+    findings = _parse_direct_findings(items, path, agent, hunk_start, hunk_end, max_severity, max_findings)
 
     return {
         "findings": findings,
@@ -579,6 +622,7 @@ def review_quality(state: dict) -> dict:
         content_hash=state["content_hash"], system_prompt=_QUALITY_SYSTEM_PROMPT,
         model=settings.quality_agent_model, max_tokens=settings.quality_agent_max_tokens,
         timeout=settings.quality_agent_timeout_s, hunk_cache_hits=state["hunk_cache_hits"],
+        max_severity=settings.quality_test_max_severity, max_findings=settings.quality_test_max_findings_per_hunk,
     )
 
 
@@ -590,6 +634,7 @@ def review_test(state: dict) -> dict:
         content_hash=state["content_hash"], system_prompt=_TEST_SYSTEM_PROMPT,
         model=settings.test_agent_model, max_tokens=settings.test_agent_max_tokens,
         timeout=settings.test_agent_timeout_s, hunk_cache_hits=state["hunk_cache_hits"],
+        max_severity=settings.quality_test_max_severity, max_findings=settings.quality_test_max_findings_per_hunk,
     )
 
 
@@ -637,6 +682,7 @@ def route_after_fanin(state: ReviewState) -> str | list[Send]:
         Send("propose_fix", {
             "owner": state["owner"], "repo": state["repo"], "path": path,
             "content": state["files"][path], "findings": file_findings,
+            "patch": state["patches"].get(path, ""),
         })
         for path, file_findings in by_file.items()
     ]
@@ -651,6 +697,21 @@ def propose_fix(state: dict) -> dict:
     the model can't confidently fix is just omitted from its response
     — no fallback needed, since not proposing a fix is always safe (the
     finding itself was already going to be posted inline regardless).
+
+    Phase 8 hardening, independent of whatever the model actually
+    returns: a suggestion is dropped (never applied, never counted) if
+    its finding's file isn't state["path"] — the only file this branch
+    was ever given findings for (route_after_fanin already guarantees
+    this structurally; this is defense-in-depth against a future wiring
+    change, not a response to anything the model itself controls, since
+    fingerprint correlation already restricts it to a known Finding) —
+    or if its finding's line falls outside the diff's own changed
+    ranges. GitHub's suggestion-block API can only attach to a line
+    that's actually part of the diff; a suggestion for a pre-existing,
+    unchanged line would either be rejected outright or (worse) silently
+    rewrite code the PR never touched. Dropping the suggestion here
+    never drops the finding itself — it's still reported normally,
+    inline or in the summary, just without a one-click fix.
     """
     settings = get_settings()
     findings = state["findings"]
@@ -669,7 +730,8 @@ def propose_fix(state: dict) -> dict:
         return {"should_fix": True, "node_latencies": [node_latency]}
 
     items = _parse_json_array(result.raw_text, state["path"], "fix")
-    known_fingerprints = {f.fingerprint for f in findings}
+    findings_by_fingerprint = {f.fingerprint: f for f in findings}
+    changed_ranges = parse_hunk_ranges(state.get("patch", ""))
     suggestions: list[FixSuggestion] = []
     for item in items:
         try:
@@ -678,9 +740,24 @@ def propose_fix(state: dict) -> dict:
         except (KeyError, TypeError):
             logger.warning("skipping malformed fix suggestion for %s: %r", state["path"], item)
             continue
-        if fingerprint not in known_fingerprints:
+
+        finding = findings_by_fingerprint.get(fingerprint)
+        if finding is None:
             logger.warning("fix agent suggestion for unknown fingerprint %r in %s, ignoring", fingerprint, state["path"])
             continue
+        if finding.file != state["path"]:
+            logger.warning(
+                "fix agent suggestion for %r targets file %s outside this branch's own file %s, ignoring",
+                fingerprint, finding.file, state["path"],
+            )
+            continue
+        if changed_ranges and not is_line_in_diff(finding.file, finding.start_line, {finding.file: changed_ranges}):
+            logger.warning(
+                "fix agent suggestion for %r at %s:%d falls outside the diff, ignoring",
+                fingerprint, finding.file, finding.start_line,
+            )
+            continue
+
         suggestions.append(FixSuggestion(fingerprint=fingerprint, suggestion_body=f"```suggestion\n{replacement}\n```"))
 
     return {
@@ -782,7 +859,18 @@ def summarize(state: ReviewState) -> dict:
 
     changed_ranges = {path: parse_hunk_ranges(patch) for path, patch in state["patches"].items()}
 
-    inlineable = [f for f in deduped if f.start_line > 0 and is_line_in_diff(f.file, f.start_line, changed_ranges)]
+    def _inlineable(f: Finding) -> bool:
+        # Phase 8: a low-confidence Quality/Test finding (see
+        # settings.quality_test_min_inline_confidence) is never dropped
+        # outright — it still counts, just in the summary body instead
+        # of inline, the same demotion an out-of-diff finding already
+        # gets. Every non-generative finding defaults to confidence=1.0,
+        # so this never demotes a Security/AI-aware/tool finding.
+        if f.confidence < settings.quality_test_min_inline_confidence:
+            return False
+        return f.start_line > 0 and is_line_in_diff(f.file, f.start_line, changed_ranges)
+
+    inlineable = [f for f in deduped if _inlineable(f)]
     meta_or_outside_diff = [f for f in deduped if f not in inlineable]
 
     inlineable.sort(key=lambda f: -f.severity)

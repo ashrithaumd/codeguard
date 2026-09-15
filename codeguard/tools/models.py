@@ -29,11 +29,18 @@ class Finding(BaseModel):
     rule_id: str
     message: str
     fingerprint: str
+    # Phase 8: only ever < 1.0 for a finding an ungrounded agent
+    # (Quality/Test — see nodes.py) generated from scratch and
+    # self-rated; every deterministic-tool and verdict-contract finding
+    # (Bandit/Semgrep/Ruff passthrough, Security, AI-aware) keeps the
+    # default, since there's no model self-rating involved. Not part of
+    # the fingerprint — it's a noise-budget signal, not identity.
+    confidence: float = 1.0
 
     @classmethod
     def create(
         cls, *, file: str, start_line: int, end_line: int, severity: Severity,
-        source_tool: str, rule_id: str, message: str,
+        source_tool: str, rule_id: str, message: str, confidence: float = 1.0,
     ) -> "Finding":
         """fingerprint is derived, not caller-supplied, so two runs
         that produce the same logical finding always dedupe the same
@@ -45,4 +52,5 @@ class Finding(BaseModel):
         return cls(
             file=file, start_line=start_line, end_line=end_line, severity=severity,
             source_tool=source_tool, rule_id=rule_id, message=message, fingerprint=fingerprint,
+            confidence=confidence,
         )
