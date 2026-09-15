@@ -1,0 +1,44 @@
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=e76220a260334e80
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=25d72664c218c6a7
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=e76220a260334e80
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+guardrail flag(s) on ai_aware input: ['pii:credit_card']
+test agent returned unparseable output for clean_trivial_getter.py:1-11
+--- run 1 ---
+  ai_aware   precision=1.00 recall=1.00 f1=1.00 (tp=19 fp=0 fn=0), dismissal_acc=1.00 tokens_in=13640 tokens_out=4183 cost_usd=0.1037 latency_s=88.92
+  security   precision=1.00 recall=0.56 f1=0.71 (tp=5 fp=0 fn=4), dismissal_acc=1.00 tokens_in=5797 tokens_out=1661 cost_usd=0.0423 latency_s=41.23
+  quality    precision=0.75 recall=1.00 f1=0.86 (tp=3 fp=1 fn=0) tokens_in=3611 tokens_out=736 cost_usd=0.0073 latency_s=9.93
+  test       precision=1.00 recall=1.00 f1=1.00 (tp=3 fp=0 fn=0) tokens_in=3629 tokens_out=442 cost_usd=0.0058 latency_s=8.24
+  per-PR-equivalent: tokens=33699 cost_usd=0.1591 latency_s=148.32
+
+=== variance across runs ===
+  ai_aware.precision: [1.0] (stdev=0.0000)
+  ai_aware.recall: [1.0] (stdev=0.0000)
+  ai_aware.f1: [1.0] (stdev=0.0000)
+  ai_aware.cost_usd: [0.1037] (stdev=0.0000)
+  ai_aware.latency_s: [88.9178] (stdev=0.0000)
+  security.precision: [1.0] (stdev=0.0000)
+  security.recall: [0.5556] (stdev=0.0000)
+  security.f1: [0.7143] (stdev=0.0000)
+  security.cost_usd: [0.0423] (stdev=0.0000)
+  security.latency_s: [41.2264] (stdev=0.0000)
+  quality.precision: [0.75] (stdev=0.0000)
+  quality.recall: [1.0] (stdev=0.0000)
+  quality.f1: [0.8571] (stdev=0.0000)
+  quality.cost_usd: [0.0073] (stdev=0.0000)
+  quality.latency_s: [9.9349] (stdev=0.0000)
+  test.precision: [1.0] (stdev=0.0000)
+  test.recall: [1.0] (stdev=0.0000)
+  test.f1: [1.0] (stdev=0.0000)
+  test.cost_usd: [0.0058] (stdev=0.0000)
+  test.latency_s: [8.2363] (stdev=0.0000)
+  per_pr_cost_usd: [0.1591] (stdev=0.0000)
+
+wrote raw results to evals/full_harness_run3.json

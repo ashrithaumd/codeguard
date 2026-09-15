@@ -119,9 +119,13 @@ class Settings(BaseSettings):
     # (an LLM's opinion on naming/structure is never HIGH/CRITICAL —
     # clamped down to this even if the model reports higher), and a
     # confidence-gated inline/summary split so a low-confidence finding
-    # still gets reported, just not inline (see summarize()). The
-    # threshold starts at a guess; Phase 9's eval harness is what tunes
-    # it against a real false-positive rate.
+    # still gets reported, just not inline (see summarize()). Phase 9
+    # validated 0.5 against 132 real findings from dogfooding two real
+    # repos (see evals/RESULTS.md): it demotes only the bottom ~8% by
+    # confidence, and manual review of exactly those demoted findings
+    # showed them to be the genuinely vaguest/most nitpicky ones, not
+    # ones that should have stayed inline — kept unchanged rather than
+    # moved without evidence either direction was actually better.
     quality_test_max_findings_per_hunk: int = 3
     quality_test_max_severity: Severity = Severity.MEDIUM
     quality_test_min_inline_confidence: float = 0.5
@@ -163,8 +167,17 @@ class RepoConfig(BaseModel):
     fix_threshold: Severity = Severity.HIGH
     enable_ai_aware: bool = True
     max_files_per_pr: int = 15
-    # TODO(Phase 9): tune this default against real eval-harness token
-    # counts once we have precision/recall/cost numbers, not a guess.
+    # Phase 9: validated against real numbers, not a guess anymore (see
+    # evals/RESULTS.md's tuning section). A real 15-file, budget-capped
+    # PR (both codeguard's and DocuMind's dogfood runs landed right at
+    # this ceiling) costs ~$0.15-0.24 and ~110-165s wall clock across
+    # every agent combined — this hunk-content budget is what's fed
+    # into ingestion, not total LLM token usage, which fans out several
+    # times higher across the per-file/per-hunk agent calls that
+    # actually read it. That real cost/latency is acceptable for what
+    # it buys (60-70 real findings per dogfooded PR), so 40_000 stays
+    # the default rather than being changed without evidence it's
+    # actually too high or too low.
     max_tokens_per_pr: int = 40_000
     max_wall_clock_s: int = 120
     ignored_paths: list[str] = Field(default_factory=list)

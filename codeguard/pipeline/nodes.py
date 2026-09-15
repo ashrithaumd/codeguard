@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from langgraph.types import Send
 
@@ -325,6 +326,9 @@ def _build_findings_block(findings: list[Finding]) -> str:
     return "\n".join(lines)
 
 
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)```", re.DOTALL | re.IGNORECASE)
+
+
 def _parse_json_array(raw_text: str, context: str, agent: str) -> list[dict]:
     """Shared low-level parser for every agent's JSON-array-of-objects
     contract — strips a markdown code fence if the model added one
@@ -333,13 +337,21 @@ def _parse_json_array(raw_text: str, context: str, agent: str) -> list[dict]:
     addressed," which for the verdict contract means everything falls
     back to raw tool findings (see _apply_verdicts), and for the
     direct-findings contract just means no findings from this call.
+
+    Phase 9: found via the live adversarial/dogfood runs — a response
+    like "```json\\n[]\\n```\\n\\nThe hunk contains..." (the model
+    explaining, correctly, why it's ignoring some redacted/suspicious
+    content it noticed) used to fail outright, because the old
+    strip-based approach only stripped a fence wrapping the ENTIRE
+    response. _JSON_FENCE_RE finds a fenced block ANYWHERE in the
+    response — trailing prose included — before falling back to
+    treating the whole (stripped) response as the JSON itself, which
+    still covers a fence-free response with no trailing content.
     """
     text = raw_text.strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text.lower().startswith("json"):
-            text = text[4:]
-        text = text.strip()
+    fence_match = _JSON_FENCE_RE.search(text)
+    if fence_match:
+        text = fence_match.group(1).strip()
 
     try:
         items = json.loads(text)
