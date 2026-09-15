@@ -35,6 +35,10 @@
     "confirmed": [],
     "dismissed": []
   },
+  "fixture_10_dogfood_missing_timeout.py": {
+    "confirmed": ["llm-call-missing-timeout"],
+    "dismissed": []
+  },
   "near_miss_01_max_tokens_via_kwargs.py": {
     "confirmed": [],
     "dismissed": ["llm-call-missing-max-tokens", "llm-call-missing-timeout"]

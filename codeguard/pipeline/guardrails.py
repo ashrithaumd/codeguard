@@ -73,10 +73,21 @@ PROMPT_INJECTION_PATTERNS = [
     rf"pretend{_SEP}(?:you{_SEP}are|to{_SEP}be)",
     rf"forget{_SEP}(?:all|your|any){_SEP}(?:previous|prior)?{_SEP}?instructions?",
     rf"new{_SEP}instructions?",
-    rf"system{_SEP}prompt",
     r"jailbreak",
     rf"act{_SEP}as{_SEP}(?:a|an|if)",
-    rf"reveal{_SEP}(?:your|the){_SEP}(?:system{_SEP}prompt|instructions)",
+    # Phase 9.1: dropped the old bare `system{_SEP}prompt` pattern —
+    # real dogfood runs (evals/RESULTS.md) showed it firing constantly
+    # on ordinary code/comments that just discuss LLM system prompts as
+    # a technical term (including this very file's own docstrings). A
+    # bare noun phrase isn't a directive; only flag "system prompt" (or
+    # "instructions") when an actual directive verb asks for something
+    # to be done to/with it.
+    rf"(?:reveal|show|print|output|tell|give){_SEP}(?:me{_SEP})?(?:your|the|my)?{_SEP}?(?:system{_SEP}prompt|instructions)",
+    # "instead of" alone is ordinary English (far too common to flag on
+    # its own) — only suspicious as a review-suppression substitution:
+    # "report/approve/say X instead of flagging real issues".
+    rf"(?:report|respond|say|approve|answer|output){_SEP}[\w\s]{{0,40}}?instead{_SEP}of{_SEP}[\w\s]{{0,40}}?"
+    rf"(?:issue|finding|flag|error|vulnerab|problem|warning)",
 ]
 
 PII_PATTERNS = {

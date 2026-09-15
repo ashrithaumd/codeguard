@@ -255,3 +255,82 @@ single data point about one model's behavior on one day.
 **Cost and latency numbers are point-in-time.** Anthropic pricing, model versions, and this
 pipeline's own prompts will all change; treat the dollar figures here as "what it cost to review a
 large real PR on 2026-09-15," not a permanent SLA.
+
+---
+
+## Phase 9.1 addendum — security recall root-cause, guardrail FP fix, new fixtures
+
+### 1. Security recall 0.56 → 1.00: root cause was ground truth, not the detector or (mostly) the agent
+
+A live diagnostic (`review_security` called directly on the three affected fixtures, raw Bandit
+output compared against the raw verdict JSON) confirmed **Bandit emitted every one of the 4 "missed"
+findings** — this was never a detector gap. All 4 were the model explicitly dismissing something
+Phase 9's ground truth had marked "must confirm": `B404` (generic "subprocess module imported"
+advisory, real risk already covered by the specific `B602` finding), `B607` (partial executable
+path, on a fully-hardcoded command with no attacker-controlled input), and `B101` (`assert` in a
+pytest test file — Bandit's own well-known false-positive-prone rule for test paths). Reading the
+model's actual dismissal reasoning, all three were well-argued and concretely justified per the
+prompt's own bar — the problem was that Phase 9's ground truth had conflated "true but minor/
+generic/informational" with "must always be confirmed," when a reasonable reviewer would legitimately
+handle these three differently:
+
+- **`B404`, `B607` — genuinely a prompt gap, fixed by tightening `_VERDICT_CONTRACT`** (in
+  `codeguard/pipeline/nodes.py`, shared by Security and AI-aware): the old wording let "dismissed"
+  cover both "this is wrong" and "this is real but not worth mentioning," so the model reasonably
+  used dismissal for both. The contract now explicitly requires a true-but-minor/generic/duplicative
+  finding to be **confirmed at LOW severity** instead — dismissal is reserved for findings that are
+  actually incorrect or fully neutralized by cited mitigating code. Verified live: after the change,
+  `B404` and `B607` both come back `confirmed, LOW` instead of dismissed, on the same fixtures, no
+  ground-truth change needed for these two.
+- **`B101` — genuinely a ground-truth mistake, fixed by correcting the fixture's expectation, not
+  the prompt**: an `assert` in a test file is the standard, correct way to write a pytest assertion,
+  not a risky runtime check — dismissing it is what a good reviewer does, every time, and forcing the
+  model to always confirm it would just be re-adding noise Phase 8's whole design is trying to
+  reduce. `evals/fixtures_security/ground_truth.json` now expects `B101` dismissed, with the reasoning
+  recorded directly in the fixture's own docstring.
+
+**Result, 3 live runs post-fix:** Security precision **1.00, 1.00, 1.00**, recall **1.00, 1.00, 1.00**
+(up from 0.56), dismissal accuracy 1.00 across all three — `tp=8, fp=0, fn=0` every run (8, not 9,
+confirmed rule_ids now, since `B101` correctly moved to the dismissed side of ground truth). Cost
+~$0.046/run for Security specifically.
+
+**AI-aware after the same prompt change:** recall stayed 1.00/1.00/1.00 across all three runs;
+precision was 1.00 in one run and 0.95 (one new FP, `tp=20 fp=1`) in the other two — `tp=20` instead
+of the previous `19` reflects the new dogfood-derived fixture (see below), not a regression by
+itself. A follow-up single-shot diagnostic re-running AI-aware fresh against all 6 near-miss
+fixtures came back completely clean (0 FPs across all 6), which points to this being ordinary
+run-to-run model variance rather than a systematic side effect of the `_VERDICT_CONTRACT` wording
+change — consistent with Phase 9's own caveat that 3 runs is not strong evidence of true stability,
+now borne out by an actual crack in what had looked like zero variance. Worth continued watching in
+Phase 10, not treated as a regression requiring a revert here.
+
+### 2. Guardrail false-positive tightening: "system prompt" alone is no longer a trigger
+
+Removed the old bare `system{_SEP}prompt` pattern (the one Phase 9's dogfood run showed firing
+repeatedly on ordinary code discussing LLM system prompts as a technical term — including this
+codebase's own docstrings). Replaced with a verb-gated version that only fires when an actual
+directive verb targets it (`reveal/show/print/output/tell/give ... system prompt`) — "reveal the
+system prompt" and "show me your system prompt" still match; "this function builds the system
+prompt" no longer does. Also added a compound pattern for review-suppression phrasing using
+"instead of" (`report/respond/say/approve/answer/output ... instead of ... issue/finding/flag/
+error/...`), gated the same way — bare "instead of" (as in "tabs instead of spaces") never matches
+on its own.
+
+Verified with 9 new direct unit tests in `tests/pipeline/test_guardrails.py` (bare mention not
+flagged, directive-gated mentions still flagged, bare "instead of" not flagged, suppression-framed
+"instead of" flagged) and confirmed no regression on the existing offline adversarial suite
+(`tests/pipeline/test_adversarial_injection.py`, part of the full 137-test suite, still green) —
+none of the three adversarial fixtures (`comment`/`docstring`/`string_literal`) rely on the removed
+bare pattern for their expected 3-attempts-per-fixture count, and `string_literal_injected.py`'s
+"reveal the system prompt" phrase is still caught by the tightened verb-gated pattern.
+
+### 3. Two new fixtures added directly from Phase 9's dogfood findings
+
+- **`evals/fixtures/fixture_10_dogfood_missing_timeout.py`** (positive, AI-aware): reproduces the
+  real `backend/llm.py` shape from DocuMind — two `messages.create()` calls, neither with an
+  explicit `timeout=` — as a permanent regression fixture for a finding that was originally
+  confirmed live against real code CodeGuard doesn't have permanent access to.
+- **`evals/fixtures_quality_test/near_miss_necessary_or_default.py`** (near-miss, Quality):
+  reproduces the shape of the confidently-wrong `getattr(usage, "field", 0) or 0` finding from
+  dogfooding CodeGuard's own repo, with `expect_quality_flag: false` — a regression check that the
+  Quality agent doesn't repeat that specific mistake going forward.

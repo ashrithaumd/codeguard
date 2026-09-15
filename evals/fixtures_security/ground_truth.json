@@ -4,7 +4,7 @@
   "fixture_03_shell_injection.py": {"confirmed": ["B404", "B602"], "dismissed": []},
   "fixture_04_weak_hash.py": {"confirmed": ["B324"], "dismissed": []},
   "fixture_05_eval_usage.py": {"confirmed": ["B307"], "dismissed": []},
-  "near_miss_01_test_dummy_password.py": {"confirmed": ["B101"], "dismissed": ["B105"]},
+  "near_miss_01_test_dummy_password.py": {"confirmed": [], "dismissed": ["B105", "B101"]},
   "near_miss_02_trusted_constant_in_query.py": {"confirmed": [], "dismissed": ["B608"]},
   "near_miss_03_shell_true_hardcoded_command.py": {"confirmed": ["B404", "B607"], "dismissed": ["B602"]}
 }
