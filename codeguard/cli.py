@@ -26,6 +26,7 @@ structure nitpicks) that matter far less on code nobody just touched.
 from __future__ import annotations
 
 import argparse
+import ast
 import asyncio
 import logging
 import os
@@ -37,16 +38,15 @@ import time
 from pathlib import Path
 
 import requests
+import tiktoken
 import yaml
 
 from codeguard.config import Budget, RepoConfig, effective_budget, get_settings
 from codeguard.diff.filters import is_dependency_manifest, is_reviewable_path
-from codeguard.diff.ingest import apply_file_budget, apply_token_budget
-from codeguard.diff.models import Hunk
-from codeguard.diff.parse import hash_content
 from codeguard.pipeline.eval_hygiene import review_eval_hygiene
+from codeguard.pipeline.guardrails import MAX_CHUNK_TOKENS
 from codeguard.pipeline.models import DismissedFinding
-from codeguard.pipeline.nodes import _file_touches_ai_markers, review_ai_aware, review_security
+from codeguard.pipeline.nodes import _build_findings_block, _file_touches_ai_markers, review_ai_aware, review_security
 from codeguard.severity import Severity
 from codeguard.tools.models import Finding
 from codeguard.tools.osv_runner import check_dependency_updates
@@ -57,6 +57,41 @@ logger = logging.getLogger("codeguard.audit")
 
 CONFIG_FILENAME = ".codeguard.yml"
 GITHUB_ISSUES_URL = "https://api.github.com/repos/{owner}/{repo}/issues"
+
+_tokenizer = tiktoken.get_encoding("cl100k_base")
+
+# Phase 11.1: the pipeline-wide guardrail (guardrails.MAX_CHUNK_TOKENS)
+# measures the FULL user_content sent to the model — file/chunk content
+# PLUS the <findings> block _run_verdict_agent appends — not just the
+# raw content this module chunks by. A flat headroom constant isn't
+# enough: a file with hundreds of Bandit findings (one per assert
+# statement, seen live on tests/test_logs_store.py in simonw/llm —
+# 18,260 content tokens looked safely under a flat 18,500 chunk budget,
+# but its ~280-finding block alone pushed the real call over
+# MAX_CHUNK_TOKENS and got refused anyway). CHUNK_OVERHEAD_MARGIN covers
+# just the <file_content> wrapper tags and general slack; the actual
+# findings-block cost is computed per file in _effective_chunk_budget
+# below, since it varies enormously by how many findings that file has.
+CHUNK_OVERHEAD_MARGIN = 300
+MIN_CHUNK_TOKENS = 1000
+
+
+def _count_tokens(text: str) -> int:
+    return len(_tokenizer.encode(text))
+
+
+def _effective_chunk_budget(raw_findings: list[Finding]) -> int:
+    """Content-only token budget for one file's chunks, leaving room for
+    that file's own findings block on top. Uses the block for ALL of
+    the file's raw findings (not just one chunk's) as a conservative
+    upper bound — after chunking, any single chunk only ever carries a
+    SUBSET of these findings, so its own block can only be smaller,
+    never bigger. Floored at MIN_CHUNK_TOKENS so a file with an
+    enormous number of findings still makes some chunking progress
+    rather than collapsing to a near-zero, pathological budget.
+    """
+    findings_block_tokens = _count_tokens(_build_findings_block(raw_findings))
+    return max(MAX_CHUNK_TOKENS - findings_block_tokens - CHUNK_OVERHEAD_MARGIN, MIN_CHUNK_TOKENS)
 
 
 def _is_remote_url(target: str) -> bool:
@@ -166,58 +201,184 @@ def _collect_repo_files(
     return files, dependency_contents, dependency_patches
 
 
-def _run_security_verdicts(owner: str, repo: str, files: dict[str, str], tool_findings: list[Finding]):
-    """Mirrors route_to_security_reviews + review_security exactly (see
-    nodes.py) — every file with at least one Bandit finding, no
-    touches_ai_code gate, called directly rather than through the
-    graph's Send fan-out (audit has no per-PR graph invocation to hang
-    this off of; the node function itself is the reusable unit).
+def _select_files_for_audit(
+    all_files: dict[str, str], max_files: int, max_tokens: int,
+) -> tuple[dict[str, str], list[tuple[str, str]]]:
+    """Greedily selects which files an audit actually reviews, AI-touching
+    files first (only those can ever get an AI-aware verdict at all —
+    prioritizing one that never will over one that might is backwards),
+    and within each group, SMALLEST first: a few very large files
+    consuming the whole token ceiling before the file-count ceiling even
+    binds is exactly what starved a real audit down to 5-of-50 scanned
+    files against simonw/llm (see evals/RESULTS.md's Phase 11 section);
+    smallest-first lets many more files fit under the same ceiling.
+
+    Mirrors apply_token_budget's own "always include at least the first
+    item, even if it alone exceeds the budget" rule (diff/ingest.py) —
+    an empty audit because file #1 was already huge is worse than one
+    over-budget file included anyway.
+
+    Returns (selected, skipped) — skipped is [(path, reason)] for every
+    dropped file, surfaced explicitly in the report rather than silently
+    vanishing.
+    """
+    sized = sorted(
+        ((p, _count_tokens(c), _file_touches_ai_markers(c)) for p, c in all_files.items()),
+        key=lambda item: (0 if item[2] else 1, item[1]),
+    )
+
+    selected: dict[str, str] = {}
+    skipped: list[tuple[str, str]] = []
+    cumulative_tokens = 0
+
+    for path, tokens, _is_ai in sized:
+        if len(selected) >= max_files:
+            skipped.append((path, "dropped by audit_max_files_ceiling"))
+            continue
+        if selected and cumulative_tokens + tokens > max_tokens:
+            skipped.append((path, "dropped by audit_max_tokens_ceiling"))
+            continue
+        selected[path] = all_files[path]
+        cumulative_tokens += tokens
+
+    return selected, skipped
+
+
+def _ast_chunk_boundaries(body: list[ast.stmt], lines: list[str], max_tokens: int) -> list[tuple[int, int]]:
+    """Groups consecutive top-level statements into (start_line, end_line)
+    chunks whose combined source doesn't exceed max_tokens, recursing
+    into a single statement's own body (a class's methods, most often)
+    when that one statement alone is already over budget — so "chunk at
+    function boundaries" still makes progress on a file with one huge
+    class, not just one with many small top-level functions.
+    """
+    chunks: list[tuple[int, int]] = []
+    current_start: int | None = None
+    current_end: int | None = None
+    current_tokens = 0
+
+    def flush() -> None:
+        nonlocal current_start, current_end, current_tokens
+        if current_start is not None:
+            chunks.append((current_start, current_end))
+        current_start, current_end, current_tokens = None, None, 0
+
+    for node in body:
+        start = node.lineno
+        end = getattr(node, "end_lineno", None) or start
+        node_tokens = _count_tokens("\n".join(lines[start - 1:end]))
+
+        if node_tokens > max_tokens and getattr(node, "body", None):
+            flush()
+            chunks.extend(_ast_chunk_boundaries(node.body, lines, max_tokens))
+            continue
+
+        if current_start is not None and current_tokens + node_tokens > max_tokens:
+            flush()
+        if current_start is None:
+            current_start = start
+        current_end = end
+        current_tokens += node_tokens
+
+    flush()
+    return chunks
+
+
+def _chunk_file_by_ast(content: str, max_tokens: int) -> list[tuple[int, int]] | None:
+    """Whole-file (1, N) if it already fits; None if the file doesn't
+    parse as Python at all (a real syntax error, or something that
+    slipped through the .py extension filter) — the caller falls back
+    to one whole-file call in that case, which the pipeline's own
+    MAX_CHUNK_TOKENS guardrail will still refuse, same as unchunked
+    audit mode always did for an oversized file, but now reported as a
+    known call failure rather than a silent gap.
+    """
+    lines = content.splitlines()
+    total_lines = len(lines) or 1
+    if _count_tokens(content) <= max_tokens:
+        return [(1, total_lines)]
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return None
+    if not tree.body:
+        return [(1, total_lines)]
+
+    raw = _ast_chunk_boundaries(tree.body, lines, max_tokens)
+    if not raw:
+        return [(1, total_lines)]
+
+    # Bridge gaps between chunks (blank lines, comments, decorators —
+    # anything ast.lineno doesn't cover) so every line belongs to
+    # exactly one chunk; chunks come back in source order at every
+    # recursion depth, so a single flat pass is enough.
+    bridged: list[tuple[int, int]] = []
+    prev_end = 0
+    for i, (start, end) in enumerate(raw):
+        real_start = prev_end + 1 if i > 0 else 1
+        bridged.append((real_start, end))
+        prev_end = end
+    last_start, _ = bridged[-1]
+    bridged[-1] = (last_start, total_lines)
+    return bridged
+
+
+def _run_verdict_layer(
+    verdict_fn, owner: str, repo: str, files: dict[str, str], findings_by_file: dict[str, list[Finding]],
+) -> tuple[list[Finding], list[DismissedFinding], int, int, float, list[tuple[str, str]]]:
+    """Shared driver for review_security/review_ai_aware in audit mode.
+    findings_by_file: path -> that file's raw findings for this agent's
+    own tool (Bandit for security, Semgrep for ai_aware — filtered by
+    the caller). A file whose whole content fits under its own
+    effective chunk budget (see _effective_chunk_budget — it varies per
+    file, since a bigger findings block leaves less room for content)
+    gets one call, same as before Phase 11.1; an oversized file is
+    split at AST boundaries so it still gets a real verdict instead of
+    being silently refused.
+
+    A verdict call's own dict return has no "tokens_in" key on failure
+    (see nodes.py's _run_verdict_agent — only "findings" and
+    "node_latencies" survive a failed call) — used here as the signal
+    that a chunk's raw findings are being reported unverified, without
+    needing any pipeline-side change to expose that more explicitly.
+
+    Returns (confirmed, dismissed, tokens_in, tokens_out, cost, call_failures)
+    — call_failures is [(path, reason)] for the report's Skipped section.
     """
     confirmed: list[Finding] = []
     dismissed: list[DismissedFinding] = []
     tokens_in = tokens_out = 0
     cost = 0.0
-    for path, content in files.items():
-        bandit_findings = [f for f in tool_findings if f.file == path and f.source_tool == "bandit"]
-        if not bandit_findings:
-            continue
-        result = review_security({
-            "owner": owner, "repo": repo, "path": path, "content": content,
-            "findings": bandit_findings, "hunk_cache_hits": {},
-        })
-        confirmed.extend(result.get("findings", []))
-        dismissed.extend(result.get("dismissed_findings", []))
-        tokens_in += result.get("tokens_in", 0)
-        tokens_out += result.get("tokens_out", 0)
-        cost += result.get("estimated_cost_usd", 0.0)
-    return confirmed, dismissed, tokens_in, tokens_out, cost
+    call_failures: list[tuple[str, str]] = []
 
+    for path, raw_findings in findings_by_file.items():
+        if not raw_findings:
+            continue
+        content = files[path]
+        boundaries = _chunk_file_by_ast(content, _effective_chunk_budget(raw_findings))
+        if boundaries is None:
+            call_failures.append((path, "not parseable as Python; reviewed as one oversized, unchunked call"))
+            boundaries = [(1, max(len(content.splitlines()), 1))]
 
-def _run_ai_aware_verdicts(owner: str, repo: str, files: dict[str, str], tool_findings: list[Finding]):
-    """Mirrors route_to_ai_aware_reviews + review_ai_aware — only files
-    that both touch an LLM SDK import AND have Semgrep findings, per
-    this module's own docstring on AI-involvement scope.
-    """
-    confirmed: list[Finding] = []
-    dismissed: list[DismissedFinding] = []
-    tokens_in = tokens_out = 0
-    cost = 0.0
-    for path, content in files.items():
-        if not _file_touches_ai_markers(content):
-            continue
-        semgrep_findings = [f for f in tool_findings if f.file == path and f.source_tool == "semgrep"]
-        if not semgrep_findings:
-            continue
-        result = review_ai_aware({
-            "owner": owner, "repo": repo, "path": path, "content": content,
-            "findings": semgrep_findings, "hunk_cache_hits": {},
-        })
-        confirmed.extend(result.get("findings", []))
-        dismissed.extend(result.get("dismissed_findings", []))
-        tokens_in += result.get("tokens_in", 0)
-        tokens_out += result.get("tokens_out", 0)
-        cost += result.get("estimated_cost_usd", 0.0)
-    return confirmed, dismissed, tokens_in, tokens_out, cost
+        lines = content.splitlines()
+        for start, end in boundaries:
+            chunk_findings = [f for f in raw_findings if start <= f.start_line <= end]
+            if not chunk_findings:
+                continue
+            chunk_content = "\n".join(lines[start - 1:end])
+            result = verdict_fn({
+                "owner": owner, "repo": repo, "path": path, "content": chunk_content,
+                "findings": chunk_findings, "hunk_cache_hits": {},
+            })
+            if "tokens_in" not in result:
+                call_failures.append((path, f"lines {start}-{end}: agent call failed, raw finding(s) reported unverified"))
+            confirmed.extend(result.get("findings", []))
+            dismissed.extend(result.get("dismissed_findings", []))
+            tokens_in += result.get("tokens_in", 0)
+            tokens_out += result.get("tokens_out", 0)
+            cost += result.get("estimated_cost_usd", 0.0)
+
+    return confirmed, dismissed, tokens_in, tokens_out, cost, call_failures
 
 
 def _severity_label(sev: Severity) -> str:
@@ -228,7 +389,8 @@ def render_report(
     *, target: str, files_scanned: int, files_ai_aware: int,
     ai_reviewed_findings: list[Finding], passthrough_findings: list[Finding],
     dismissed: list[DismissedFinding], eval_hygiene_findings: list[Finding],
-    osv_findings: list[Finding], budget_exceeded: bool,
+    osv_findings: list[Finding], skipped_files: list[tuple[str, str]],
+    verdict_call_failures: list[tuple[str, str]],
     tokens_in: int, tokens_out: int, estimated_cost_usd: float, elapsed_s: float,
 ) -> str:
     all_findings = ai_reviewed_findings + passthrough_findings + eval_hygiene_findings + osv_findings
@@ -242,11 +404,12 @@ def render_report(
         f"({files_ai_aware} with an LLM SDK import, reviewed for AI-aware issues). "
         f"{len(dismissed)} tool finding(s) reviewed and dismissed by an AI agent as false positives."
     )
-    if budget_exceeded:
+    if skipped_files:
         lines.append("")
         lines.append(
-            "**Note:** this repo exceeded the audit budget ceiling — some files/content "
-            "were dropped before review. Findings below are only for what was scanned."
+            f"**Note:** {len(skipped_files)} file(s) were dropped before review by the audit budget "
+            "ceiling — see Skipped below for exactly which ones and why. Findings above are only for "
+            "what was actually scanned."
         )
     lines.append("")
 
@@ -279,6 +442,25 @@ def render_report(
     else:
         lines.append("No eval-hygiene issues found.")
     lines.append("")
+
+    if skipped_files or verdict_call_failures:
+        lines.append("## Skipped")
+        lines.append("")
+        if skipped_files:
+            lines.append(f"**{len(skipped_files)} file(s) never scanned** (dropped by the audit budget before any tool ran):")
+            lines.append("")
+            for path, reason in skipped_files:
+                lines.append(f"- `{path}`: {reason}")
+            lines.append("")
+        if verdict_call_failures:
+            lines.append(
+                f"**{len(verdict_call_failures)} AI-verdict call(s) failed** — the affected findings above are "
+                "raw tool output, not confirmed/dismissed by an agent:"
+            )
+            lines.append("")
+            for path, reason in verdict_call_failures:
+                lines.append(f"- `{path}`: {reason}")
+            lines.append("")
 
     lines.append("## Cost")
     lines.append("")
@@ -349,19 +531,7 @@ def run_audit(target: str, output_path: str, post_issue_flag: bool) -> int:
         all_files, dependency_contents, dependency_patches = _collect_repo_files(root, repo_config)
         print(f"{len(all_files)} reviewable file(s) found.", file=sys.stderr)
 
-        as_file_list = [{"filename": p, "additions": len(c.splitlines())} for p, c in all_files.items()]
-        kept_list, _dropped, file_budget_exceeded = apply_file_budget(as_file_list, budget)
-        kept_paths = {f["filename"] for f in kept_list}
-        files = {p: c for p, c in all_files.items() if p in kept_paths}
-
-        hunks = [
-            Hunk(path=p, start_line=1, end_line=max(len(c.splitlines()), 1), content=c, content_hash=hash_content(c))
-            for p, c in files.items()
-        ]
-        selected_hunks, _dropped_hunks, token_budget_exceeded = apply_token_budget(hunks, budget)
-        selected_paths = {h.path for h in selected_hunks}
-        files = {p: c for p, c in files.items() if p in selected_paths}
-        budget_exceeded = file_budget_exceeded or token_budget_exceeded
+        files, skipped_files = _select_files_for_audit(all_files, budget.max_files, budget.max_tokens)
 
         synthetic_patches = {p: _synthetic_whole_file_patch(c) for p, c in files.items()}
 
@@ -377,13 +547,24 @@ def run_audit(target: str, output_path: str, post_issue_flag: bool) -> int:
         # verification against simonw/llm (see evals/RESULTS.md).
         eval_hygiene_findings = review_eval_hygiene(all_files) if repo_config.enable_ai_aware else []
 
-        sec_confirmed, sec_dismissed, sec_ti, sec_to, sec_cost = _run_security_verdicts("audit", root.name, files, tool_findings)
+        security_findings_by_file = {
+            p: [f for f in tool_findings if f.file == p and f.source_tool == "bandit"] for p in files
+        }
+        sec_confirmed, sec_dismissed, sec_ti, sec_to, sec_cost, sec_failures = _run_verdict_layer(
+            review_security, "audit", root.name, files, security_findings_by_file,
+        )
 
         files_ai_aware = sum(1 for c in files.values() if _file_touches_ai_markers(c))
         if repo_config.enable_ai_aware:
-            aa_confirmed, aa_dismissed, aa_ti, aa_to, aa_cost = _run_ai_aware_verdicts("audit", root.name, files, tool_findings)
+            ai_aware_findings_by_file = {
+                p: [f for f in tool_findings if f.file == p and f.source_tool == "semgrep"]
+                for p in files if _file_touches_ai_markers(files[p])
+            }
+            aa_confirmed, aa_dismissed, aa_ti, aa_to, aa_cost, aa_failures = _run_verdict_layer(
+                review_ai_aware, "audit", root.name, files, ai_aware_findings_by_file,
+            )
         else:
-            aa_confirmed, aa_dismissed, aa_ti, aa_to, aa_cost = [], [], 0, 0, 0.0
+            aa_confirmed, aa_dismissed, aa_ti, aa_to, aa_cost, aa_failures = [], [], 0, 0, 0.0, []
 
         ai_reviewed_findings = sec_confirmed + aa_confirmed
         # Passthrough: every tool finding not claimed by a verdict agent above.
@@ -414,7 +595,8 @@ def run_audit(target: str, output_path: str, post_issue_flag: bool) -> int:
             target=target, files_scanned=len(files), files_ai_aware=files_ai_aware,
             ai_reviewed_findings=ai_reviewed_findings, passthrough_findings=passthrough_findings,
             dismissed=dismissed, eval_hygiene_findings=eval_hygiene_findings, osv_findings=osv_findings,
-            budget_exceeded=budget_exceeded, tokens_in=tokens_in, tokens_out=tokens_out,
+            skipped_files=skipped_files, verdict_call_failures=sec_failures + aa_failures,
+            tokens_in=tokens_in, tokens_out=tokens_out,
             estimated_cost_usd=estimated_cost_usd, elapsed_s=elapsed_s,
         )
 

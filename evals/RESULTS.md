@@ -466,3 +466,87 @@ corrected-env run + $0.0000 for the audit run, whose verdict calls were all refu
 - One repo, one diff, one run each — not three runs, unlike Phase 9's harness numbers above. These
   are "does it work, and what does it honestly cost/find," not precision/recall claims; no
   precision/recall table is claimed for Phase 11.
+
+## Phase 11.1 addendum — audit file ordering/chunking, dismissal breakdown, README limitations
+
+### 1. Audit mode: AI-touching-first + size-ascending ordering, AST chunking, explicit skip reporting
+
+Phase 11's audit run against `simonw/llm` scanned only 5 of 50 files — two large files
+(`llm/cli.py`, `tests/test_logs_store.py`) ate the whole `audit_max_tokens_ceiling` before the
+file-count ceiling even bound, and every file with a Bandit finding also individually exceeded the
+pipeline's `MAX_CHUNK_TOKENS` input guardrail, so the AI-verdict layer never engaged at all
+($0.0000 spent). Three real, live-verified fixes, in the order they were actually found:
+
+**Fix 1 — file selection order.** `codeguard/cli.py`'s `_select_files_for_audit` replaced the old
+two-stage `apply_file_budget`/`apply_token_budget` dance (sorted biggest-first, PR-review's own
+priority — appropriate for "review the highest-signal diff first," wrong for "get as much of a
+whole repo reviewed as the ceiling allows") with a single greedy walk sorted **AI-touching files
+first, then smallest-first within each group**: AI-touching first because only those files can ever
+get an AI-aware verdict at all; smallest-first because it lets far more files fit under the same
+token ceiling than a few huge files would.
+
+**Fix 2 — AST chunking instead of refusing.** `_chunk_file_by_ast`/`_ast_chunk_boundaries` split an
+oversized file at top-level function/class boundaries (recursing into a single oversized class's
+own methods when needed), and `_run_verdict_layer` calls `review_security`/`review_ai_aware` once
+per chunk — each chunk carrying only the raw findings that fall on its own lines — instead of one
+whole-file call that the pipeline's `MAX_CHUNK_TOKENS` guardrail would refuse outright.
+
+**Fix 3 — found by this phase's own live re-verification, not anticipated in advance.** The first
+re-run (ordering + chunking, flat `CHUNK_TOKEN_BUDGET = MAX_CHUNK_TOKENS - 1500`) still logged two
+`MAX_CHUNK_TOKENS` refusals: `tests/test_logs_store.py` (18,260 content tokens — comfortably under
+the flat 18,500 budget) and `tests/test_parts.py`. Both files have an unusually large number of
+Bandit findings (hundreds of `B101` assert-in-test occurrences), and `_run_verdict_agent`'s own
+`<findings>` block scales with finding *count*, not a fixed size — a flat content-only headroom
+constant doesn't account for that. Fixed by computing the chunk budget **per file**
+(`_effective_chunk_budget`): `MAX_CHUNK_TOKENS` minus the token cost of that file's own full
+findings block (a safe upper bound — any one chunk only ever carries a subset) minus a small fixed
+margin for the XML wrapper, floored at `MIN_CHUNK_TOKENS` so a pathological finding count still
+makes some progress rather than collapsing to zero.
+
+**Real numbers, same target (`simonw/llm`), three states:**
+
+| Run | Files scanned | Verdict call failures | Findings | Dismissed | Cost | In / out tokens | Wall clock |
+|---|---|---|---|---|---|---|---|
+| Phase 11 (biggest-first, no chunking) | 5 / 50 | 3 (whole-file refused) | 266 | 0 | $0.0000 | 0 / 0 | 7.5s |
+| + ordering + flat chunk budget | 25 / 50 | 2 (flat budget too tight) | 711 | 465 | $0.4209 | 128,981 / 2,264 | 98.0s |
+| + per-file effective chunk budget | 25 / 50 | 0 | 865 | 311 | $0.6683 | 206,821 / 3,187 | 130.7s |
+
+25-of-50 didn't move between the last two rows — that ceiling is the aggregate
+`audit_max_tokens_ceiling` binding on file *selection*, a different, still-real limit from the
+per-call `MAX_CHUNK_TOKENS` issue fixed above; see the README's new Limitations section. Going from
+0 verdict calls succeeding to a real, zero-failure verdict layer on every scanned file's findings is
+the actual fix this phase asked for — the honest caveat is that "reviews half the repo, for real
+money" is a genuinely different cost profile than the $0.00 Phase 11 first reported, and a repo
+operator should expect audit-mode cost to scale with how much of the ceiling a repo's file sizes
+actually let it use, not with repo size alone.
+
+### 2. Dismissal breakdown on PR #3's real review: Ruff has zero, by design — not what dominates
+
+Parsed directly from `codeguard-review-bot`'s actual review body on PR #3 (89 dismissed findings):
+
+| Rule ID | Tool | Count | Share |
+|---|---|---|---|
+| B101 (assert in test code) | Bandit | 87 | 97.8% |
+| B607 (partial executable path) | Bandit | 1 | 1.1% |
+| B603 (subprocess without shell equals true check) | Bandit | 1 | 1.1% |
+| — any Ruff rule — | Ruff | 0 | 0% |
+
+**Ruff cannot dominate the dismissals, or appear in them at all, structurally** — `review_file`
+(the node Ruff findings route through, see `nodes.py`'s `route_to_file_reviews`) is a pure
+passthrough with no LLM call; only Bandit (via `review_security`) and Semgrep (via
+`review_ai_aware`) findings ever go through a verdict-contract agent capable of dismissing
+anything. Per the task's own conditional ("if Ruff dominates, demote it"), that condition is false,
+so **no code change was made** — demoting a rule the pipeline was never spending verdict calls on
+in the first place wouldn't reduce any cost. What actually dominates is Bandit's `B101` in test
+files (97.8% of all dismissals on this PR) — a real, repeated pattern worth flagging as a candidate
+for a future deterministic short-circuit, but that's a different, not-yet-requested change against
+a different rule than the one this task named, so it's called out here rather than acted on
+unilaterally.
+
+### 3. README Limitations section
+
+Added, covering: hunk-scoped review's function-level blindness (citing the real "no return
+statement visible" false claim from PR #3's own CodeGuard review — the function has one; the model
+only saw a windowed slice), whole-file audit review's residual exposure to `MAX_CHUNK_TOKENS` on an
+unsplittable single statement, and the Bandit/Semgrep-only (never Ruff) shape of dismissals
+confirmed above.

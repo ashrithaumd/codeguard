@@ -127,6 +127,28 @@ Dogfooded against two real repositories (this one and a separate RAG project by 
 `messages.create()` calls) and — reported honestly, not cherry-picked — a confidently-wrong Quality
 finding about CodeGuard's own code, kept in the eval suite as a permanent regression fixture.
 
+## Limitations
+
+- **Hunk-scoped review can misjudge function-level facts.** Quality/Test review a hunk (a changed
+  region expanded to ~30 lines of context, not the whole file — see the pipeline section above), so
+  a fact that depends on seeing a function's *complete* body can come back wrong if that body
+  extends outside the hunk's window. A real example from this repo's own Phase 11 PR: CodeGuard
+  claimed a function "has no return statement visible; verify the function body is complete" — the
+  function does have one, several lines past what that hunk actually showed the model. The finding
+  wasn't dishonest, it was just working from a partial view. This is a real, unresolved trade-off
+  (whole-file review costs more and dilutes focus on what a PR actually changed), not something a
+  prompt tweak fixes — treat a hunk-scoped agent's claims about a function's *overall* structure
+  with more skepticism than its claims about the specific lines it was shown.
+- **Whole-file audit review can exceed the per-call input guardrail.** `codeguard audit` chunks an
+  oversized file at AST function/class boundaries specifically to avoid this, but a single
+  statement with no further-splittable body (a huge literal, for instance) can still occasionally
+  exceed it. See `evals/RESULTS.md`'s Phase 11.1 section for a real before/after run.
+- **Dismissals are Bandit/Semgrep-only, never Ruff.** Ruff findings pass straight through as-is —
+  there's no verdict-contract agent in front of them to confirm or dismiss anything, by design (Ruff's
+  lint output doesn't need semantic judgment the way "is this SQL construction actually injectable"
+  does). Confirmed against this repo's own real dismissal data: 89/89 dismissals on one real PR were
+  Bandit rule IDs, zero were Ruff.
+
 ## Live deployment
 
 Running on Azure Container Apps (api pinned at 1 replica; worker scale-to-zero, KEDA-scaled 0→3

@@ -11,11 +11,18 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from codeguard.cli import (
+    MAX_CHUNK_TOKENS,
+    MIN_CHUNK_TOKENS,
+    _ast_chunk_boundaries,
+    _chunk_file_by_ast,
     _clone_shallow,
     _collect_repo_files,
+    _effective_chunk_budget,
     _is_remote_url,
     _load_local_repo_config,
     _parse_owner_repo,
+    _run_verdict_layer,
+    _select_files_for_audit,
     _synthetic_whole_file_patch,
     post_issue,
     render_report,
@@ -111,7 +118,7 @@ def test_render_report_groups_by_severity_and_includes_all_sections():
         dismissed=[DismissedFinding(file="c.py", start_line=2, rule_id="B105", reason="hardcoded but a test fixture")],
         eval_hygiene_findings=[_finding(file="d.py", tool="eval-hygiene", rule_id="no-eval-harness", message="no eval suite found")],
         osv_findings=[_finding(file="requirements.txt", tool="osv", rule_id="GHSA-xxx", severity=Severity.HIGH)],
-        budget_exceeded=False, tokens_in=100, tokens_out=50, estimated_cost_usd=0.01, elapsed_s=1.5,
+        skipped_files=[], verdict_call_failures=[], tokens_in=100, tokens_out=50, estimated_cost_usd=0.01, elapsed_s=1.5,
     )
 
     assert "# CodeGuard audit: foo/bar" in report
@@ -123,19 +130,34 @@ def test_render_report_groups_by_severity_and_includes_all_sections():
     assert "$0.0100" in report
 
 
-def test_render_report_notes_budget_exceeded():
+def test_render_report_notes_skipped_files():
     report = render_report(
         target="x", files_scanned=1, files_ai_aware=0, ai_reviewed_findings=[], passthrough_findings=[],
-        dismissed=[], eval_hygiene_findings=[], osv_findings=[], budget_exceeded=True,
+        dismissed=[], eval_hygiene_findings=[], osv_findings=[],
+        skipped_files=[("big.py", "dropped by audit_max_tokens_ceiling")], verdict_call_failures=[],
         tokens_in=0, tokens_out=0, estimated_cost_usd=0.0, elapsed_s=0.1,
     )
-    assert "exceeded the audit budget ceiling" in report
+    assert "dropped before review by the audit budget ceiling" in report
+    assert "## Skipped" in report
+    assert "big.py" in report
+    assert "dropped by audit_max_tokens_ceiling" in report
+
+
+def test_render_report_notes_verdict_call_failures():
+    report = render_report(
+        target="x", files_scanned=1, files_ai_aware=1, ai_reviewed_findings=[], passthrough_findings=[],
+        dismissed=[], eval_hygiene_findings=[], osv_findings=[],
+        skipped_files=[], verdict_call_failures=[("huge.py", "lines 1-5000: agent call failed, raw finding(s) reported unverified")],
+        tokens_in=0, tokens_out=0, estimated_cost_usd=0.0, elapsed_s=0.1,
+    )
+    assert "AI-verdict call(s) failed" in report
+    assert "huge.py" in report
 
 
 def test_render_report_zero_findings_says_so():
     report = render_report(
         target="x", files_scanned=2, files_ai_aware=0, ai_reviewed_findings=[], passthrough_findings=[],
-        dismissed=[], eval_hygiene_findings=[], osv_findings=[], budget_exceeded=False,
+        dismissed=[], eval_hygiene_findings=[], osv_findings=[], skipped_files=[], verdict_call_failures=[],
         tokens_in=0, tokens_out=0, estimated_cost_usd=0.0, elapsed_s=0.1,
     )
     assert "No findings." in report
@@ -216,3 +238,174 @@ def test_run_audit_rejects_a_target_that_is_neither_url_nor_dir(tmp_path):
     missing = tmp_path / "does-not-exist"
     exit_code = run_audit(str(missing), str(tmp_path / "report.md"), post_issue_flag=False)
     assert exit_code == 1
+
+
+# --- Phase 11.1: file selection order + AST chunking for oversized files ---
+
+def test_select_files_for_audit_prioritizes_ai_touching_over_non_ai():
+    all_files = {
+        "big_ai.py": "import anthropic\n" + "x = 1\n" * 50,
+        "small_plain.py": "y = 2\n",
+    }
+    selected, skipped = _select_files_for_audit(all_files, max_files=1, max_tokens=1_000_000)
+
+    assert set(selected) == {"big_ai.py"}
+    assert skipped == [("small_plain.py", "dropped by audit_max_files_ceiling")]
+
+
+def test_select_files_for_audit_prefers_smaller_within_the_same_group():
+    all_files = {
+        "plain_big.py": "x = 1\n" * 500,
+        "plain_small.py": "y = 2\n",
+    }
+    selected, skipped = _select_files_for_audit(all_files, max_files=1, max_tokens=1_000_000)
+
+    assert set(selected) == {"plain_small.py"}
+    assert skipped == [("plain_big.py", "dropped by audit_max_files_ceiling")]
+
+
+def test_select_files_for_audit_respects_token_ceiling():
+    all_files = {"a.py": "x = 1\n" * 10, "b.py": "y = 2\n" * 10, "c.py": "z = 3\n" * 10}
+    tiny_budget = 15  # smaller than two files combined, larger than one
+
+    selected, skipped = _select_files_for_audit(all_files, max_files=10, max_tokens=tiny_budget)
+
+    assert len(selected) < 3
+    assert len(skipped) > 0
+    assert all(reason == "dropped by audit_max_tokens_ceiling" for _, reason in skipped)
+
+
+def test_select_files_for_audit_always_includes_at_least_one_file():
+    """Mirrors apply_token_budget's own rule (diff/ingest.py): an empty
+    audit because the very first (smallest) file already exceeds the
+    token ceiling on its own is worse than reviewing that one file."""
+    all_files = {"only.py": "x = 1\n" * 1000}
+    selected, skipped = _select_files_for_audit(all_files, max_files=10, max_tokens=1)
+
+    assert set(selected) == {"only.py"}
+    assert skipped == []
+
+
+def test_chunk_file_by_ast_returns_whole_file_when_it_fits():
+    content = "x = 1\ny = 2\n"
+    assert _chunk_file_by_ast(content, max_tokens=1000) == [(1, 2)]
+
+
+def test_chunk_file_by_ast_returns_none_for_unparseable_content():
+    assert _chunk_file_by_ast("def f(:\n    pass\n" * 2000, max_tokens=5) is None
+
+
+def test_chunk_file_by_ast_splits_at_function_boundaries_and_covers_every_line():
+    content = "\n".join(f"def f{i}():\n    return {i}\n" for i in range(20))
+    total_lines = len(content.splitlines())
+
+    boundaries = _chunk_file_by_ast(content, max_tokens=10)
+
+    assert boundaries is not None
+    assert len(boundaries) > 1  # actually split, not one giant chunk
+    # every line belongs to exactly one chunk, in order, no gaps/overlaps
+    assert boundaries[0][0] == 1
+    assert boundaries[-1][1] == total_lines
+    for (_, end), (next_start, _) in zip(boundaries, boundaries[1:]):
+        assert next_start == end + 1
+
+
+def test_chunk_file_by_ast_recurses_into_one_oversized_class():
+    methods = "\n".join(f"    def m{i}(self):\n        return {i}\n" for i in range(20))
+    content = f"class Big:\n{methods}"
+
+    boundaries = _chunk_file_by_ast(content, max_tokens=10)
+
+    assert boundaries is not None
+    assert len(boundaries) > 1  # the single ClassDef alone exceeds budget; recursed into its methods
+
+
+def test_ast_chunk_boundaries_direct_on_module_body():
+    import ast as ast_module
+    content = "def a():\n    pass\ndef b():\n    pass\n"
+    tree = ast_module.parse(content)
+    lines = content.splitlines()
+
+    boundaries = _ast_chunk_boundaries(tree.body, lines, max_tokens=1)
+
+    assert len(boundaries) == 2  # each function forced into its own chunk
+
+
+def test_effective_chunk_budget_shrinks_as_findings_grow():
+    """Found live against simonw/llm's tests/test_logs_store.py: a file
+    whose content alone looked safely under a flat chunk budget still
+    got refused once its ~280-finding block was appended — the budget
+    must leave room for that block, not just the content."""
+    few = [_finding(line=i) for i in range(2)]
+    many = [_finding(line=i) for i in range(200)]
+
+    assert _effective_chunk_budget(many) < _effective_chunk_budget(few)
+
+
+def test_effective_chunk_budget_floors_at_min_chunk_tokens():
+    huge_findings = [_finding(line=i, message="x" * 500) for i in range(500)]
+    assert _effective_chunk_budget(huge_findings) == MIN_CHUNK_TOKENS
+
+
+def test_effective_chunk_budget_stays_under_max_chunk_tokens_even_for_no_findings():
+    assert _effective_chunk_budget([]) < MAX_CHUNK_TOKENS
+
+
+def _mock_verdict_ok(findings):
+    return {"findings": findings, "dismissed_findings": [], "tokens_in": 5, "tokens_out": 2, "estimated_cost_usd": 0.001}
+
+
+def test_run_verdict_layer_makes_one_call_for_a_small_file():
+    f = _finding(file="a.py", line=1)
+    files = {"a.py": "x = 1\n"}
+    mock_fn = lambda state: _mock_verdict_ok(state["findings"])
+
+    confirmed, dismissed, ti, to, cost, failures = _run_verdict_layer(mock_fn, "o", "r", files, {"a.py": [f]})
+
+    assert confirmed == [f]
+    assert failures == []
+    assert ti == 5 and to == 2
+
+
+def test_run_verdict_layer_chunks_an_oversized_file_and_attributes_findings_by_line():
+    content = "\n".join(f"def f{i}():\n    return {i}\n" for i in range(20))
+    f_early = _finding(file="big.py", line=2, rule_id="B105")
+    f_late = _finding(file="big.py", line=len(content.splitlines()) - 1, rule_id="B608")
+    files = {"big.py": content}
+    calls = []
+
+    def mock_fn(state):
+        calls.append((state["content"], [f.rule_id for f in state["findings"]]))
+        return _mock_verdict_ok(state["findings"])
+
+    with patch("codeguard.cli._effective_chunk_budget", return_value=10):
+        confirmed, dismissed, ti, to, cost, failures = _run_verdict_layer(
+            mock_fn, "o", "r", files, {"big.py": [f_early, f_late]},
+        )
+
+    assert len(calls) > 1  # actually split into multiple chunk calls
+    assert {f.rule_id for f in confirmed} == {"B105", "B608"}
+    assert failures == []
+
+
+def test_run_verdict_layer_records_a_call_failure_when_the_agent_returns_no_tokens():
+    f = _finding(file="a.py", line=1)
+    files = {"a.py": "x = 1\n"}
+    mock_fn = lambda state: {"findings": state["findings"], "node_latencies": []}  # failure shape, no tokens_in key
+
+    confirmed, dismissed, ti, to, cost, failures = _run_verdict_layer(mock_fn, "o", "r", files, {"a.py": [f]})
+
+    assert confirmed == [f]  # raw finding still reported
+    assert len(failures) == 1
+    assert failures[0][0] == "a.py"
+
+
+def test_run_verdict_layer_reports_unparseable_file_as_a_call_failure():
+    files = {"bad.py": "def f(:\n"}
+    f = _finding(file="bad.py", line=1)
+    mock_fn = lambda state: _mock_verdict_ok(state["findings"])
+
+    with patch("codeguard.cli._effective_chunk_budget", return_value=1):
+        confirmed, dismissed, ti, to, cost, failures = _run_verdict_layer(mock_fn, "o", "r", files, {"bad.py": [f]})
+
+    assert any("not parseable as Python" in reason for _, reason in failures)
