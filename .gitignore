@@ -1,6 +1,12 @@
 # Secrets and environment
 .env
 .streamlit/secrets.toml
+secrets/
+# Phase 10 incident: a *.tmp file materializing a secret got its full
+# contents echoed back into the assistant's context via this session's
+# file-change notifications. Never materialize a secret into a file
+# again (temp or otherwise) — this is a backstop, not the actual fix.
+*.tmp
 
 # Database files
 *.db

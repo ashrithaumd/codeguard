@@ -1,0 +1,9 @@
+{
+  "q_only_single_letter_names.py": {"expect_quality_flag": true, "expect_test_flag": false},
+  "q_only_duplicated_blocks.py": {"expect_quality_flag": true, "expect_test_flag": false},
+  "t_only_new_branch_no_test.py": {"expect_quality_flag": false, "expect_test_flag": true},
+  "t_only_retry_logic.py": {"expect_quality_flag": false, "expect_test_flag": true},
+  "both_bad_naming_and_untested_branch.py": {"expect_quality_flag": true, "expect_test_flag": true},
+  "clean_trivial_getter.py": {"expect_quality_flag": false, "expect_test_flag": false},
+  "near_miss_necessary_or_default.py": {"expect_quality_flag": false, "expect_test_flag": false}
+}

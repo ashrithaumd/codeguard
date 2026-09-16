@@ -1,0 +1,353 @@
+[
+  {
+    "ai_aware": {
+      "agent": "ai_aware",
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "dismissal_accuracy": 1.0,
+      "tp": 19,
+      "fp": 0,
+      "fn": 0,
+      "tokens_in": 13640,
+      "tokens_out": 4161,
+      "cost_usd": 0.103335,
+      "latency_s": 90.11843200801377,
+      "n_fixtures": 15
+    },
+    "security": {
+      "agent": "security",
+      "precision": 1.0,
+      "recall": 0.5555555555555556,
+      "f1": 0.7142857142857143,
+      "dismissal_accuracy": 1.0,
+      "tp": 5,
+      "fp": 0,
+      "fn": 4,
+      "tokens_in": 5797,
+      "tokens_out": 1551,
+      "cost_usd": 0.040656,
+      "latency_s": 52.64935713100567,
+      "n_fixtures": 8
+    },
+    "quality": {
+      "agent": "quality",
+      "precision": 0.75,
+      "recall": 1.0,
+      "f1": 0.8571428571428571,
+      "tp": 3,
+      "fp": 1,
+      "fn": 0,
+      "tn": 2,
+      "tokens_in": 3611,
+      "tokens_out": 1007,
+      "cost_usd": 0.008646,
+      "latency_s": 14.080029554999783,
+      "n_fixtures": 6,
+      "per_fixture": {
+        "both_bad_naming_and_untested_branch.py": {
+          "flagged": true,
+          "expected": true
+        },
+        "clean_trivial_getter.py": {
+          "flagged": false,
+          "expected": false
+        },
+        "q_only_duplicated_blocks.py": {
+          "flagged": true,
+          "expected": true
+        },
+        "q_only_single_letter_names.py": {
+          "flagged": true,
+          "expected": true
+        },
+        "t_only_new_branch_no_test.py": {
+          "flagged": false,
+          "expected": false
+        },
+        "t_only_retry_logic.py": {
+          "flagged": true,
+          "expected": false
+        }
+      }
+    },
+    "test": {
+      "agent": "test",
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "tp": 3,
+      "fp": 0,
+      "fn": 0,
+      "tn": 3,
+      "tokens_in": 3629,
+      "tokens_out": 385,
+      "cost_usd": 0.005554,
+      "latency_s": 7.277135807002196,
+      "n_fixtures": 6,
+      "per_fixture": {
+        "both_bad_naming_and_untested_branch.py": {
+          "flagged": true,
+          "expected": true
+        },
+        "clean_trivial_getter.py": {
+          "flagged": false,
+          "expected": false
+        },
+        "q_only_duplicated_blocks.py": {
+          "flagged": false,
+          "expected": false
+        },
+        "q_only_single_letter_names.py": {
+          "flagged": false,
+          "expected": false
+        },
+        "t_only_new_branch_no_test.py": {
+          "flagged": true,
+          "expected": true
+        },
+        "t_only_retry_logic.py": {
+          "flagged": true,
+          "expected": true
+        }
+      }
+    },
+    "per_pr_tokens": 33781,
+    "per_pr_cost_usd": 0.15819099999999997,
+    "per_pr_latency_s": 164.12495450102142
+  },
+  {
+    "ai_aware": {
+      "agent": "ai_aware",
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "dismissal_accuracy": 1.0,
+      "tp": 19,
+      "fp": 0,
+      "fn": 0,
+      "tokens_in": 13640,
+      "tokens_out": 4106,
+      "cost_usd": 0.10251000000000002,
+      "latency_s": 88.17005338800664,
+      "n_fixtures": 15
+    },
+    "security": {
+      "agent": "security",
+      "precision": 1.0,
+      "recall": 0.5555555555555556,
+      "f1": 0.7142857142857143,
+      "dismissal_accuracy": 1.0,
+      "tp": 5,
+      "fp": 0,
+      "fn": 4,
+      "tokens_in": 5797,
+      "tokens_out": 1555,
+      "cost_usd": 0.040716,
+      "latency_s": 39.79014264699072,
+      "n_fixtures": 8
+    },
+    "quality": {
+      "agent": "quality",
+      "precision": 0.75,
+      "recall": 1.0,
+      "f1": 0.8571428571428571,
+      "tp": 3,
+      "fp": 1,
+      "fn": 0,
+      "tn": 2,
+      "tokens_in": 3611,
+      "tokens_out": 803,
+      "cost_usd": 0.007626,
+      "latency_s": 9.836912867998763,
+      "n_fixtures": 6,
+      "per_fixture": {
+        "both_bad_naming_and_untested_branch.py": {
+          "flagged": true,
+          "expected": true
+        },
+        "clean_trivial_getter.py": {
+          "flagged": false,
+          "expected": false
+        },
+        "q_only_duplicated_blocks.py": {
+          "flagged": true,
+          "expected": true
+        },
+        "q_only_single_letter_names.py": {
+          "flagged": true,
+          "expected": true
+        },
+        "t_only_new_branch_no_test.py": {
+          "flagged": true,
+          "expected": false
+        },
+        "t_only_retry_logic.py": {
+          "flagged": false,
+          "expected": false
+        }
+      }
+    },
+    "test": {
+      "agent": "test",
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "tp": 3,
+      "fp": 0,
+      "fn": 0,
+      "tn": 3,
+      "tokens_in": 3629,
+      "tokens_out": 483,
+      "cost_usd": 0.006043999999999999,
+      "latency_s": 8.893436813996232,
+      "n_fixtures": 6,
+      "per_fixture": {
+        "both_bad_naming_and_untested_branch.py": {
+          "flagged": true,
+          "expected": true
+        },
+        "clean_trivial_getter.py": {
+          "flagged": false,
+          "expected": false
+        },
+        "q_only_duplicated_blocks.py": {
+          "flagged": false,
+          "expected": false
+        },
+        "q_only_single_letter_names.py": {
+          "flagged": false,
+          "expected": false
+        },
+        "t_only_new_branch_no_test.py": {
+          "flagged": true,
+          "expected": true
+        },
+        "t_only_retry_logic.py": {
+          "flagged": true,
+          "expected": true
+        }
+      }
+    },
+    "per_pr_tokens": 33624,
+    "per_pr_cost_usd": 0.156896,
+    "per_pr_latency_s": 146.69054571699235
+  },
+  {
+    "ai_aware": {
+      "agent": "ai_aware",
+      "precision": 0.7307692307692307,
+      "recall": 1.0,
+      "f1": 0.8444444444444443,
+      "dismissal_accuracy": 0.0,
+      "tp": 19,
+      "fp": 7,
+      "fn": 0,
+      "tokens_in": 880,
+      "tokens_out": 265,
+      "cost_usd": 0.006615,
+      "latency_s": 9.949863598973025,
+      "n_fixtures": 15
+    },
+    "security": {
+      "agent": "security",
+      "precision": 0.75,
+      "recall": 1.0,
+      "f1": 0.8571428571428571,
+      "dismissal_accuracy": 0.0,
+      "tp": 9,
+      "fp": 3,
+      "fn": 0,
+      "tokens_in": 0,
+      "tokens_out": 0,
+      "cost_usd": 0.0,
+      "latency_s": 2.735137146009947,
+      "n_fixtures": 8
+    },
+    "quality": {
+      "agent": "quality",
+      "precision": 1.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "tp": 0,
+      "fp": 0,
+      "fn": 3,
+      "tn": 3,
+      "tokens_in": 0,
+      "tokens_out": 0,
+      "cost_usd": 0.0,
+      "latency_s": 1.8807573209996917,
+      "n_fixtures": 6,
+      "per_fixture": {
+        "both_bad_naming_and_untested_branch.py": {
+          "flagged": false,
+          "expected": true
+        },
+        "clean_trivial_getter.py": {
+          "flagged": false,
+          "expected": false
+        },
+        "q_only_duplicated_blocks.py": {
+          "flagged": false,
+          "expected": true
+        },
+        "q_only_single_letter_names.py": {
+          "flagged": false,
+          "expected": true
+        },
+        "t_only_new_branch_no_test.py": {
+          "flagged": false,
+          "expected": false
+        },
+        "t_only_retry_logic.py": {
+          "flagged": false,
+          "expected": false
+        }
+      }
+    },
+    "test": {
+      "agent": "test",
+      "precision": 1.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "tp": 0,
+      "fp": 0,
+      "fn": 3,
+      "tn": 3,
+      "tokens_in": 0,
+      "tokens_out": 0,
+      "cost_usd": 0.0,
+      "latency_s": 2.3085787240052014,
+      "n_fixtures": 6,
+      "per_fixture": {
+        "both_bad_naming_and_untested_branch.py": {
+          "flagged": false,
+          "expected": true
+        },
+        "clean_trivial_getter.py": {
+          "flagged": false,
+          "expected": false
+        },
+        "q_only_duplicated_blocks.py": {
+          "flagged": false,
+          "expected": false
+        },
+        "q_only_single_letter_names.py": {
+          "flagged": false,
+          "expected": false
+        },
+        "t_only_new_branch_no_test.py": {
+          "flagged": false,
+          "expected": true
+        },
+        "t_only_retry_logic.py": {
+          "flagged": false,
+          "expected": true
+        }
+      }
+    },
+    "per_pr_tokens": 1145,
+    "per_pr_cost_usd": 0.006615,
+    "per_pr_latency_s": 16.874336789987865
+  }
+]

@@ -1,0 +1,679 @@
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=e76220a260334e80
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=25d72664c218c6a7
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=e76220a260334e80
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+guardrail flag(s) on ai_aware input: ['pii:credit_card']
+quality agent returned unparseable output for clean_trivial_getter.py:1-11
+test agent returned unparseable output for q_only_duplicated_blocks.py:1-19
+quality agent returned unparseable output for t_only_new_branch_no_test.py:1-10
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=e76220a260334e80
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=25d72664c218c6a7
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=e76220a260334e80
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+guardrail flag(s) on ai_aware input: ['pii:credit_card']
+quality agent returned unparseable output for clean_trivial_getter.py:1-11
+test agent returned unparseable output for q_only_duplicated_blocks.py:1-19
+test agent returned unparseable output for q_only_single_letter_names.py:1-7
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=e76220a260334e80
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+ai_aware call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PPxbyXcqF5b1EDreSV'}
+ai_aware call failed for fixture_02_missing_system_and_hardcoded_key.py (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PPxbyXcqF5b1EDreSV'}), falling back to raw findings
+ai_aware call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PQ7r6KmscZ5jAFxoLZ'}
+ai_aware call failed for fixture_03_prompt_injection_and_logging_response.py (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PQ7r6KmscZ5jAFxoLZ'}), falling back to raw findings
+ai_aware call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PQGfB6PdzdWWj3DURk'}
+ai_aware call failed for fixture_04_output_to_eval_and_sql.py (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PQGfB6PdzdWWj3DURk'}), falling back to raw findings
+ai_aware call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PQRGqb2rnEJbgRyGzJ'}
+ai_aware call failed for fixture_05_missing_timeout_in_async_handler.py (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PQRGqb2rnEJbgRyGzJ'}), falling back to raw findings
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+ai_aware call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PQaEbh6biNfhaLBFdP'}
+ai_aware call failed for fixture_06_three_weaknesses_one_call.py (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PQaEbh6biNfhaLBFdP'}), falling back to raw findings
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+ai_aware call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PQj1SRRujQueWWHaVD'}
+ai_aware call failed for fixture_07_injection_missing_system_and_sink.py (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PQj1SRRujQueWWHaVD'}), falling back to raw findings
+ai_aware call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PQsm3kU6EBEySiWQrP'}
+ai_aware call failed for fixture_08_logging_timeout_and_async_sink.py (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PQsm3kU6EBEySiWQrP'}), falling back to raw findings
+ai_aware call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PR9mxYeQgUi3uc1HjE'}
+ai_aware call failed for near_miss_01_max_tokens_via_kwargs.py (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PR9mxYeQgUi3uc1HjE'}), falling back to raw findings
+ai_aware call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PRJkhpoReiGhpj9JU6'}
+ai_aware call failed for near_miss_02_dead_code_unpinned_model.py (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PRJkhpoReiGhpj9JU6'}), falling back to raw findings
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=25d72664c218c6a7
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=e76220a260334e80
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+blocked prompt-injection attempt in ai_aware input: pattern='system[\\s\\-_.]+prompt' fingerprint=143ebec025c57ba3
+ai_aware call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PRTgiv9vjJZmt2dnpE'}
+ai_aware call failed for near_miss_03_wrapped_client_injects_system_prompt.py (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PRTgiv9vjJZmt2dnpE'}), falling back to raw findings
+guardrail flag(s) on ai_aware input: ['pii:credit_card']
+ai_aware call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PRcckJrYJ638EgRSSa'}
+ai_aware call failed for near_miss_04_test_dummy_api_key.py (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PRcckJrYJ638EgRSSa'}), falling back to raw findings
+ai_aware call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PRkos1qZyu3Kqq5kQg'}
+ai_aware call failed for near_miss_05_trusted_constant_interpolation.py (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PRkos1qZyu3Kqq5kQg'}), falling back to raw findings
+ai_aware call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PRvtqd7yFzUQsMaD4L'}
+ai_aware call failed for near_miss_06_client_level_timeout.py (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PRvtqd7yFzUQsMaD4L'}), falling back to raw findings
+security call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PRyNusBrrWgeQzL99t'}
+security call failed for fixture_01_hardcoded_password.py (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PRyNusBrrWgeQzL99t'}), falling back to raw findings
+security call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PS2A6kpfAVRabcNcme'}
+security call failed for fixture_02_sql_injection.py (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PS2A6kpfAVRabcNcme'}), falling back to raw findings
+security call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PS5PKCvhMzCpQuvD1J'}
+security call failed for fixture_03_shell_injection.py (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PS5PKCvhMzCpQuvD1J'}), falling back to raw findings
+security call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PS7qfAGm3r4x5KYqEP'}
+security call failed for fixture_04_weak_hash.py (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PS7qfAGm3r4x5KYqEP'}), falling back to raw findings
+security call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSAyfY1GEmbRU1TBc2'}
+security call failed for fixture_05_eval_usage.py (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSAyfY1GEmbRU1TBc2'}), falling back to raw findings
+security call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSDYT44BLxdYx5sswP'}
+security call failed for near_miss_01_test_dummy_password.py (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSDYT44BLxdYx5sswP'}), falling back to raw findings
+security call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSGdFJFWXjS6ua3wHq'}
+security call failed for near_miss_02_trusted_constant_in_query.py (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSGdFJFWXjS6ua3wHq'}), falling back to raw findings
+security call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSLVAPkE5N75fyMFio'}
+security call failed for near_miss_03_shell_true_hardcoded_command.py (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSLVAPkE5N75fyMFio'}), falling back to raw findings
+quality call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSNRzoAbS4a1UStHMM'}
+quality call failed for both_bad_naming_and_untested_branch.py:1-12 (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSNRzoAbS4a1UStHMM'})
+test call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSQ8SF3EgxotRpFLud'}
+test call failed for both_bad_naming_and_untested_branch.py:1-12 (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSQ8SF3EgxotRpFLud'})
+quality call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSRrcnyF3ETXQ6f6m5'}
+quality call failed for clean_trivial_getter.py:1-11 (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSRrcnyF3ETXQ6f6m5'})
+test call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSTmDeDmGX1ickjJrW'}
+test call failed for clean_trivial_getter.py:1-11 (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSTmDeDmGX1ickjJrW'})
+quality call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSVPCaoXV1F57TaG5o'}
+quality call failed for q_only_duplicated_blocks.py:1-19 (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSVPCaoXV1F57TaG5o'})
+test call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSX2ft88SprWvn1vXd'}
+test call failed for q_only_duplicated_blocks.py:1-19 (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSX2ft88SprWvn1vXd'})
+quality call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSYE6qHKRgtUSUjk5D'}
+quality call failed for q_only_single_letter_names.py:1-7 (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSYE6qHKRgtUSUjk5D'})
+test call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSZmsWmGqLCCuDSEiC'}
+test call failed for q_only_single_letter_names.py:1-7 (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSZmsWmGqLCCuDSEiC'})
+quality call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSbWJCeqPz5qAJm1Y7'}
+quality call failed for t_only_new_branch_no_test.py:1-10 (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSbWJCeqPz5qAJm1Y7'})
+test call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSdoDeb9deDGqinw6J'}
+test call failed for t_only_new_branch_no_test.py:1-10 (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSdoDeb9deDGqinw6J'})
+quality call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSfF2xpr78qHQuasEy'}
+quality call failed for t_only_retry_logic.py:1-16 (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSfF2xpr78qHQuasEy'})
+test call failed
+Traceback (most recent call last):
+  File "/app/codeguard/pipeline/llm_call.py", line 145, in call_agent
+    response = client.messages.create(
+               ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_utils/_utils.py", line 294, in wrapper
+    return func(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/resources/messages/messages.py", line 1003, in create
+    return self._post(
+           ^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1373, in post
+    return cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))
+                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/local/lib/python3.12/site-packages/anthropic/_base_client.py", line 1146, in request
+    raise self._make_status_error_from_response(err.response) from None
+anthropic.BadRequestError: Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSgPEoz5baoBJaEb8t'}
+test call failed for t_only_retry_logic.py:1-16 (Error code: 400 - {'type': 'error', 'error': {'type': 'invalid_request_error', 'message': 'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.'}, 'request_id': 'req_011Cf5PSgPEoz5baoBJaEb8t'})
+--- run 1 ---
+  ai_aware   precision=1.00 recall=1.00 f1=1.00 (tp=19 fp=0 fn=0), dismissal_acc=1.00 tokens_in=13640 tokens_out=4161 cost_usd=0.1033 latency_s=90.12
+  security   precision=1.00 recall=0.56 f1=0.71 (tp=5 fp=0 fn=4), dismissal_acc=1.00 tokens_in=5797 tokens_out=1551 cost_usd=0.0407 latency_s=52.65
+  quality    precision=0.75 recall=1.00 f1=0.86 (tp=3 fp=1 fn=0) tokens_in=3611 tokens_out=1007 cost_usd=0.0086 latency_s=14.08
+  test       precision=1.00 recall=1.00 f1=1.00 (tp=3 fp=0 fn=0) tokens_in=3629 tokens_out=385 cost_usd=0.0056 latency_s=7.28
+  per-PR-equivalent: tokens=33781 cost_usd=0.1582 latency_s=164.12
+--- run 2 ---
+  ai_aware   precision=1.00 recall=1.00 f1=1.00 (tp=19 fp=0 fn=0), dismissal_acc=1.00 tokens_in=13640 tokens_out=4106 cost_usd=0.1025 latency_s=88.17
+  security   precision=1.00 recall=0.56 f1=0.71 (tp=5 fp=0 fn=4), dismissal_acc=1.00 tokens_in=5797 tokens_out=1555 cost_usd=0.0407 latency_s=39.79
+  quality    precision=0.75 recall=1.00 f1=0.86 (tp=3 fp=1 fn=0) tokens_in=3611 tokens_out=803 cost_usd=0.0076 latency_s=9.84
+  test       precision=1.00 recall=1.00 f1=1.00 (tp=3 fp=0 fn=0) tokens_in=3629 tokens_out=483 cost_usd=0.0060 latency_s=8.89
+  per-PR-equivalent: tokens=33624 cost_usd=0.1569 latency_s=146.69
+--- run 3 ---
+  ai_aware   precision=0.73 recall=1.00 f1=0.84 (tp=19 fp=7 fn=0), dismissal_acc=0.00 tokens_in=880 tokens_out=265 cost_usd=0.0066 latency_s=9.95
+  security   precision=0.75 recall=1.00 f1=0.86 (tp=9 fp=3 fn=0), dismissal_acc=0.00 tokens_in=0 tokens_out=0 cost_usd=0.0000 latency_s=2.74
+  quality    precision=1.00 recall=0.00 f1=0.00 (tp=0 fp=0 fn=3) tokens_in=0 tokens_out=0 cost_usd=0.0000 latency_s=1.88
+  test       precision=1.00 recall=0.00 f1=0.00 (tp=0 fp=0 fn=3) tokens_in=0 tokens_out=0 cost_usd=0.0000 latency_s=2.31
+  per-PR-equivalent: tokens=1145 cost_usd=0.0066 latency_s=16.87
+
+=== variance across runs ===
+  ai_aware.precision: [1.0, 1.0, 0.7308] (stdev=0.1269)
+  ai_aware.recall: [1.0, 1.0, 1.0] (stdev=0.0000)
+  ai_aware.f1: [1.0, 1.0, 0.8444] (stdev=0.0733)
+  ai_aware.cost_usd: [0.1033, 0.1025, 0.0066] (stdev=0.0454)
+  ai_aware.latency_s: [90.1184, 88.1701, 9.9499] (stdev=37.3411)
+  security.precision: [1.0, 1.0, 0.75] (stdev=0.1179)
+  security.recall: [0.5556, 0.5556, 1.0] (stdev=0.2095)
+  security.f1: [0.7143, 0.7143, 0.8571] (stdev=0.0673)
+  security.cost_usd: [0.0407, 0.0407, 0.0] (stdev=0.0192)
+  security.latency_s: [52.6494, 39.7901, 2.7351] (stdev=21.1604)
+  quality.precision: [0.75, 0.75, 1.0] (stdev=0.1179)
+  quality.recall: [1.0, 1.0, 0.0] (stdev=0.4714)
+  quality.f1: [0.8571, 0.8571, 0.0] (stdev=0.4041)
+  quality.cost_usd: [0.0086, 0.0076, 0.0] (stdev=0.0039)
+  quality.latency_s: [14.08, 9.8369, 1.8808] (stdev=5.0566)
+  test.precision: [1.0, 1.0, 1.0] (stdev=0.0000)
+  test.recall: [1.0, 1.0, 0.0] (stdev=0.4714)
+  test.f1: [1.0, 1.0, 0.0] (stdev=0.4714)
+  test.cost_usd: [0.0056, 0.006, 0.0] (stdev=0.0027)
+  test.latency_s: [7.2771, 8.8934, 2.3086] (stdev=2.8020)
+  per_pr_cost_usd: [0.1582, 0.1569, 0.0066] (stdev=0.0712)
+
+wrote raw results to evals/full_harness_results.json

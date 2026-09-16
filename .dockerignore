@@ -19,7 +19,6 @@ Thumbs.db
 *.swp
 *.swo
 *.log
-.streamlit/secrets.toml
 tests/
 .claude/
 before.txt

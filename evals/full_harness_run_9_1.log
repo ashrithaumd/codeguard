@@ -1,0 +1,46 @@
+guardrail flag(s) on ai_aware input: ['pii:credit_card']
+guardrail flag(s) on ai_aware input: ['pii:credit_card']
+guardrail flag(s) on ai_aware input: ['pii:credit_card']
+--- run 1 ---
+  ai_aware   precision=0.95 recall=1.00 f1=0.98 (tp=20 fp=1 fn=0), dismissal_acc=1.00 tokens_in=17525 tokens_out=4099 cost_usd=0.1141 latency_s=96.59
+  security   precision=1.00 recall=1.00 f1=1.00 (tp=8 fp=0 fn=0), dismissal_acc=1.00 tokens_in=7423 tokens_out=1572 cost_usd=0.0458 latency_s=38.11
+  quality    precision=0.75 recall=1.00 f1=0.86 (tp=3 fp=1 fn=0) tokens_in=4447 tokens_out=1041 cost_usd=0.0097 latency_s=13.28
+  test       precision=1.00 recall=1.00 f1=1.00 (tp=3 fp=0 fn=0) tokens_in=4468 tokens_out=598 cost_usd=0.0075 latency_s=10.78
+  per-PR-equivalent: tokens=41173 cost_usd=0.1770 latency_s=158.76
+--- run 2 ---
+  ai_aware   precision=0.95 recall=1.00 f1=0.98 (tp=20 fp=1 fn=0), dismissal_acc=1.00 tokens_in=17525 tokens_out=3972 cost_usd=0.1122 latency_s=84.76
+  security   precision=1.00 recall=1.00 f1=1.00 (tp=8 fp=0 fn=0), dismissal_acc=1.00 tokens_in=7423 tokens_out=1586 cost_usd=0.0461 latency_s=44.47
+  quality    precision=0.75 recall=1.00 f1=0.86 (tp=3 fp=1 fn=0) tokens_in=4447 tokens_out=952 cost_usd=0.0092 latency_s=11.49
+  test       precision=1.00 recall=1.00 f1=1.00 (tp=3 fp=0 fn=0) tokens_in=4468 tokens_out=526 cost_usd=0.0071 latency_s=9.67
+  per-PR-equivalent: tokens=40899 cost_usd=0.1745 latency_s=150.39
+--- run 3 ---
+  ai_aware   precision=1.00 recall=1.00 f1=1.00 (tp=20 fp=0 fn=0), dismissal_acc=1.00 tokens_in=17525 tokens_out=4187 cost_usd=0.1154 latency_s=90.61
+  security   precision=1.00 recall=1.00 f1=1.00 (tp=8 fp=0 fn=0), dismissal_acc=1.00 tokens_in=7423 tokens_out=1546 cost_usd=0.0455 latency_s=43.00
+  quality    precision=0.60 recall=1.00 f1=0.75 (tp=3 fp=2 fn=0) tokens_in=4447 tokens_out=767 cost_usd=0.0083 latency_s=10.43
+  test       precision=1.00 recall=1.00 f1=1.00 (tp=3 fp=0 fn=0) tokens_in=4468 tokens_out=756 cost_usd=0.0082 latency_s=13.02
+  per-PR-equivalent: tokens=41119 cost_usd=0.1774 latency_s=157.06
+
+=== variance across runs ===
+  ai_aware.precision: [0.9524, 0.9524, 1.0] (stdev=0.0224)
+  ai_aware.recall: [1.0, 1.0, 1.0] (stdev=0.0000)
+  ai_aware.f1: [0.9756, 0.9756, 1.0] (stdev=0.0115)
+  ai_aware.cost_usd: [0.1141, 0.1122, 0.1154] (stdev=0.0013)
+  ai_aware.latency_s: [96.5897, 84.762, 90.6102] (stdev=4.8287)
+  security.precision: [1.0, 1.0, 1.0] (stdev=0.0000)
+  security.recall: [1.0, 1.0, 1.0] (stdev=0.0000)
+  security.f1: [1.0, 1.0, 1.0] (stdev=0.0000)
+  security.cost_usd: [0.0458, 0.0461, 0.0455] (stdev=0.0002)
+  security.latency_s: [38.1112, 44.4735, 43.0022] (stdev=2.7196)
+  quality.precision: [0.75, 0.75, 0.6] (stdev=0.0707)
+  quality.recall: [1.0, 1.0, 1.0] (stdev=0.0000)
+  quality.f1: [0.8571, 0.8571, 0.75] (stdev=0.0505)
+  quality.cost_usd: [0.0097, 0.0092, 0.0083] (stdev=0.0006)
+  quality.latency_s: [13.2813, 11.4871, 10.4257] (stdev=1.1785)
+  test.precision: [1.0, 1.0, 1.0] (stdev=0.0000)
+  test.recall: [1.0, 1.0, 1.0] (stdev=0.0000)
+  test.f1: [1.0, 1.0, 1.0] (stdev=0.0000)
+  test.cost_usd: [0.0075, 0.0071, 0.0082] (stdev=0.0005)
+  test.latency_s: [10.7818, 9.6694, 13.0202] (stdev=1.3935)
+  per_pr_cost_usd: [0.177, 0.1745, 0.1774] (stdev=0.0013)
+
+wrote raw results to evals/full_harness_results_9_1.json

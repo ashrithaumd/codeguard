@@ -40,7 +40,7 @@ services:
   worker:
     build: .
     restart: unless-stopped
-    command: ["sleep", "infinity"]  # placeholder — real worker loop lands in Phase 2
+    command: ["python", "-m", "codeguard.worker.main"]
     env_file:
       - .env
     environment:
@@ -51,8 +51,51 @@ services:
       db:
         condition: service_healthy
     healthcheck:
-      disable: true  # image's baked-in HEALTHCHECK checks :8501 (Streamlit) —
-                      # meaningless here; re-enable with a real check in Phase 2
+      # Overrides the image's baked-in HEALTHCHECK (which checks :8501,
+      # Streamlit — meaningless here). :9000 is this replica's own
+      # metrics server (start_http_server in worker/main.py) — Docker
+      # evaluates HEALTHCHECK inside each container's own network
+      # namespace, so this correctly checks each --scale'd replica
+      # independently, not some shared host port.
+      test: ["CMD", "curl", "-f", "http://localhost:9000/metrics"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # Phase 10: local observability stack — scrapes api's and worker's
+  # /metrics endpoints (see observability/prometheus.yml) and serves a
+  # pre-provisioned dashboard (observability/grafana/dashboards/codeguard.json)
+  # covering queue health, review latency/throughput, tokens/cost per
+  # PR, cache hit rate, and guardrail/injection activity. Runs locally
+  # regardless of where api/worker themselves are deployed — pointed at
+  # the Azure Container Apps' public metrics endpoint once deployed
+  # (see prometheus.yml's own comments for exactly what to edit).
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    restart: unless-stopped
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    restart: unless-stopped
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"
+      GF_SECURITY_ALLOW_EMBEDDING: "true"
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
 
 volumes:
   postgres_data:
+  prometheus_data:
+  grafana_data:
