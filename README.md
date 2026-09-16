@@ -127,6 +127,14 @@ Dogfooded against two real repositories (this one and a separate RAG project by 
 `messages.create()` calls) and — reported honestly, not cherry-picked — a confidently-wrong Quality
 finding about CodeGuard's own code, kept in the eval suite as a permanent regression fixture.
 
+## Live deployment
+
+Running on Azure Container Apps (api pinned at 1 replica; worker scale-to-zero, KEDA-scaled 0→3
+on pending job count), backed by Azure Database for PostgreSQL. A real PR reviewed end to end by
+the hosted deployment: **[codeguard-playground#5](https://github.com/ashrithaumd/codeguard-playground/pull/5)**
+— the SQL injection, naming issue, and untested edge case in that PR's `validation_test.py` were
+found and posted by the Azure-hosted App itself, not run locally.
+
 ## Project structure
 
 ```

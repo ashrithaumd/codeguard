@@ -11,7 +11,7 @@
     {
       "id": 1, "type": "timeseries", "title": "Queue depth by status",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
-      "targets": [{ "expr": "codeguard_queue_depth", "legendFormat": "{{status}}" }]
+      "targets": [{ "expr": "codeguard_queue_depth", "legendFormat": "{{env}}/{{status}}" }]
     },
     {
       "id": 2, "type": "timeseries", "title": "Active leases vs dead-letter depth",
@@ -68,9 +68,9 @@
       "id": 8, "type": "timeseries", "title": "Webhook throughput (received/verified/rejected)",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 26 },
       "targets": [
-        { "expr": "rate(codeguard_webhooks_received_total[5m])", "legendFormat": "received/s" },
-        { "expr": "rate(codeguard_webhooks_verified_total[5m])", "legendFormat": "verified/s" },
-        { "expr": "rate(codeguard_webhooks_rejected_total[5m])", "legendFormat": "rejected/s" }
+        { "expr": "sum(rate(codeguard_webhooks_received_total[5m])) by (env)", "legendFormat": "{{env}} received/s" },
+        { "expr": "sum(rate(codeguard_webhooks_verified_total[5m])) by (env)", "legendFormat": "{{env}} verified/s" },
+        { "expr": "sum(rate(codeguard_webhooks_rejected_total[5m])) by (env)", "legendFormat": "{{env}} rejected/s" }
       ]
     },
     {
