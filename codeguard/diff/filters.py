@@ -45,6 +45,17 @@ def _matches_any(path: str, patterns) -> bool:
     return any(fnmatch.fnmatch(path, pattern) for pattern in patterns)
 
 
+def _extension(path: str) -> str:
+    """Phase 11.2: was duplicated verbatim between is_reviewable_path and
+    filter_files (found via CodeGuard's own review of PR #3) — extracted
+    once here. No dot in the filename (or the dot is part of a directory
+    name, e.g. "a.b/README") means no extension at all, not the
+    directory segment's own suffix.
+    """
+    name = path.rsplit("/", 1)[-1]
+    return "." + name.rsplit(".", 1)[-1] if "." in name else ""
+
+
 def is_reviewable_path(path: str, repo_config: RepoConfig) -> bool:
     """The part of filter_files' classification below that applies to
     any path regardless of context, not just a PR's changed-file list —
@@ -57,8 +68,7 @@ def is_reviewable_path(path: str, repo_config: RepoConfig) -> bool:
         return False
     if _matches_any(path, repo_config.ignored_paths):
         return False
-    ext = "." + path.rsplit(".", 1)[-1] if "." in path else ""
-    return ext in REVIEWABLE_EXTENSIONS
+    return _extension(path) in REVIEWABLE_EXTENSIONS
 
 
 def filter_files(files: list[dict], repo_config: RepoConfig) -> tuple[list[dict], list[FilteredFile]]:
@@ -84,8 +94,7 @@ def filter_files(files: list[dict], repo_config: RepoConfig) -> tuple[list[dict]
             filtered.append(FilteredFile(path=path, reason="pure deletion"))
             continue
 
-        ext = "." + path.rsplit(".", 1)[-1] if "." in path else ""
-        if ext not in REVIEWABLE_EXTENSIONS:
+        if _extension(path) not in REVIEWABLE_EXTENSIONS:
             filtered.append(FilteredFile(path=path, reason="non-Python (v1 scope is Python-only)"))
             continue
 

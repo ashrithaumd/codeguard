@@ -40,11 +40,39 @@ from codeguard.tools.run_all import run_tools_on_files
 mcp = MCPServer("codeguard")
 
 
+class GitError(Exception):
+    """Raised for any git subprocess failure in this module (not a git
+    repo, git not on PATH, a git command timing out) — caught once at
+    _run_review_diff's own top level so review_diff returns a clean
+    {"error": ...} result instead of an unhandled subprocess exception
+    reaching the MCP client. Phase 11.2: found via CodeGuard's own live
+    review of PR #3 — none of the subprocess.run(..., check=True) calls
+    here had anything catching the CalledProcessError/FileNotFoundError
+    they can raise.
+    """
+
+
+def _run_git(args: list[str], cwd) -> str:
+    try:
+        result = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, timeout=30)
+    except FileNotFoundError as e:
+        raise GitError("git is not installed or not on PATH") from e
+    except subprocess.TimeoutExpired as e:
+        raise GitError(f"git {' '.join(args)} timed out") from e
+    if result.returncode != 0:
+        raise GitError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
+    return result.stdout
+
+
 def _git_repo_root(repo_path: str | None) -> Path:
-    result = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"], cwd=repo_path, capture_output=True, text=True, check=True,
-    )
-    return Path(result.stdout.strip())
+    # Validate with a cheap, unambiguous check FIRST (Phase 11.2, per
+    # CodeGuard's own review: B603 flagged the lack of this) — a bare
+    # `git rev-parse --show-toplevel` on a non-git directory fails with
+    # the same generic "not a git repository" message anyway, but
+    # naming the check explicitly here keeps every later git command in
+    # this module operating on an already-confirmed-valid repo root.
+    _run_git(["rev-parse", "--git-dir"], repo_path)
+    return Path(_run_git(["rev-parse", "--show-toplevel"], repo_path).strip())
 
 
 def _git_changed_paths(repo_root: Path) -> list[tuple[str, bool]]:
@@ -57,12 +85,9 @@ def _git_changed_paths(repo_root: Path) -> list[tuple[str, bool]]:
     filter_files' own "pure deletion" check (nothing left on disk to
     review).
     """
-    result = subprocess.run(
-        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
-        cwd=repo_root, capture_output=True, text=True, check=True,
-    )
+    stdout = _run_git(["status", "--porcelain=v1", "--untracked-files=all"], repo_root)
     paths = []
-    for line in result.stdout.splitlines():
+    for line in stdout.splitlines():
         if not line:
             continue
         status, path = line[:2], line[3:]
@@ -82,10 +107,7 @@ def _git_file_patch(repo_root: Path, path: str, is_untracked: bool) -> str:
         except (OSError, UnicodeDecodeError):
             return ""
         return _synthetic_whole_file_patch(content)
-    result = subprocess.run(
-        ["git", "diff", "--unified=3", "HEAD", "--", path], cwd=repo_root, capture_output=True, text=True, check=True,
-    )
-    return result.stdout
+    return _run_git(["diff", "--unified=3", "HEAD", "--", path], repo_root)
 
 
 def _ingest_local_diff(repo_root: Path, repo_config, budget: Budget):
@@ -158,15 +180,24 @@ def _serialize_dismissed(d: DismissedFinding) -> dict:
     return {"file": d.file, "start_line": d.start_line, "rule_id": d.rule_id, "reason": d.reason}
 
 
+def _error_result(message: str) -> dict:
+    return {
+        "error": message, "summary": "", "findings": [], "dismissed_findings": [],
+        "tokens_in": 0, "tokens_out": 0, "estimated_cost_usd": 0.0, "budget_exceeded": False,
+    }
+
+
 async def _run_review_diff(repo_path: str | None) -> dict:
     settings = get_settings()
-    repo_root = _git_repo_root(repo_path)
-    repo_config = _load_local_repo_config(repo_root, settings)
-    budget = effective_budget(repo_config, settings)
-
-    files, patches, dependency_contents, dependency_patches, budget_exceeded = _ingest_local_diff(
-        repo_root, repo_config, budget,
-    )
+    try:
+        repo_root = _git_repo_root(repo_path)
+        repo_config = _load_local_repo_config(repo_root, settings)
+        budget = effective_budget(repo_config, settings)
+        files, patches, dependency_contents, dependency_patches, budget_exceeded = _ingest_local_diff(
+            repo_root, repo_config, budget,
+        )
+    except GitError as e:
+        return _error_result(str(e))
     if not files:
         return {
             "summary": "No reviewable changes found (git diff HEAD is empty, or every changed file was filtered out).",
@@ -229,8 +260,15 @@ async def audit_repo(target: str, post_issue: bool = False) -> dict:
     """
     with tempfile.TemporaryDirectory(prefix="codeguard-mcp-audit-") as tmp:
         output_path = str(Path(tmp) / "report.md")
-        exit_code = await asyncio.to_thread(run_audit, target, output_path, post_issue)
-        report = Path(output_path).read_text(encoding="utf-8") if exit_code == 0 and Path(output_path).exists() else ""
+        exit_code, error = await asyncio.to_thread(run_audit, target, output_path, post_issue)
+        if exit_code != 0:
+            # Phase 11.2, per CodeGuard's own review of PR #3: an
+            # empty report string with no explanation looked like a
+            # silent no-op success to a caller — this is a real error
+            # object with the actual reason (git clone failed, target
+            # isn't a directory or git URL, ...), not a guess.
+            return {"exit_code": exit_code, "error": error or "audit failed for an unknown reason", "report_markdown": ""}
+        report = Path(output_path).read_text(encoding="utf-8") if Path(output_path).exists() else ""
         return {"exit_code": exit_code, "report_markdown": report}
 
 

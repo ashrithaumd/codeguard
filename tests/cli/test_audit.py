@@ -200,9 +200,10 @@ def test_run_audit_end_to_end_orchestration(tmp_path):
          patch("codeguard.cli.review_eval_hygiene", return_value=[]), \
          patch("codeguard.cli.review_security", return_value=_mock_verdict_result([bandit_finding])) as mock_sec, \
          patch("codeguard.cli.review_ai_aware", return_value=_mock_verdict_result([semgrep_finding])) as mock_aa:
-        exit_code = run_audit(str(tmp_path), str(output), post_issue_flag=False)
+        exit_code, error = run_audit(str(tmp_path), str(output), post_issue_flag=False)
 
     assert exit_code == 0
+    assert error is None
     mock_sec.assert_called_once()
     mock_aa.assert_called_once()
 
@@ -226,7 +227,7 @@ def test_run_audit_skips_ai_aware_when_disabled(tmp_path):
     with patch("codeguard.cli.run_tools_on_files", side_effect=_fake_run_tools), \
          patch("codeguard.cli.check_dependency_updates", return_value=[]), \
          patch("codeguard.cli.review_ai_aware") as mock_aa:
-        exit_code = run_audit(str(tmp_path), str(output), post_issue_flag=False)
+        exit_code, error = run_audit(str(tmp_path), str(output), post_issue_flag=False)
 
     assert exit_code == 0
     mock_aa.assert_not_called()
@@ -236,8 +237,9 @@ def test_run_audit_skips_ai_aware_when_disabled(tmp_path):
 
 def test_run_audit_rejects_a_target_that_is_neither_url_nor_dir(tmp_path):
     missing = tmp_path / "does-not-exist"
-    exit_code = run_audit(str(missing), str(tmp_path / "report.md"), post_issue_flag=False)
+    exit_code, error = run_audit(str(missing), str(tmp_path / "report.md"), post_issue_flag=False)
     assert exit_code == 1
+    assert error is not None and "not a directory" in error
 
 
 # --- Phase 11.1: file selection order + AST chunking for oversized files ---

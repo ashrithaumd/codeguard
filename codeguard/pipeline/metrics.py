@@ -52,3 +52,10 @@ hunk_cache_total = Counter(
     "This pipeline's own content-hash result cache: whether a call was skipped entirely.",
     ["agent", "outcome"],  # outcome: hit | miss
 )
+verdict_flip_total = Counter(
+    "codeguard_verdict_flip_total",
+    "Phase 11.2: a 'confirmed' verdict whose own rationale reads like a dismissal (e.g. 'no "
+    "action needed') and was flipped to dismissed instead of surfaced as actionable — see "
+    "nodes.py's _apply_verdicts. Labeled by agent only; rule_id cardinality is unbounded.",
+    ["agent"],
+)

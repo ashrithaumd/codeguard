@@ -124,3 +124,26 @@ def test_check_dependency_updates_falls_back_to_bare_id_when_detail_fetch_fails(
     assert len(findings) == 1
     assert findings[0].rule_id == "GHSA-6757-jp84-gxfx"
     assert "unknown" not in findings[0].message
+
+
+def test_check_dependency_updates_handles_a_short_batch_response_without_misattribution():
+    """Phase 11.2, found via CodeGuard's own review of PR #3: a plain
+    zip(pins, results) would silently misalign every pin after a
+    shorter-than-expected response. Two pins queried, OSV returns only
+    one result — the SECOND pin (requests) must never be attributed
+    the FIRST pin's (pyyaml) vulnerability.
+    """
+    files = {"requirements.txt": "pyyaml==5.3\nrequests==2.31.0\n"}
+    patches = {"requirements.txt": "@@ -1,2 +1,2 @@\n-x\n+pyyaml==5.3\n+requests==2.31.0\n"}
+
+    batch_response = Mock(status_code=200)
+    batch_response.json.return_value = {"results": [{"vulns": [{"id": "GHSA-6757-jp84-gxfx"}]}]}  # only ONE result for TWO queries
+    detail_response = Mock(status_code=200)
+    detail_response.json.return_value = _osv_vuln()
+
+    with patch("codeguard.tools.osv_runner.requests.post", return_value=batch_response), \
+         patch("codeguard.tools.osv_runner.requests.get", return_value=detail_response):
+        findings = check_dependency_updates(files=files, patches=patches)
+
+    assert len(findings) == 1
+    assert findings[0].message.startswith("pyyaml==5.3")  # correctly attributed to the FIRST pin, not "requests"

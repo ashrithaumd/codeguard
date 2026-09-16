@@ -17,7 +17,7 @@ from unittest.mock import patch
 
 from codeguard.config import RepoConfig, get_settings
 from codeguard.pipeline.llm_call import AgentCallResult
-from codeguard.pipeline.models import DismissedFinding
+from codeguard.pipeline.models import DismissedFinding, FixSuggestion
 from codeguard.pipeline.nodes import summarize
 from codeguard.severity import Severity
 from tests.pipeline.conftest import make_finding
@@ -218,3 +218,107 @@ def test_summary_intro_omitted_when_call_fails():
 
     assert result["summary"].startswith("CodeGuard reviewed")
     assert "tokens_in" not in result
+
+
+# --- Phase 11.2: grouped dismissals in a <details> block, consistent
+# found/dismissed counts, quality.docs as a count-only footnote, and
+# exact fix-threshold wording — all found via CodeGuard's own live
+# review of PR #3 (see evals/RESULTS.md's Phase 11.2 section).
+
+def test_dismissed_findings_with_same_rule_and_reason_are_grouped_into_one_entry():
+    f = make_finding(file="a.py", line=3, rule_id="B105", message="confirmed one")
+    reason = "Assert statements are standard in test code."
+    d1 = DismissedFinding(file="b.py", start_line=10, rule_id="B101", reason=reason)
+    d2 = DismissedFinding(file="b.py", start_line=20, rule_id="B101", reason=reason)
+    patches = {"a.py": "@@ -1,10 +1,10 @@\n context"}
+
+    result = _summarize(_state([f], patches, dismissed_findings=[d1, d2]))
+
+    assert "<details>" in result["summary"] and "</details>" in result["summary"]
+    assert "1 finding(s) checked by an AI agent" in result["summary"]  # ONE grouped entry, not two
+    assert "b.py (lines 10, 20)" in result["summary"]
+
+
+def test_dismissed_findings_with_different_reasons_are_not_grouped_together():
+    d1 = DismissedFinding(file="b.py", start_line=10, rule_id="B101", reason="reason one")
+    d2 = DismissedFinding(file="b.py", start_line=20, rule_id="B101", reason="reason two")
+
+    result = _summarize(_state([], {}, files={"b.py": ""}, dismissed_findings=[d1, d2]))
+
+    assert "2 finding(s) checked by an AI agent" in result["summary"]
+    assert "reason one" in result["summary"] and "reason two" in result["summary"]
+
+
+def test_dismissed_count_never_exceeds_found_count_after_grouping():
+    """The exact shape found live on PR #3: one Bandit rule dismissed
+    identically across many lines of one file used to report a
+    dismissed count bigger than the (already-deduped) found count."""
+    f = make_finding(file="a.py", line=1, rule_id="B608", message="real issue")
+    reason = "Assert statements are standard in test code."
+    many_dismissals = [DismissedFinding(file="b.py", start_line=i, rule_id="B101", reason=reason) for i in range(1, 30)]
+    patches = {"a.py": "@@ -1,10 +1,10 @@\n context"}
+
+    result = _summarize(_state([f], patches, dismissed_findings=many_dismissals))
+
+    assert "1 finding(s) checked by an AI agent" in result["summary"]  # 29 raw dismissals -> 1 group
+    assert "found 1 issue" in result["summary"]
+
+
+def test_confirmed_findings_on_different_lines_with_same_message_are_grouped_in_the_body():
+    f1 = make_finding(file="a.py", line=50, rule_id="B105", tool="bandit", message="same rationale")
+    f2 = make_finding(file="a.py", line=80, rule_id="B105", tool="bandit", message="same rationale")
+    patches = {"a.py": "@@ -1,5 +1,5 @@\n context"}  # neither line is in the diff -> both go to the body
+
+    result = _summarize(_state([f1, f2], patches))
+
+    assert "1 additional finding(s) not shown inline" in result["summary"]  # grouped count, matches what's printed
+    assert result["summary"].count("same rationale") == 1  # one line, not two identical ones
+    assert "a.py (lines 50, 80)" in result["summary"]
+
+
+def test_quality_docs_findings_are_never_inlined_and_shown_as_a_count_only():
+    doc_finding = make_finding(file="a.py", line=3, rule_id="quality.docs", tool="quality-agent", message="missing docstring")
+    patches = {"a.py": "@@ -1,5 +1,5 @@\n context"}
+
+    result = _summarize(_state([doc_finding], patches))
+
+    assert result["inline_findings"] == []
+    assert "missing docstring" not in result["summary"]  # never itemized
+    assert "1 documentation (quality.docs) finding(s) not shown individually" in result["summary"]
+    assert "found 1 issue" in result["summary"]  # still counted in the total
+
+
+def test_quality_docs_alongside_a_real_finding_only_the_real_one_is_itemized():
+    doc_finding = make_finding(file="a.py", line=3, rule_id="quality.docs", tool="quality-agent", message="missing docstring")
+    real_finding = make_finding(file="b.py", line=1, rule_id="B608", tool="bandit", message="sqli")
+    patches = {"a.py": "@@ -1,5 +1,5 @@\n context", "b.py": "@@ -1,5 +1,5 @@\n context"}
+
+    result = _summarize(_state([doc_finding, real_finding], patches))
+
+    assert len(result["inline_findings"]) == 1
+    assert result["inline_findings"][0].rule_id == "B608"
+    assert "1 documentation (quality.docs) finding(s) not shown individually" in result["summary"]
+
+
+def test_no_fix_suggestions_reports_the_fix_threshold_by_name():
+    f = make_finding(file="a.py", line=3, rule_id="B105", message="x")
+    patches = {"a.py": "@@ -1,10 +1,10 @@\n context"}
+
+    result = _summarize(_state([f], patches, repo_config=RepoConfig(fix_threshold=Severity.HIGH)))
+
+    assert "No findings met the fix threshold (HIGH)." in result["summary"]
+    assert "no fix suggestions were generated" not in result["summary"].lower()
+
+
+def test_fix_suggestions_present_reports_the_count_not_the_threshold_line():
+    f = make_finding(file="a.py", line=3, rule_id="B105", message="x")
+    patches = {"a.py": "@@ -1,10 +1,10 @@\n context"}
+    suggestion = FixSuggestion(fingerprint=f.fingerprint, suggestion_body="fixed_code()")
+
+    with patch("codeguard.pipeline.nodes.call_agent", side_effect=_mock_summary_call):
+        state = _state([f], patches)
+        state["fix_suggestions"] = [suggestion]
+        result = summarize(state)
+
+    assert "1 fix suggestion(s) proposed." in result["summary"]
+    assert "No findings met the fix threshold" not in result["summary"]

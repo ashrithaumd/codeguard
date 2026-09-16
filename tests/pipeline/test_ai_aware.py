@@ -65,6 +65,54 @@ def test_review_ai_aware_confirmed_verdict_produces_a_finding_and_tracks_cost():
     assert result["cache_writes"][0].agent == "ai_aware"
 
 
+def test_review_ai_aware_confirmed_verdict_with_dismissal_language_is_flipped_to_dismissed():
+    """Phase 11.2: found live on PR #3's own CodeGuard review — a model
+    can literally answer verdict="confirmed" while its own message says
+    "No action needed... this pattern is appropriate for tests." The
+    JSON verdict field shouldn't win over what the model's own words say.
+    """
+    finding = make_finding(file="app/assistant.py", rule_id="B101", tool="bandit")
+    model_items = [{
+        "rule_id": "B101", "verdict": "confirmed", "severity": "low",
+        "message": "Assert statements are standard in test code. No action needed; this pattern is appropriate for tests.",
+    }]
+
+    with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(model_items)):
+        result = review_ai_aware(_file_state(findings=[finding]))
+
+    assert result["findings"] == []
+    assert len(result["dismissed_findings"]) == 1
+    assert result["dismissed_findings"][0].rule_id == "B101"
+
+
+def test_review_ai_aware_confirmed_verdict_flip_increments_the_metric():
+    from codeguard.pipeline.metrics import verdict_flip_total
+
+    finding = make_finding(file="app/assistant.py", rule_id="B101", tool="bandit")
+    model_items = [{"rule_id": "B101", "verdict": "confirmed", "severity": "low", "message": "Not a security risk here."}]
+    before = verdict_flip_total.labels(agent="ai_aware")._value.get()
+
+    with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(model_items)):
+        review_ai_aware(_file_state(findings=[finding]))
+
+    after = verdict_flip_total.labels(agent="ai_aware")._value.get()
+    assert after == before + 1
+
+
+def test_review_ai_aware_confirmed_verdict_without_dismissal_language_stays_confirmed():
+    finding = make_finding(file="app/assistant.py", rule_id="llm-call-missing-max-tokens", tool="semgrep")
+    model_items = [{
+        "rule_id": "llm-call-missing-max-tokens", "verdict": "confirmed", "severity": "high",
+        "message": "no max_tokens set; bounded response size needed.",
+    }]
+
+    with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(model_items)):
+        result = review_ai_aware(_file_state(findings=[finding]))
+
+    assert len(result["findings"]) == 1
+    assert result["dismissed_findings"] == []
+
+
 def test_review_ai_aware_confirmed_verdict_applies_to_every_occurrence_of_the_rule_id():
     first = make_finding(file="app/assistant.py", line=7, rule_id="llm-unpinned-model-alias", tool="semgrep")
     second = make_finding(file="app/assistant.py", line=15, rule_id="llm-unpinned-model-alias", tool="semgrep")

@@ -9,7 +9,7 @@ filter_files runs, specifically because of this.
 from __future__ import annotations
 
 from codeguard.config import RepoConfig
-from codeguard.diff.filters import filter_files, is_dependency_manifest, is_reviewable_path
+from codeguard.diff.filters import _extension, filter_files, is_dependency_manifest, is_reviewable_path
 
 
 def _file(name, additions=5, patch="@@ -1,1 +1,1 @@\n+x"):
@@ -48,3 +48,21 @@ def test_is_reviewable_path_matches_filter_files_classification():
     assert not is_reviewable_path("vendor/lib.py", cfg)
     assert not is_reviewable_path("generated_client/api.py", cfg)
     assert not is_reviewable_path("requirements.txt", cfg)  # docs pattern; handled separately by is_dependency_manifest
+
+
+def test_extension_handles_a_dot_in_a_directory_name_not_the_filename():
+    """Phase 11.2, per CodeGuard's own review of PR #3: the old inline
+    version ran rsplit(".", 1) on the whole path, so "a.b/README" (a dot
+    in the DIRECTORY, none in the filename) wrongly computed ".b/README"
+    as the extension instead of "" (no extension)."""
+    assert _extension("a.b/README") == ""
+    assert _extension("a.b/app.py") == ".py"
+
+
+def test_extension_no_dot_anywhere():
+    assert _extension("Makefile") == ""
+
+
+def test_extension_normal_case():
+    assert _extension("app.py") == ".py"
+    assert _extension("dir/app.py") == ".py"

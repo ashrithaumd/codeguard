@@ -499,7 +499,13 @@ def _parse_owner_repo(url: str) -> tuple[str, str] | None:
     return None
 
 
-def run_audit(target: str, output_path: str, post_issue_flag: bool) -> int:
+def run_audit(target: str, output_path: str, post_issue_flag: bool) -> tuple[int, str | None]:
+    """Returns (exit_code, error_message) rather than a bare exit code —
+    Phase 11.2, per CodeGuard's own review of PR #3: the MCP audit_repo
+    tool wrapping this needs the actual failure reason to return a real
+    error object, not silently fall back to an empty report string with
+    no indication of what went wrong. error_message is None on success.
+    """
     settings = get_settings()
     start = time.monotonic()
 
@@ -511,14 +517,16 @@ def run_audit(target: str, output_path: str, post_issue_flag: bool) -> int:
             try:
                 _clone_shallow(target, Path(tmp_dir))
             except subprocess.CalledProcessError as e:
-                print(f"git clone failed: {e.stderr}", file=sys.stderr)
-                return 1
+                error = f"git clone failed: {e.stderr}"
+                print(error, file=sys.stderr)
+                return 1, error
             root = Path(tmp_dir)
         else:
             root = Path(target).resolve()
             if not root.is_dir():
-                print(f"{target} is not a directory and not a recognizable git URL", file=sys.stderr)
-                return 1
+                error = f"{target} is not a directory and not a recognizable git URL"
+                print(error, file=sys.stderr)
+                return 1, error
 
         repo_config = _load_local_repo_config(root, settings)
         ceiling = Budget(
@@ -617,7 +625,7 @@ def run_audit(target: str, output_path: str, post_issue_flag: bool) -> int:
                     url = post_issue(token, owner, repo, report)
                     print(f"Issue posted: {url}", file=sys.stderr)
 
-        return 0
+        return 0, None
     finally:
         if tmp_dir is not None:
             shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -634,7 +642,8 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     if args.command == "audit":
-        return run_audit(args.target, args.output, args.post_issue)
+        exit_code, _error = run_audit(args.target, args.output, args.post_issue)
+        return exit_code
     return 1
 
 

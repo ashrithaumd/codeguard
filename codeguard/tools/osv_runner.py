@@ -170,8 +170,23 @@ def check_dependency_updates(
         logger.warning("OSV batch query failed, skipping dependency check for this PR", exc_info=True)
         return []
 
+    if len(results) != len(pins):
+        # Phase 11.2, per CodeGuard's own review of PR #3: OSV's batch
+        # endpoint is documented as one result per query, same order,
+        # but nothing here enforces that contract — a short or
+        # mismatched response would otherwise misalign every pin after
+        # the gap if paired up positionally with a bare zip(). Indexing
+        # into `results` defensively below (never zip()) means a
+        # length mismatch can only ever mean "treat the unmatched
+        # pin(s) as no result," never a silent misattribution.
+        logger.warning(
+            "OSV batch response had %d result(s) for %d quer(ies); some pins will be treated as unchecked",
+            len(results), len(pins),
+        )
+
     findings: list[Finding] = []
-    for (path, name, version), result in zip(pins, results):
+    for i, (path, name, version) in enumerate(pins):
+        result = results[i] if i < len(results) else None
         vuln_ids = [v["id"] for v in (result or {}).get("vulns", [])]
         if not vuln_ids:
             continue

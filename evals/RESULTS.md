@@ -550,3 +550,89 @@ statement visible" false claim from PR #3's own CodeGuard review — the functio
 only saw a windowed slice), whole-file audit review's residual exposure to `MAX_CHUNK_TOKENS` on an
 unsplittable single statement, and the Bandit/Semgrep-only (never Ruff) shape of dismissals
 confirmed above.
+
+## Phase 11.2 — real findings fixed, review-output-quality pass, live before/after
+
+Everything below came from CodeGuard's own two real reviews of PR #3 (its first review of the
+initial Phase 11 commit, and its second of the Phase 11.1 commit) — not hypothetical cleanup.
+
+### 1. Four real findings fixed
+
+- **`codeguard/mcp/server.py` git subprocess error handling** (B603, PR #3's second review): every
+  `subprocess.run(..., check=True)` git call was uncaught — a non-git directory, git missing from
+  PATH, or a timeout would raise all the way up as an unhandled exception instead of a clean MCP
+  tool error. Added `GitError` (raised by a new shared `_run_git` helper) and a `git rev-parse
+  --git-dir` validation step before any other git command runs, caught once at `_run_review_diff`'s
+  own top level and returned as `{"error": "...", ...}` in the same shape a successful call uses.
+- **`tools/osv_runner.py` zip() length mismatch**: `zip(pins, results)` silently truncates to the
+  shorter list and, worse, would misattribute every pin *after* a gap if OSV's batch response ever
+  omits one result out of order. Replaced with explicit index-based lookup against `pins` (the
+  authoritative list) with a bounds check per pin, plus a warning log on any length mismatch — a
+  missing result can now only ever mean "this one pin is unchecked," never "shift every subsequent
+  pin's vulnerability onto the wrong package."
+- **`audit_repo` returning an empty report on failure**: `run_audit`'s signature changed from a bare
+  `int` exit code to `tuple[int, str | None]` (exit code, error message) — `codeguard`'s own CLI
+  `main()` only needed the code, but the MCP tool needed the actual reason (git clone failed, target
+  isn't a directory or a recognizable git URL) to return `{"exit_code": 1, "error": "...", ...}`
+  instead of a silent `{"exit_code": 1, "report_markdown": ""}` that looked like a no-op success.
+- **Extension-parsing duplicated between `is_reviewable_path` and `filter_files`**: extracted to a
+  shared `_extension(path)` in `diff/filters.py` — which also fixed a latent bug neither copy had a
+  test for: the old inline version ran `rsplit(".", 1)` on the *whole path*, so `"a.b/README"` (a dot
+  in a directory name, none in the filename) wrongly computed `.b/README` as the extension instead
+  of `""`. `_extension` now splits the basename off first.
+
+### 2. Review output quality — six changes, one live before/after on this repo's own diff
+
+- **(a) Dismissals grouped by (file, rule_id, reason), inside a collapsed `<details>` block.** One
+  agent verdict on a rule_id creates one `DismissedFinding` per raw occurrence (`_apply_verdicts`),
+  so a rule dismissed identically across many lines of one file used to produce that many near-
+  duplicate list entries. `_group_dismissed` collapses them into one entry naming every line
+  (`tests/cli/test_audit.py (lines 205, 206, 211, 212, 232, 235, 241, 242)`), wrapped in
+  `<details><summary>N finding(s) checked by an AI agent, not flagged</summary>...</details>` so a
+  clean file's dismissals don't dominate the visible review body.
+- **(b) Verdict consistency check.** A "confirmed" verdict whose own message reads like a dismissal
+  (`"no action needed"`, `"not a security risk"`, `"appropriate for tests"` — the exact phrases
+  PR #3's own review used) is now flipped to dismissed in `_apply_verdicts`, incrementing the new
+  `codeguard_verdict_flip_total{agent=...}` Prometheus counter. Deliberately narrow, exact-phrase
+  matching — broadening it risks swallowing a real confirmed finding that happens to share a word.
+- **(c) Found/dismissed counts computed consistently.** Root cause of PR #3's own "98 found, 126
+  dismissed" (dismissed *exceeding* found): "found" was already fingerprint-deduped, "dismissed" was
+  the raw per-occurrence count, fed straight to the Haiku summary intro as two numbers describing
+  supposedly-comparable things. Fix (b)'s grouping is what both the deterministic body and the LLM
+  intro are now given — never two different numbers describing the same dismissals. The "N
+  additional finding(s) not shown inline" announcement was changed the same way, for the same reason
+  (it used to announce the raw remainder count while displaying a grouped list under it).
+- **(d) One rationale covering N findings on different lines → one comment listing the lines.**
+  `_group_findings_for_display` applies the same grouping to the "not shown inline" list for
+  confirmed findings, not just dismissals — a verdict-contract agent's single rationale, or Quality/
+  Test independently producing an identical message on unrelated lines, now prints once.
+- **(e) `quality.docs` findings → summary count only, never inline.** Still counted in "found" (a
+  real finding), but never itemized in the "not shown inline" list and never eligible for an inline
+  comment — reported instead as `"N documentation (quality.docs) finding(s) not shown
+  individually."` This is this pipeline's single highest-volume, lowest-value finding category
+  (missing/incomplete comments) and was crowding out everything else in the body.
+- **(f) "No fix suggestions were generated" reworded.** This was never a fixed string — it was the
+  Haiku summary intro's own free-form paraphrase of `fix_suggestions_proposed=0`, phrased
+  differently every run ("no concrete/specific/particular fix suggestions..."). Made deterministic
+  instead: `fix_suggestions_proposed` is no longer given to the LLM at all (the system prompt now
+  explicitly tells it not to mention fixes), and `summarize()` appends its own exact sentence —
+  `"No findings met the fix threshold (HIGH)."` (or the repo's own configured `fix_threshold`) — or,
+  when fixes exist, `"N fix suggestion(s) proposed."`
+
+**Live before/after, this repo's own uncommitted diff** (`review_diff`, same 12 files, real API
+calls):
+
+| | Before (PR #3's first review) | After (Phase 11.2) |
+|---|---|---|
+| Dismissed section | 61 raw entries, one per line, no collapse | 8 grouped `<details>` entries, lines listed together |
+| "Not shown inline" list | 27 raw entries incl. ~20 `quality.docs` | 27 grouped entries, `quality.docs` moved to a 1-line count |
+| Fix-suggestion line | (varied LLM prose, sometimes absent) | `"No findings met the fix threshold (HIGH)."`, exact every run |
+| Found vs. dismissed | Could contradict (98 vs. 126, PR #3 live) | Both computed from the same grouped set |
+| Cost | $0.2462 (Phase 11 review_diff run) | $0.2208 (comparable — grouping is post-hoc on the same LLM output, not a call-count change) |
+
+The dismissed/not-shown-inline entry counts didn't shrink because fewer things were reviewed — the
+same LLM calls happened, the same findings came back; what changed is how many near-duplicate list
+entries a human has to read afterward. Cost is comparable between the two runs (not identical,
+since it's a different commit's diff and real model variance) precisely because grouping is a
+*display* change, not a change to how many LLM calls this pipeline makes — item (a)-(f) are all
+free at the token-cost level.

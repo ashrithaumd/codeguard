@@ -11,9 +11,20 @@ in evals/RESULTS.md instead.
 from __future__ import annotations
 
 import subprocess
+from unittest.mock import patch
+
+import pytest
 
 from codeguard.config import RepoConfig, get_settings, effective_budget
-from codeguard.mcp.server import _git_changed_paths, _ingest_local_diff, _serialize_dismissed, _serialize_finding
+from codeguard.mcp.server import (
+    GitError,
+    _git_changed_paths,
+    _git_repo_root,
+    _ingest_local_diff,
+    _run_review_diff,
+    _serialize_dismissed,
+    _serialize_finding,
+)
 from codeguard.pipeline.models import DismissedFinding
 from codeguard.severity import Severity
 from codeguard.tools.models import Finding
@@ -115,3 +126,25 @@ def test_serialize_dismissed():
     d = DismissedFinding(file="a.py", start_line=3, rule_id="B105", reason="test fixture")
     out = _serialize_dismissed(d)
     assert out == {"file": "a.py", "start_line": 3, "rule_id": "B105", "reason": "test fixture"}
+
+
+# --- Phase 11.2: git subprocess errors are caught, not left to crash
+# the MCP tool call (found via CodeGuard's own review of PR #3, B603).
+
+def test_git_repo_root_raises_git_error_on_a_non_git_directory(tmp_path):
+    with pytest.raises(GitError, match="git .* failed"):
+        _git_repo_root(str(tmp_path))
+
+
+def test_git_repo_root_raises_git_error_when_git_is_not_installed(tmp_path):
+    with patch("codeguard.mcp.server.subprocess.run", side_effect=FileNotFoundError()):
+        with pytest.raises(GitError, match="not installed"):
+            _git_repo_root(str(tmp_path))
+
+
+async def test_run_review_diff_returns_a_clean_error_object_for_a_non_git_directory(tmp_path):
+    result = await _run_review_diff(str(tmp_path))
+
+    assert "error" in result
+    assert result["findings"] == []
+    assert result["summary"] == ""
