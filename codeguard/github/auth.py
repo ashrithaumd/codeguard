@@ -23,9 +23,23 @@ def build_app_jwt() -> str:
         "exp": now + (10 * 60),
         "iss": str(settings.github_app_id),
     }
-    with open(settings.github_private_key_path, "r") as f:
-        private_key = f.read()
+    private_key = _load_private_key(settings)
     return jwt.encode(payload, private_key, algorithm="RS256")
+
+
+def _load_private_key(settings) -> str:
+    """github_private_key (raw PEM, an env-var-friendly secret — see
+    Settings' own docstring) wins when set; otherwise falls back to
+    reading github_private_key_path, local dev's mounted-file
+    convention. Raises plainly if neither is configured rather than
+    silently trying to open an empty path.
+    """
+    if settings.github_private_key:
+        return settings.github_private_key
+    if not settings.github_private_key_path:
+        raise ValueError("neither github_private_key nor github_private_key_path is set")
+    with open(settings.github_private_key_path, "r") as f:
+        return f.read()
 
 
 def get_installation_token(installation_id: int) -> str:

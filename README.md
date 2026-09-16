@@ -1,320 +1,215 @@
-# CodeGuard — AI-Powered Multi-Agent Code Review System
+# CodeGuard
 
-## Overview
+An AI code-review GitHub App: install it on a repo, open a pull request, and within a
+minute or two get a real review — security findings, quality notes, test-coverage gaps, and
+one-click fix suggestions — posted as a normal PR review, plus a pass/fail Check Run a
+branch-protection rule can gate a merge on.
 
-CodeGuard is an end-to-end AI code review platform that submits code through a sequential pipeline of five specialized AI agents, each responsible for a distinct aspect of software quality. Within roughly 45–60 seconds of submission, a developer receives:
+## What makes this different from "wrap an LLM around `git diff`"
 
-- A full security vulnerability report with severity ratings
-- A code quality analysis with a scored rubric
-- Ready-to-run unit tests for their code
-- A complete rewrite of the code with all issues fixed
-- A compiled executive summary report
-- A context-aware chat assistant for follow-up questions
+Most AI review tools point a general-purpose model at a diff and print whatever comes back.
+CodeGuard's actual differentiator is that **the LLM never invents a finding a deterministic
+scanner didn't already produce, for security** — Bandit and a custom Semgrep ruleset run first;
+the model's only job for those is to *judge* each finding in context (confirm, or dismiss with a
+concrete, cited reason) and assign a real-world severity. That single design choice is what makes
+a "confirmed" security finding trustworthy enough to gate a merge on, rather than another source of
+alert fatigue.
 
-The problem CodeGuard solves is the gap between writing code and knowing whether it is safe, maintainable, and tested. Junior developers, solo founders, and teams without dedicated security engineers can run production-grade code reviews on demand.
+The other half of the differentiator is the **custom Semgrep ruleset for LLM-integration code
+itself** (`rules/llm-security.yaml`) — missing timeouts on `messages.create()`, unpinned model
+aliases, prompt-injection-shaped string concatenation, logging full prompts/responses, output
+piped into `eval()`/SQL. A PR that touches AI-calling code gets these checked the same
+confirm-or-dismiss way everything else does. Quality and test-coverage findings are the one place
+the model *is* generative rather than verifying — and because that's exactly where noise can creep
+in, those two agents run under an explicit noise budget: capped severity, capped findings per hunk,
+and a confidence score that demotes the vaguest ones to a summary line instead of an inline comment.
 
----
+None of this is a claim taken on faith — see [`evals/RESULTS.md`](evals/RESULTS.md) for what was
+actually measured, including a wrong finding CodeGuard produced about its own code.
 
 ## Architecture
 
-![CodeGuard System Architecture](ArchitectureDiagram.png)
-
-### Multi-Agent Pipeline
-
-CodeGuard uses a **sequential LangGraph pipeline** where each agent writes its findings into a shared state dictionary that all downstream agents can read. This mirrors how a real engineering review process works: the quality reviewer reads the security findings before writing their own, the fix agent reads both, and the summary agent compiles everything.
-
-```
-User Code Input
-      |
-      v
- [Guardrails]  <-- Input validation, prompt injection check, PII detection
-      |
-      v
-[Language Detector]  <-- Identifies programming language (1 API call)
-      |
-      v
-[Security Agent]  <-- Scans for vulnerabilities, outputs SEVERITY + ISSUES
-      |
-      v
-[Quality Agent]  <-- Reviews quality, reads security findings to avoid duplication
-      |
-      v
-[Test Agent]  <-- Generates unit tests (pytest / Jest / JUnit)
-      |
-      v
-[Fix Agent]  <-- Rewrites code with ALL security + quality issues resolved
-      |
-      v
-[Summary Agent]  <-- Compiles final structured report with OVERALL SCORE
-      |
-      v
-  [SQLite DB]  <-- Persists full review for history tab
-      |
-      v
-[Streamlit UI]  <-- Displays results, enables chat follow-up
+```mermaid
+flowchart TD
+    GH["GitHub PR opened/updated"] -->|webhook| API["api (FastAPI)<br/>signature verify, enqueue"]
+    API -->|Postgres queue| Q[("Postgres<br/>jobs / hunk cache /<br/>feedback / suppressions")]
+    Q --> W["worker<br/>(scale-to-zero, KEDA)"]
+    W --> Ingest["diff ingestion<br/>filter, budget, hunk-expand"]
+    Ingest --> Tools["Bandit + Semgrep + Ruff<br/>(deterministic, real findings)"]
+    Tools --> Graph["LangGraph review pipeline"]
+    Graph --> Sec["Security agent<br/>confirm/dismiss Bandit"]
+    Graph --> AIA["AI-aware agent<br/>confirm/dismiss Semgrep"]
+    Graph --> Qual["Quality agent<br/>generative, noise-budgeted"]
+    Graph --> Test["Test-coverage agent<br/>generative, noise-budgeted"]
+    Sec --> Fix["Fix agent<br/>proposes suggestion blocks"]
+    AIA --> Fix
+    Qual --> Sum["Summarize + dedupe"]
+    Test --> Sum
+    Fix --> Sum
+    Sum --> Post["Post PR Review + Check Run"]
+    Post --> GH
+    W -.writes.-> Q
+    W -->|LLM calls| Anthropic["Anthropic API<br/>(LangSmith traced)"]
+    API --> Metrics["/metrics"]
+    W --> WMetrics["/metrics"]
+    Metrics --> Prom["Prometheus"]
+    WMetrics --> Prom
+    Prom --> Graf["Grafana dashboard"]
 ```
 
-### State Management
+### Why these decisions
 
-LangGraph manages execution as a `StateGraph` over a typed `CodeReviewState` dictionary:
-
-```python
-class CodeReviewState(TypedDict):
-    code: str
-    language: str
-    security_findings: str
-    quality_findings: str
-    test_findings: str
-    fixed_code: str
-    final_report: str
-```
-
-Each agent receives the full state, adds its findings to the relevant field, and returns the updated state. This eliminates the need for inter-agent messaging or shared memory objects.
-
-### Why Sequential Over Parallel?
-
-The agents have deliberate **data dependencies**:
-- Quality Agent reads `security_findings` to avoid repeating security issues as quality issues
-- Fix Agent reads both `security_findings` and `quality_findings` to address all problems
-- Summary Agent reads all four findings to produce a coherent report
-
-Running them in parallel would break these dependencies and produce lower-quality, redundant output.
-
----
-
-## Features
-
-| Feature | Description |
+| Decision | Why |
 |---|---|
-| **Language Detection** | Automatically identifies the programming language before any agent runs |
-| **Security Scanning** | Detects SQL injection, hardcoded secrets, XSS, unsafe input handling, and insecure imports |
-| **Code Quality Analysis** | Scores code 1-10 and identifies naming issues, missing error handling, complexity, duplication |
-| **Unit Test Generation** | Generates runnable pytest / Jest / JUnit tests covering normal, edge, and error cases |
-| **AI Code Fixing** | Rewrites the entire submitted code with all security and quality issues resolved |
-| **Review Reports** | Structured plain-text report with Overall Score, Priority Actions, and Executive Summary |
-| **Chat Assistant** | Context-aware conversation agent that can answer follow-up questions about any finding |
-| **Review History** | All reviews persisted to SQLite and viewable in a searchable history dashboard |
-| **Guardrails** | Multi-layer input validation, prompt injection detection, and PII scanning |
-| **Real-time Progress** | Live per-agent status indicators (Pending → Running → Complete) during review |
+| **LangGraph, sequential-with-fan-out, not a single mega-prompt** | Security/AI-aware verdicts, Quality, and Test-coverage are independent per file/hunk — `Send`-based fan-out reviews them concurrently, then joins before summarizing. A single prompt can't cache per-agent system prompts separately or apply a different model tier per task. |
+| **Deterministic tool + LLM verdict, not LLM-only, for security** | An LLM asked to "find security issues" free-form has no recall guarantee and no stable identity for a finding across re-reviews. Bandit/Semgrep guarantee recall on their own rule set; the model adds the contextual judgment a static rule can't (a hardcoded string in a test file vs. production code). |
+| **Sonnet for Security/AI-aware/Fix, Haiku for Quality/Test/Summary** | Verdict judgment and code-writing benefit from a stronger model; the highest-volume calls (one per hunk) don't need Sonnet-level reasoning for "is this naming unclear." |
+| **Hunk-level, content-hash-keyed caching** | A PR pushed twice with only one file changed shouldn't re-review every other file's unchanged hunks — keyed on content hash, not file path or commit SHA, so identical content anywhere reuses a prior verdict. |
+| **Injection is block-not-flag; PII is flag-not-block** | An injection attempt threatens to hijack the model's own instructions — it's stripped before the prompt is even built, never just noted. PII in a finding doesn't threaten the pipeline's integrity the same way, so it's surfaced to a human instead of silently altering scanned content. |
+| **Quality/Test have a noise budget; Security/AI-aware don't** | Only Quality/Test generate findings from scratch with no deterministic baseline — capped severity (never above MEDIUM), capped findings/hunk, and a confidence-gated inline/summary split bound the damage a wrong guess can do. |
+| **`.codeguard.yml` is read from the PR's base branch, never the head** | A PR that could edit its own review policy could raise its own budget or disable the agent that would have caught it, in the same PR. |
+| **Worker scales to zero; api stays at exactly 1 replica** | The reaper (reclaiming abandoned queue leases) runs inside the api process and assumes it's the only instance sweeping — see `codeguard/queue/reaper.py`. Worker has no such constraint and the queue is naturally idle most of the time, so KEDA scales it 0→3 on pending job count. |
 
----
+## The pipeline, in order
 
-## Tech Stack
+1. **Ingest** — fetch the PR's changed files at `head_sha`, filter (lockfiles/generated/docs/
+   vendored/non-Python skipped), enforce a per-PR file/token budget, expand each diff hunk to ~30
+   lines of real surrounding context.
+2. **Deterministic tools** — Bandit, Semgrep (a general ruleset plus the custom LLM-security one),
+   and Ruff run once each on the whole batch, findings filtered to changed lines.
+3. **Review graph** (LangGraph, fanned out per file/hunk):
+   - **Security** confirms/dismisses each Bandit finding, with severity and a plain-language fix.
+   - **AI-aware** does the same for Semgrep findings, only on files that touch an LLM SDK.
+   - **Quality** and **Test-coverage** generate findings per hunk from scratch — noise-budgeted.
+   - **Repo-level eval-hygiene** checks (once per PR, against the base branch) flag missing eval
+     harnesses, unmocked live LLM calls in tests, and unversioned inline prompts.
+4. **Fix** proposes a GitHub suggestion-block for every confirmed finding at or above
+   `fix_threshold` — never applied automatically, always a human clicking "commit suggestion."
+5. **Summarize** dedupes everything by fingerprint, splits into inline comments (capped, most
+   severe first) vs. a summary-body list, and posts one PR Review.
+6. **Check Run** concludes `success`/`failure` from the worst confirmed severity vs. the repo's
+   `gate_threshold` — this is what a branch protection rule actually gates on.
+7. **Feedback loop** — a 👍/👎 or "false positive" reply on a finding's comment is recorded; a
+   confirmed false positive suppresses that exact finding (by fingerprint) for the rest of the
+   repo's life, going forward.
 
-| Layer | Technology | Purpose |
-|---|---|---|
-| **AI Backbone** | Anthropic Claude claude-sonnet-4-5 | All agents and language detection |
-| **Agent Orchestration** | LangGraph 1.2 | Pipeline graph, state management, execution flow |
-| **LLM Framework** | LangChain 1.3 | Prompt templates, chains, message history |
-| **Frontend** | Streamlit 1.37 | UI, real-time updates, chat interface |
-| **Database** | SQLite (stdlib) | Review history persistence |
-| **Secrets** | python-dotenv | Environment variable management |
-| **Deployment** | Docker + Azure App Service | Production containerized deployment |
-| **Language** | Python 3.12 | Runtime |
+## Guardrails
 
----
+- **Prompt injection — block, not flag.** Every piece of PR content is scanned before it's allowed
+  into a prompt; a recognized injection pattern (`ignore previous instructions`, `reveal the system
+  prompt`, `act as...`, a "respond X instead of flagging issues" substitution, etc.) is stripped and
+  replaced with a marker before the call is made, logged with a fingerprint, and counted
+  (`codeguard_injection_attempts_total`). The review continues on what's left.
+- **PII — flag, not block.** A PII-looking pattern in scanned content is noted for a human, never
+  used to alter what gets reviewed.
+- **Everything is framed as DATA, never instructions**, in every agent's own system prompt — the
+  model is told explicitly that PR content, however it's phrased, is material to analyze, not
+  commands to follow.
+- **`.codeguard.yml` is base-branch-only**, enforced at the loader, not by convention.
+- This is pattern-matching, not proof — see [`evals/adversarial/README.md`](evals/adversarial/README.md)
+  and [`evals/RESULTS.md`](evals/RESULTS.md) for exactly what was tested, what passed, and the
+  known gap (obfuscated/encoded payloads bypass the regex layer; defense-in-depth there is the DATA
+  framing, not detection).
 
-## Security and Guardrails
+## The numbers (from real, live runs — not fixtures written alongside the rules)
 
-CodeGuard implements four layers of guardrails before any user input reaches the AI agents:
+Full detail in [`evals/RESULTS.md`](evals/RESULTS.md). Highlights:
 
-### Layer 1 — Input Validation (`guardrails/validators.py`)
-- **Empty check**: Rejects blank submissions
-- **Length check**: Enforces 10–10,000 character range to prevent abuse
-- **Code check**: Requires at least 2 recognizable code indicators (`def`, `import`, `{`, `}`, etc.) to reject plain text or spam
-- **Prompt injection check**: Scans for 10+ known injection patterns (`ignore previous instructions`, `jailbreak`, `act as`, `system prompt`, etc.) using regex
+| Agent | Precision | Recall | Cost/run |
+|---|---|---|---|
+| Security (Bandit) | 1.00 | 1.00 | ~$0.046 |
+| AI-aware (Semgrep) | ~0.98 | 1.00 | ~$0.11 |
+| Quality | 0.75 | 1.00 | ~$0.008 |
+| Test-coverage | 1.00 | 1.00 | ~$0.007 |
 
-### Layer 2 — PII Detection
-Scans submitted code for personally identifiable information before sending to any AI agent:
-- Email addresses
-- US phone numbers
-- Social Security Numbers
-- Credit card numbers
+Dogfooded against two real repositories (this one and a separate RAG project by the same author):
+132 real findings, including a genuine unflagged security issue (a missing `timeout=` on two
+`messages.create()` calls) and — reported honestly, not cherry-picked — a confidently-wrong Quality
+finding about CodeGuard's own code, kept in the eval suite as a permanent regression fixture.
 
-PII detection does not block the review — it surfaces a warning banner so the user is aware their code may contain sensitive data.
-
-### Layer 3 — Output Validation
-The final report is validated before being shown to the user. Reports shorter than 50 characters (indicating a malformed or empty response) are flagged and the user is asked to resubmit.
-
-### Layer 4 — API Key Management
-The Anthropic API key is never hardcoded. It is loaded from a `.env` file (excluded from version control) using `python-dotenv`. In production, it is injected as an environment variable via Azure App Service configuration.
-
----
-
-## Project Structure
+## Project structure
 
 ```
 codeguard/
-│
-├── agents/                     # The five AI review agents + chat agent
-│   ├── __init__.py
-│   ├── security_agent.py       # Vulnerability scanner (SEVERITY: HIGH/MEDIUM/LOW)
-│   ├── quality_agent.py        # Code quality reviewer (QUALITY_SCORE: 1-10)
-│   ├── test_agent.py           # Unit test generator (pytest / Jest / JUnit)
-│   ├── fix_agent.py            # Code rewriter with all fixes applied
-│   ├── summary_agent.py        # Final report compiler (OVERALL SCORE: 1-10)
-│   └── chat_agent.py           # Context-aware follow-up chat assistant
-│
-├── pipeline/                   # LangGraph orchestration
-│   ├── __init__.py
-│   └── graph.py                # StateGraph definition, agent wiring, pipeline runner
-│
-├── guardrails/                 # Input/output safety layer
-│   ├── __init__.py
-│   └── validators.py           # validate_input, check_pii, validate_output
-│
-├── tests/                      # Test suite
-│   ├── __init__.py
-│   ├── e2e_test.py             # End-to-end pipeline + guardrails + DB tests
-│   └── test_guardrails.py      # Unit tests for validators
-│
-├── .streamlit/
-│   └── config.toml             # Dark theme, server settings
-│
-├── app.py                      # Streamlit frontend (single-file UI)
-├── database.py                 # SQLite init, save_review, get_all_reviews, get_review_by_id
-├── utils.py                    # Language detection utility
-│
-├── Dockerfile                  # Production container definition
-├── .dockerignore
-├── requirements.txt            # Pinned Python dependencies
-├── .gitignore
-└── README.md
+├── api/            FastAPI app: webhook receiver, health, /metrics
+├── worker/         Poll → claim → review → post, with heartbeat/lease/reaper
+├── pipeline/        LangGraph nodes, guardrails, hunk cache, feedback loop
+├── diff/            PR diff ingestion: fetch, filter, budget, hunk expansion
+├── tools/           Bandit/Semgrep/Ruff runners, changed-line filtering
+├── github/          GitHub REST calls: auth, reviews, check runs, repo config
+├── queue/           Postgres-backed job queue (claim/heartbeat/nack/reap)
+└── config.py         Settings (env) and RepoConfig (.codeguard.yml)
+
+evals/                Eval harness, fixtures, adversarial suite, dogfood runs, RESULTS.md
+observability/        Prometheus scrape config + provisioned Grafana dashboard
+migrations/           Postgres schema, applied automatically on startup
+rules/                Custom Semgrep ruleset for LLM-integration code
 ```
 
----
-
-## Setup and Installation
-
-### Prerequisites
-- Python 3.10+ (3.12 recommended)
-- An Anthropic API key — get one at [console.anthropic.com](https://console.anthropic.com)
-- Conda or pip
-
-### 1. Clone the repository
+## Running it locally
 
 ```bash
-git clone https://github.com/ashrithaumd/codeguard.git
-cd codeguard
+cp .env.example .env   # fill in ANTHROPIC_API_KEY, GITHUB_APP_ID, GITHUB_WEBHOOK_SECRET,
+                        # GITHUB_PRIVATE_KEY_PATH (a GitHub App's downloaded .pem)
+docker compose up -d
 ```
 
-### 2. Create and activate a conda environment
+This brings up Postgres, the api (webhook receiver, `:8000`), the worker, and a local
+observability stack — Prometheus (`:9090`) and Grafana (`:3000`, anonymous viewer access) with the
+CodeGuard dashboard pre-provisioned. For a real webhook locally, forward GitHub's deliveries with a
+tunnel (e.g. `npx smee-client --url $SMEE_URL --target http://localhost:8000/webhook`) and set that
+URL as the GitHub App's Webhook URL — the same field switches to the deployed URL in production,
+no code change either way.
 
 ```bash
-conda create -n codeguard python=3.12 -y
-conda activate codeguard
+pip install -e ".[dev]"
+pytest tests/diff tests/tools tests/github tests/pipeline   # no external deps
+pytest tests/queue                                            # needs the local Postgres running
 ```
 
-### 3. Install dependencies
+## Installing the GitHub App on a repo
 
-```bash
-pip install -r requirements.txt
+1. From the App's settings page (`github.com/settings/apps/<your-app>`), click **Install App**,
+   choose the repo(s).
+2. Under **Permissions & events**, this App needs: **Contents** (read), **Pull requests**
+   (read & write — for posting the review), **Checks** (read & write — for the Check Run gate).
+   If you add Checks later, GitHub will prompt existing installations to approve the update.
+3. Subscribe to these webhook events: **Pull request**, **Pull request review comment**,
+   **Issue comment** (the last two power the feedback loop).
+4. Point the App's **Webhook URL** at `https://<your-deployment>/webhook`.
+
+## `.codeguard.yml` reference
+
+Optional, committed at the repo root, read from the **base branch only** (a PR can never affect
+its own review policy by editing this file):
+
+```yaml
+fix_threshold: high        # low | medium | high | critical — min severity for an auto-proposed fix
+gate_threshold: critical   # min severity that fails the Check Run
+enable_ai_aware: true      # run the LLM-security Semgrep ruleset + eval-hygiene checks
+max_files_per_pr: 15       # requests are capped by the operator's own global ceiling too
+max_tokens_per_pr: 40000
+max_wall_clock_s: 120
+ignored_paths: []          # fnmatch patterns, checked before language/extension filtering
 ```
 
-### 4. Configure environment variables
+## Environment variables
 
-Create a `.env` file in the project root:
-
-```bash
-# .env
-ANTHROPIC_API_KEY=your_api_key_here
-```
-
-> The `.env` file is excluded from version control via `.gitignore`. Never commit your API key.
-
-### 5. Run the application
-
-```bash
-streamlit run app.py
-```
-
-The app opens at `http://localhost:8501`.
-
----
-
-## Running with Docker
-
-```bash
-# Build the image
-docker build -t codeguard .
-
-# Run with your API key injected
-docker run -p 8501:8501 -e ANTHROPIC_API_KEY=your_key_here codeguard
-```
-
----
-
-## Live Deployment
-
-| Platform | URL |
-|---|---|
-| **Azure Container Apps** | https://codeguard-app.kindsea-113305b4.eastus.azurecontainerapps.io |
-
-Deployed as a containerized app using the `Dockerfile` in this repository, hosted on Azure Container Apps in the `eastus` region.
-
----
-
-## Running Tests
-
-```bash
-# Fast tests — guardrails + database only (no API calls)
-python tests/e2e_test.py
-
-# Full pipeline test — all 5 agents, uses API (~60 seconds)
-RUN_PIPELINE=1 python tests/e2e_test.py
-```
-
----
-
-## Environment Variables
-
-| Variable | Required | Description |
+| Variable | Required | Notes |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Yes | Anthropic Claude API key for all AI agents |
+| `ANTHROPIC_API_KEY` | Yes | Every review agent uses this. |
+| `DATABASE_URL` | Yes | Postgres connection string; `sslmode=require` in production. |
+| `GITHUB_APP_ID` | Yes | |
+| `GITHUB_WEBHOOK_SECRET` | Yes | Verifies `X-Hub-Signature-256` on every delivery. |
+| `GITHUB_PRIVATE_KEY_PATH` | One of these two | A mounted `.pem` file — local dev convention. |
+| `GITHUB_PRIVATE_KEY` | | The PEM content itself — used in place of a file where secrets are env-vars only (e.g. Azure Container Apps). |
+| `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | No | Every real Anthropic call is traced when set — see `codeguard/pipeline/llm_call.py`. |
 
-All agents use the same API key. The key is loaded once per module via `python-dotenv` at startup.
-
----
-
-## Multi-Agent Design Decisions
-
-### Why LangGraph over CrewAI or AutoGen?
-
-**LangGraph** was chosen because it gives precise, code-level control over the execution graph. The pipeline needs deterministic sequential ordering with typed shared state — LangGraph's `StateGraph` models this exactly. CrewAI and AutoGen are designed for autonomous, self-directing agents that debate and delegate tasks; that pattern adds unpredictability and cost overhead that is unnecessary for a structured review pipeline where every step is known in advance.
-
-### Why Sequential over Parallel Execution?
-
-The agents have intentional data dependencies: the Quality Agent reads Security findings before writing its own, and the Fix Agent reads both. Running in parallel would require a second round of agent calls to incorporate cross-agent context, making the system more complex and more expensive without meaningful time savings for code of typical review size.
-
-### Why Anthropic Claude over GPT-4?
-
-- **Claude claude-sonnet-4-5** consistently follows complex structured output formats (the `SEVERITY: HIGH / ISSUES: / RECOMMENDATION:` pattern) with fewer hallucinated format deviations than GPT-4 Turbo in testing
-- Claude has a 200K context window, which is valuable as the pipeline accumulates findings across agents
-- Anthropic's API has competitive pricing for the token volume a 5-agent pipeline consumes per review
-
-### Why One LLM Instance per Agent Module?
-
-Each agent module instantiates its own `ChatAnthropic` client at import time. This is intentional: it means each agent has independent configuration (different `max_tokens` limits suited to its output size) without sharing mutable state between agents.
-
----
-
-## Future Improvements
-
-| Improvement | Description |
-|---|---|
-| **Parallel execution** | Security and Quality agents have no dependencies on each other; they could run in parallel with LangGraph's fan-out edges, cutting pipeline time by ~30% |
-| **Multi-file support** | Accept a ZIP archive or GitHub repo URL and review an entire codebase |
-| **GitHub PR integration** | Webhook that triggers a CodeGuard review on every pull request and posts findings as PR comments |
-| **Fine-tuned security model** | Replace the general-purpose Claude call in the Security Agent with a model fine-tuned on CVE data and OWASP vulnerability patterns |
-| **Streaming output** | Stream agent findings to the UI in real time as each agent completes, rather than waiting for the full pipeline |
-| **Configurable severity thresholds** | Let teams define which severity levels block a PR vs. only warn |
-| **SARIF export** | Export security findings in SARIF format for integration with GitHub Advanced Security and VS Code |
-
----
+Full list of tunable per-agent model/timeout/budget settings in `codeguard/config.py`.
 
 ## Author
 
-Built by **Ashritha** as part of the Wipro Junior FDE Pre-screening Assignment.
+Built by **Ashritha**.
 
 - GitHub: [github.com/ashrithaumd](https://github.com/ashrithaumd)
 - Email: ashritha@umd.edu

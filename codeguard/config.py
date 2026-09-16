@@ -14,8 +14,24 @@ class Settings(BaseSettings):
     anthropic_api_key: str
     database_url: str
     github_app_id: str
-    github_webhook_secret: str
-    github_private_key_path: str
+    # Optional (default ""), not because it's unimportant — api's webhook
+    # route depends on it for every signature check — but because
+    # Settings is one shared class loaded by both api and worker
+    # (Phase 10), and worker has no webhook endpoint to verify: it never
+    # reads this field at all. Requiring it unconditionally would force
+    # the worker's own deployment to carry a copy of a secret it has no
+    # use for, purely to satisfy validation.
+    github_webhook_secret: str = ""
+    # Local dev: a file path (secrets/*.pem, gitignored) — see .env.example.
+    # Phase 10 / Azure: Container Apps secrets are env-vars, not mounted
+    # files, so github_private_key (the PEM content itself) takes
+    # precedence when set; build_app_jwt() falls back to reading
+    # github_private_key_path only when it's empty. Both default to ""
+    # rather than being required, since exactly one of the two must be
+    # set and pydantic-settings has no built-in "exactly one of" — see
+    # build_app_jwt()'s own check for the actual enforcement.
+    github_private_key_path: str = ""
+    github_private_key: str = ""
 
     # Global hard ceilings — operator-controlled, override-able via env
     # vars, but never per-repo. A repo's RepoConfig can only ask for
