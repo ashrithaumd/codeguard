@@ -636,3 +636,45 @@ entries a human has to read afterward. Cost is comparable between the two runs (
 since it's a different commit's diff and real model variance) precisely because grouping is a
 *display* change, not a change to how many LLM calls this pipeline makes — item (a)-(f) are all
 free at the token-cost level.
+
+The literal shape of that change, side by side — **before** (PR #3's first review, old code, 61 raw
+dismissals one line each):
+
+```
+61 finding(s) checked by an AI agent, not flagged:
+- tests/cli/test_audit.py:205 [B101]: ...
+- tests/cli/test_audit.py:206 [B101]: ...
+- tests/cli/test_audit.py:211 [B101]: ...
+  (58 more, one per line)
+```
+
+**after** (same repo, this branch's own changes applied):
+
+```
+No findings met the fix threshold (HIGH).
+
+27 additional finding(s) not shown inline:
+[... 27 grouped entries, no quality.docs among them ...]
+20 documentation (quality.docs) finding(s) not shown individually.
+
+<details><summary>8 finding(s) checked by an AI agent, not flagged</summary>
+
+- codeguard/mcp/server.py:57 [B603]: The subprocess call passes a hardcoded `git` command...
+- tests/cli/test_audit.py (lines 205, 206, 211, 212, 232, 235, 241, 242) [B101]: This is a test file...
+- tests/diff/test_filters.py (lines 46, 47, 48, 49, 50, 58, 59, 63, 67, 68) [B101]: ...
+[... 5 more grouped entries ...]
+
+</details>
+```
+
+### 3. Honest note: PR #3's own bot review doesn't reflect any of this yet
+
+The Azure-hosted App reviewing PR #3 is built from `main` (`deploy/azure.sh` refuses to build from
+anything else, by design) and hadn't been redeployed since before Phase 11 started, so PR #3's own
+bot reviews (through the Phase 11.2 push) don't reflect any of this phase's work — confirmed
+directly by checking the latest review body for zero occurrences of `<details>`, the `quality.docs`
+footnote, or the new fix-threshold wording; all absent. The before/after above was verified locally
+(`review_diff` run directly against this repo's own diff on this branch) instead, for exactly that
+reason. Once this merges to `main` and the Azure app is redeployed, PR #3's own bot review should
+show the same shape — a separate, deliberate infrastructure step, not something a code PR does on
+its own.

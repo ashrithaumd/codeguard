@@ -104,11 +104,11 @@ async def _review_already_posted(pool, job: Job) -> bool:
     guarantees at-least-once *delivery*, not at-most-once *side effect*.
     Without this, a worker that posts successfully and then crashes
     before ack() causes a redelivery that posts the same review again
-    (observed directly during Phase 2 verification, back when this
-    guarded a single hardcoded comment — same guarantee, now guarding a
-    whole PR Review instead). Table name (posted_comments) predates
-    Phase 5's move to posting reviews rather than individual comments;
-    left as-is rather than a migration for a rename alone.
+    (observed directly during live verification, back when this guarded
+    a single hardcoded comment — same guarantee, now guarding a whole PR
+    Review instead). Table name (posted_comments) predates the move to
+    posting reviews rather than individual comments; left as-is rather
+    than a migration for a rename alone.
 
     Deliberately a plain read here, not a claiming INSERT — the insert
     happens only in _record_review_posted(), after a *confirmed*
@@ -145,10 +145,9 @@ async def _record_review_posted(pool, job: Job) -> None:
 
 
 def _log_diff_ingestion_result(pr_number: int, repo_config, result) -> None:
-    """The Phase 3 done-when deliverable: a logged, structured,
-    filtered, budgeted representation of the PR — not posted anywhere
-    yet, just visible for verification. Later phases will feed this
-    into the actual review pipeline instead of just logging it.
+    """A logged, structured, filtered, budgeted representation of the
+    PR's own diff ingestion step — separate from whatever the review
+    pipeline itself later finds, purely for operational visibility.
     """
     logger.info(
         "diff ingestion pr=%s: files_seen=%d files_reviewed=%d files_filtered=%d hunks=%d "
@@ -165,9 +164,9 @@ def _log_diff_ingestion_result(pr_number: int, repo_config, result) -> None:
 
 
 def _log_findings(pr_number: int, findings) -> None:
-    """Phase 4's done-when deliverable: structured Findings with correct
-    line numbers, logged for verification — no LLM involved, and nothing
-    posted to GitHub yet. Phase 5 posts these inline via
+    """Structured Findings with correct line numbers from the
+    deterministic tool-runner step, logged for operational visibility —
+    independent of whatever eventually gets posted inline via
     codeguard/tools/diff_position.py.
     """
     logger.info("tool findings pr=%s: %d finding(s) after changed-line filtering", pr_number, len(findings))
@@ -177,15 +176,15 @@ def _log_findings(pr_number: int, findings) -> None:
 
 
 def _findings_to_review_comments(findings, fix_suggestions) -> list[dict]:
-    """Phase 7: a finding with a matching FixSuggestion (by fingerprint)
-    gets its suggestion-block appended under the finding's own comment
-    body — one GitHub review comment, not two, and the suggestion never
-    exists without the finding's own explanation right above it.
+    """A finding with a matching FixSuggestion (by fingerprint) gets its
+    suggestion-block appended under the finding's own comment body — one
+    GitHub review comment, not two, and the suggestion never exists
+    without the finding's own explanation right above it.
 
-    Phase 10: every body also carries a hidden fingerprint_marker() —
-    invisible in GitHub's rendered markdown, recovered after posting
-    (see _record_posted_finding_comments) so a later threaded reply can
-    be traced back to the specific finding it's feedback about.
+    Every body also carries a hidden fingerprint_marker() — invisible
+    in GitHub's rendered markdown, recovered after posting (see
+    _record_posted_finding_comments) so a later threaded reply can be
+    traced back to the specific finding it's feedback about.
     """
     suggestions_by_fingerprint = {s.fingerprint: s for s in fix_suggestions}
     comments = []
@@ -200,8 +199,8 @@ def _findings_to_review_comments(findings, fix_suggestions) -> list[dict]:
 
 
 def _check_run_conclusion(all_findings, gate_threshold) -> tuple[str, str, str]:
-    """Phase 10: the Check Run's conclusion, derived purely from max
-    confirmed severity vs repo_config.gate_threshold — the same
+    """The Check Run's conclusion, derived purely from max confirmed
+    severity vs repo_config.gate_threshold — the same
     all_findings set (findings + repo_level_findings) fix_threshold
     already reads, so "would this have gotten a fix suggestion" and
     "does this block the check" are computed the same way, just against
@@ -226,10 +225,10 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
     """Fetches this job's own installation token (never cached across
     jobs — see codeguard/github/auth.py): diff ingestion -> deterministic
     tools -> the review graph (codeguard/pipeline/) -> one posted PR
-    Review. Unlike Phase 1-4, a failure anywhere in ingestion/tooling/the
-    graph now propagates instead of being swallowed — the review IS the
-    deliverable this phase, so a failure should nack and retry through
-    the normal queue path, not silently post nothing.
+    Review. A failure anywhere in ingestion/tooling/the graph propagates
+    rather than being swallowed — the review is the deliverable, so a
+    failure should nack and retry through the normal queue path, not
+    silently post nothing.
     """
     payload = job.payload
     installation_id = payload["installation_id"]
@@ -276,7 +275,7 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
     # work, no reason to serialize them. Skipped (empty dict, no GitHub
     # calls at all) when the repo has opted out of the AI-aware agent.
     tool_findings_task = asyncio.ensure_future(run_tools_on_files(diff_result.file_contents, diff_result.patches))
-    # Phase 11: OSV dependency-CVE lookup — deterministic, no LLM, and
+    # OSV dependency-CVE lookup — deterministic, no LLM, and
     # not gated on enable_ai_aware (it has nothing to do with AI-aware
     # review; a known-vulnerable pin matters regardless). Doesn't fit
     # RUNNERS/run_tools_on_files: it needs the diff itself (patches) to
@@ -296,7 +295,7 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
     if osv_findings:
         logger.info("pr=%s: %d known-vulnerability finding(s) from OSV", pr_number, len(osv_findings))
 
-    # Phase 7: prefetch every (path, content_hash, agent) this PR's
+    # Prefetch every (path, content_hash, agent) this PR's
     # agents could possibly check — computed the same way the graph's
     # own route_to_* functions decide what to dispatch (compute_cache_keys),
     # so this is exactly what's needed, not a broader guess. A hit means
@@ -305,7 +304,7 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
     hunk_cache_hits = await fetch_cache_hits(pool, owner, repo, cache_keys)
     logger.info("hunk cache pr=%s: %d key(s) checked, %d hit", pr_number, len(cache_keys), len(hunk_cache_hits))
 
-    # Phase 10: fingerprints this repo has already marked false_positive
+    # Fingerprints this repo has already marked false_positive
     # via a reply on a past PR — see codeguard/pipeline/feedback.py.
     suppressed_fingerprints = frozenset(await fetch_suppressed_fingerprints(pool, owner, repo))
     if suppressed_fingerprints:
@@ -348,9 +347,9 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
     await _record_review_posted(pool, job)
     REVIEWS_POSTED.inc()
 
-    # Phase 10: best-effort — a failure here only costs future feedback
-    # on this PR's comments (the reply -> fingerprint lookup will simply
-    # miss), never the review itself, which already posted successfully.
+    # Best-effort — a failure here only costs future feedback on this
+    # PR's comments (the reply -> fingerprint lookup will simply miss),
+    # never the review itself, which already posted successfully.
     if comments:
         try:
             posted = fetch_review_comments(token, owner, repo, pr_number, review_id)

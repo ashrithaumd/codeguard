@@ -51,10 +51,10 @@ def test_is_reviewable_path_matches_filter_files_classification():
 
 
 def test_extension_handles_a_dot_in_a_directory_name_not_the_filename():
-    """Phase 11.2, per CodeGuard's own review of PR #3: the old inline
-    version ran rsplit(".", 1) on the whole path, so "a.b/README" (a dot
-    in the DIRECTORY, none in the filename) wrongly computed ".b/README"
-    as the extension instead of "" (no extension)."""
+    """Found via CodeGuard's own review of one of its own PRs: the old
+    inline version ran rsplit(".", 1) on the whole path, so "a.b/README"
+    (a dot in the DIRECTORY, none in the filename) wrongly computed
+    ".b/README" as the extension instead of "" (no extension)."""
     assert _extension("a.b/README") == ""
     assert _extension("a.b/app.py") == ".py"
 

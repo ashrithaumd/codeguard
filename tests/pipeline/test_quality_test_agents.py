@@ -115,7 +115,7 @@ def test_review_test_hunk_cache_hit_skips_the_call():
     assert result["findings"] == [cached_finding]
 
 
-# --- Phase 8: noise budget (Quality/Test are the only ungrounded agents) ---
+# --- Noise budget (Quality/Test are the only ungrounded agents) ---
 
 def test_review_quality_parses_confidence_field():
     items = [{"line": 1, "severity": "low", "category": "naming", "message": "x", "confidence": 0.4}]
@@ -173,10 +173,10 @@ def test_review_quality_caps_findings_per_hunk_keeping_the_most_severe_and_confi
     assert messages == {"2", "1", "5"}  # medium first, then the two highest-confidence lows
 
 
-# --- Phase 9: found via the live adversarial/dogfood runs ---
+# --- Found via the live adversarial/dogfood runs ---
 
 def test_review_quality_parses_a_fenced_response_with_trailing_prose():
-    """Real raw model output captured during Phase 9's live adversarial
+    """Real raw model output captured during a live adversarial
     run: the model wraps its answer in a ```json fence and then explains
     itself in prose afterward, despite being told to respond with ONLY
     the JSON array. The old parser only stripped a fence around the

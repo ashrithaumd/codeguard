@@ -127,7 +127,7 @@ def test_check_dependency_updates_falls_back_to_bare_id_when_detail_fetch_fails(
 
 
 def test_check_dependency_updates_handles_a_short_batch_response_without_misattribution():
-    """Phase 11.2, found via CodeGuard's own review of PR #3: a plain
+    """Found via CodeGuard's own review of one of its own PRs: a plain
     zip(pins, results) would silently misalign every pin after a
     shorter-than-expected response. Two pins queried, OSV returns only
     one result — the SECOND pin (requests) must never be attributed

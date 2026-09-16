@@ -14,7 +14,7 @@ from codeguard.diff.models import FilteredFile
 
 REVIEWABLE_EXTENSIONS = {".py"}
 
-# Phase 11: dependency manifests are never AI-reviewable code (nothing
+# Dependency manifests are never AI-reviewable code (nothing
 # for Quality/Test/Security agents to say about a version pin), but
 # tools/osv_runner.py still needs their raw patch — see
 # is_dependency_manifest's callers in diff/ingest.py, which pull these
@@ -46,11 +46,11 @@ def _matches_any(path: str, patterns) -> bool:
 
 
 def _extension(path: str) -> str:
-    """Phase 11.2: was duplicated verbatim between is_reviewable_path and
-    filter_files (found via CodeGuard's own review of PR #3) — extracted
-    once here. No dot in the filename (or the dot is part of a directory
-    name, e.g. "a.b/README") means no extension at all, not the
-    directory segment's own suffix.
+    """Was duplicated verbatim between is_reviewable_path and
+    filter_files (found via CodeGuard's own review of one of its own
+    PRs) — extracted once here. No dot in the filename (or the dot is
+    part of a directory name, e.g. "a.b/README") means no extension at
+    all, not the directory segment's own suffix.
     """
     name = path.rsplit("/", 1)[-1]
     return "." + name.rsplit(".", 1)[-1] if "." in name else ""

@@ -18,7 +18,7 @@ def post_review(
     token: str, owner: str, repo: str, pr_number: int,
     commit_id: str, body: str, comments: list[dict],
 ) -> int:
-    """Returns the created review's id — Phase 10's feedback loop needs
+    """Returns the created review's id — the feedback loop needs
     it to look up each inline comment's own id afterward (see
     fetch_review_comments), since a threaded reply's `in_reply_to_id`
     only means anything once we know which comment_id maps to which

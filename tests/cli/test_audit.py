@@ -242,7 +242,7 @@ def test_run_audit_rejects_a_target_that_is_neither_url_nor_dir(tmp_path):
     assert error is not None and "not a directory" in error
 
 
-# --- Phase 11.1: file selection order + AST chunking for oversized files ---
+# --- File selection order + AST chunking for oversized files ---
 
 def test_select_files_for_audit_prioritizes_ai_touching_over_non_ai():
     all_files = {

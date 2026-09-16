@@ -1,4 +1,4 @@
-"""Phase 10: one GitHub Check Run per PR review, separate from the
+"""One GitHub Check Run per PR review, separate from the
 inline-comments-plus-summary PR Review post.py already does. A Check
 Run is what shows up as a required-status-check gate in GitHub's PR
 merge UI — repos that want CodeGuard to actually block a merge on

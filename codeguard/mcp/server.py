@@ -45,10 +45,10 @@ class GitError(Exception):
     repo, git not on PATH, a git command timing out) — caught once at
     _run_review_diff's own top level so review_diff returns a clean
     {"error": ...} result instead of an unhandled subprocess exception
-    reaching the MCP client. Phase 11.2: found via CodeGuard's own live
-    review of PR #3 — none of the subprocess.run(..., check=True) calls
-    here had anything catching the CalledProcessError/FileNotFoundError
-    they can raise.
+    reaching the MCP client. Found via CodeGuard's own live review of
+    one of its own PRs — none of the subprocess.run(..., check=True)
+    calls here had anything catching the
+    CalledProcessError/FileNotFoundError they can raise.
     """
 
 
@@ -65,8 +65,8 @@ def _run_git(args: list[str], cwd) -> str:
 
 
 def _git_repo_root(repo_path: str | None) -> Path:
-    # Validate with a cheap, unambiguous check FIRST (Phase 11.2, per
-    # CodeGuard's own review: B603 flagged the lack of this) — a bare
+    # Validate with a cheap, unambiguous check FIRST (per CodeGuard's
+    # own review: B603 flagged the lack of this) — a bare
     # `git rev-parse --show-toplevel` on a non-git directory fails with
     # the same generic "not a git repository" message anyway, but
     # naming the check explicitly here keeps every later git command in
@@ -262,7 +262,7 @@ async def audit_repo(target: str, post_issue: bool = False) -> dict:
         output_path = str(Path(tmp) / "report.md")
         exit_code, error = await asyncio.to_thread(run_audit, target, output_path, post_issue)
         if exit_code != 0:
-            # Phase 11.2, per CodeGuard's own review of PR #3: an
+            # Found via CodeGuard's own review of one of its own PRs: an
             # empty report string with no explanation looked like a
             # silent no-op success to a caller — this is a real error
             # object with the actual reason (git clone failed, target

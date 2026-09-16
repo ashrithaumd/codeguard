@@ -4,8 +4,7 @@ since the whole point of this module is translating `git status`/
 `git diff` output into the same shape diff/ingest.py builds from the
 GitHub API, and that translation is exactly what a mock would hide bugs
 in. review_diff/audit_repo themselves (the actual LLM/pipeline calls)
-are exercised live, not here — see the Phase 11 phase-exit verification
-in evals/RESULTS.md instead.
+are exercised live, not here — see evals/RESULTS.md instead.
 """
 
 from __future__ import annotations
@@ -128,7 +127,7 @@ def test_serialize_dismissed():
     assert out == {"file": "a.py", "start_line": 3, "rule_id": "B105", "reason": "test fixture"}
 
 
-# --- Phase 11.2: git subprocess errors are caught, not left to crash
+# --- Git subprocess errors are caught, not left to crash
 # the MCP tool call (found via CodeGuard's own review of PR #3, B603).
 
 def test_git_repo_root_raises_git_error_on_a_non_git_directory(tmp_path):

@@ -10,10 +10,9 @@ branch's return overwriting another's. Plain (non-Annotated) fields are
 set once and not merged across branches — every fan-out branch that
 touches one of those must agree, or just not return it at all.
 
-tokens_in/tokens_out/estimated_cost_usd/node_latencies exist now, every
-value 0/empty, even though nothing in this phase does an LLM call —
-Phase 7's real agents fill them, and defining the shape now means the
-state contract doesn't change under Phase 7's feet later.
+tokens_in/tokens_out/estimated_cost_usd/node_latencies start every run
+at 0/empty; every LLM-calling agent node adds its own contribution via
+the annotated reducer as it runs.
 """
 
 from __future__ import annotations
@@ -77,9 +76,9 @@ class ReviewState(TypedDict):
 
     files: dict[str, str]        # path -> full content at head_sha
     patches: dict[str, str]      # path -> GitHub patch text
-    tool_findings: list[Finding]  # Phase 4's pre-computed findings for the whole PR, set once
+    tool_findings: list[Finding]  # deterministic tool runners' pre-computed findings for the whole PR, set once
 
-    # Phase 10: fingerprints a repo maintainer has marked false_positive
+    # Fingerprints a repo maintainer has marked false_positive
     # via a reply on a past PR (codeguard/pipeline/feedback.py) — fetched
     # ONCE by worker/main.py before the graph runs, same "set once, not a
     # reducer" shape as hunk_cache_hits. route_after_fanin and summarize
@@ -90,13 +89,13 @@ class ReviewState(TypedDict):
     # returned (see _check_run_conclusion's own call site).
     suppressed_fingerprints: frozenset[str]
 
-    # Phase 6: bounded Python-file sample from the PR's BASE branch (see
+    # Bounded Python-file sample from the PR's BASE branch (see
     # codeguard/github/base_tree.py), used only by review_repo_level's
     # eval-hygiene checks. Empty dict when repo_config.enable_ai_aware is
     # False — worker/main.py skips the fetch entirely in that case.
     base_tree_files: dict[str, str]
 
-    # Phase 7: hunk-level result reuse (codeguard/pipeline/hunk_cache.py).
+    # Hunk-level result reuse (codeguard/pipeline/hunk_cache.py).
     # hunk_cache_hits is fetched ONCE by worker/main.py before the graph
     # runs (a node checking its own (path, content_hash, agent) key here
     # instead of calling the LLM at all is what "no LLM call" means) —
@@ -112,12 +111,12 @@ class ReviewState(TypedDict):
 
     findings: Annotated[list[Finding], operator.add]
     repo_level_findings: Annotated[list[Finding], operator.add]
-    # Phase 6.1: Semgrep findings the AI-aware agent judged, in context,
-    # not to be real issues — never posted inline, surfaced only in
-    # summarize()'s body. See codeguard/pipeline/models.py's
-    # DismissedFinding and Settings.ai_aware_dismissals_enabled.
+    # Semgrep findings the AI-aware agent judged, in context, not to be
+    # real issues — never posted inline, surfaced only in summarize()'s
+    # body. See codeguard/pipeline/models.py's DismissedFinding and
+    # Settings.ai_aware_dismissals_enabled.
     dismissed_findings: Annotated[list[DismissedFinding], operator.add]
-    # Phase 7: propose_fix's suggestion-block output, one per confirmed
+    # propose_fix's suggestion-block output, one per confirmed
     # finding at/above fix_threshold — never applied, just proposed.
     fix_suggestions: Annotated[list[FixSuggestion], operator.add]
 
@@ -125,8 +124,8 @@ class ReviewState(TypedDict):
     # file (route_after_fanin), and LangGraph rejects two branches
     # writing the SAME plain key in one superstep even when both would
     # write the identical value True — confirmed the hard way, via a
-    # real INVALID_CONCURRENT_GRAPH_UPDATE on a live multi-file PR
-    # during Phase 7 verification, not assumed. operator.or_ combines
+    # real INVALID_CONCURRENT_GRAPH_UPDATE on a live multi-file PR, not
+    # assumed. operator.or_ combines
     # any number of True/False writes correctly; a run where
     # propose_fix never fires at all leaves this at its initial False.
     should_fix: Annotated[bool, operator.or_]

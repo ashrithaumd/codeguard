@@ -60,8 +60,8 @@ GITHUB_ISSUES_URL = "https://api.github.com/repos/{owner}/{repo}/issues"
 
 _tokenizer = tiktoken.get_encoding("cl100k_base")
 
-# Phase 11.1: the pipeline-wide guardrail (guardrails.MAX_CHUNK_TOKENS)
-# measures the FULL user_content sent to the model — file/chunk content
+# The pipeline-wide guardrail (guardrails.MAX_CHUNK_TOKENS) measures
+# the FULL user_content sent to the model — file/chunk content
 # PLUS the <findings> block _run_verdict_agent appends — not just the
 # raw content this module chunks by. A flat headroom constant isn't
 # enough: a file with hundreds of Bandit findings (one per assert
@@ -210,8 +210,8 @@ def _select_files_for_audit(
     and within each group, SMALLEST first: a few very large files
     consuming the whole token ceiling before the file-count ceiling even
     binds is exactly what starved a real audit down to 5-of-50 scanned
-    files against simonw/llm (see evals/RESULTS.md's Phase 11 section);
-    smallest-first lets many more files fit under the same ceiling.
+    files against simonw/llm (see evals/RESULTS.md); smallest-first lets
+    many more files fit under the same ceiling.
 
     Mirrors apply_token_budget's own "always include at least the first
     item, even if it alone exceeds the budget" rule (diff/ingest.py) —
@@ -332,9 +332,8 @@ def _run_verdict_layer(
     the caller). A file whose whole content fits under its own
     effective chunk budget (see _effective_chunk_budget — it varies per
     file, since a bigger findings block leaves less room for content)
-    gets one call, same as before Phase 11.1; an oversized file is
-    split at AST boundaries so it still gets a real verdict instead of
-    being silently refused.
+    gets one call; an oversized file is split at AST boundaries so it
+    still gets a real verdict instead of being silently refused.
 
     A verdict call's own dict return has no "tokens_in" key on failure
     (see nodes.py's _run_verdict_agent — only "findings" and
@@ -501,10 +500,10 @@ def _parse_owner_repo(url: str) -> tuple[str, str] | None:
 
 def run_audit(target: str, output_path: str, post_issue_flag: bool) -> tuple[int, str | None]:
     """Returns (exit_code, error_message) rather than a bare exit code —
-    Phase 11.2, per CodeGuard's own review of PR #3: the MCP audit_repo
-    tool wrapping this needs the actual failure reason to return a real
-    error object, not silently fall back to an empty report string with
-    no indication of what went wrong. error_message is None on success.
+    the MCP audit_repo tool wrapping this needs the actual failure
+    reason to return a real error object, not silently fall back to an
+    empty report string with no indication of what went wrong.
+    error_message is None on success.
     """
     settings = get_settings()
     start = time.monotonic()

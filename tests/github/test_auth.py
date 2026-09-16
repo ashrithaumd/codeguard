@@ -1,5 +1,5 @@
 """Regression coverage for codeguard.github.auth._load_private_key —
-the env-var-vs-file precedence Phase 10's Azure deployment needs
+the env-var-vs-file precedence the Azure deployment needs
 (Container Apps secrets are env-vars, not mounted files)."""
 
 from __future__ import annotations

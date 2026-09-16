@@ -6,8 +6,8 @@ codeguard/github/diff.py (raw API calls) and the rest of codeguard/diff/
 Budget application (apply_file_budget, apply_token_budget) is split out
 as pure functions — no GitHub calls, no async — specifically so it's
 testable against constructed data without hitting the real API. That
-split is what made it practical to actually exercise the budget-exceeded
-path in tests/diff/test_budget.py, which Phase 3 never did.
+split is what makes it practical to actually exercise the
+budget-exceeded path in tests/diff/test_budget.py.
 """
 
 from __future__ import annotations
@@ -32,10 +32,10 @@ from codeguard.github.diff import get_file_content, get_pr_files
 logger = logging.getLogger(__name__)
 _tokenizer = tiktoken.get_encoding("cl100k_base")
 
-# Bounded concurrency for per-file content fetches — Phase 3 fetched
-# these sequentially, which measurably doubled per-job latency even for
-# a 2-file test PR (see Phase 3's phase-exit review) and would scale
-# linearly, badly, with file count. 5 is a starting point, not derived
+# Bounded concurrency for per-file content fetches — fetching these
+# sequentially measurably doubled per-job latency even for a 2-file
+# test PR, and would scale linearly, badly, with file count. 5 is a
+# starting point, not derived
 # from a specific rate-limit calculation — GitHub's REST API allows far
 # more concurrent requests than this per installation; 5 just avoids
 # opening dozens of simultaneous connections for a large PR without
@@ -129,7 +129,7 @@ async def ingest_pr_diff(
     for f in file_budget_filtered:
         files_filtered_total.labels(reason=f.reason).inc()
 
-    # Phase 11: requirements.txt/pyproject.toml never survive the filters
+    # requirements.txt/pyproject.toml never survive the filters
     # above (a manifest matches "*.txt" or fails the Python-only check)
     # yet osv_runner.py needs their raw patch — pulled straight from
     # raw_files, independent of `kept`, and never added to `kept` itself

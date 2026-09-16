@@ -42,10 +42,10 @@ async def lifespan(app: FastAPI):
 
     # Reaper: a background asyncio task inside this (single-instance) API
     # process, not the worker — see codeguard/queue/reaper.py's module
-    # docstring for why. TODO(Phase 10): api must stay single-replica in
-    # Azure Container Apps for "sweeps never race each other" to hold; if
-    # api ever needs to scale horizontally, the reaper needs to move to
-    # its own dedicated single-instance process first.
+    # docstring for why. TODO: api must stay single-replica in Azure
+    # Container Apps for "sweeps never race each other" to hold; if api
+    # ever needs to scale horizontally, the reaper needs to move to its
+    # own dedicated single-instance process first.
     reaper_task = asyncio.create_task(
         reaper.run_forever(
             pool,

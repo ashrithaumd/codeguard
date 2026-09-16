@@ -5,7 +5,7 @@ instead of inline, the inline-comment cap, and the always-post-a-body
 guarantee even with zero findings. No GitHub calls: summarize() is a
 plain function over state, posting happens in the worker afterward.
 
-Phase 7: summarize() also calls call_agent once (the Haiku summary
+summarize() also calls call_agent once (the Haiku summary
 intro) — mocked here (see _mock_summary_call) so this stays a
 zero-network-call test file; tests/pipeline/test_summary_intro.py
 covers that call's own behavior (success, failure, what it's given).
@@ -137,7 +137,7 @@ def test_dismissed_findings_appear_even_with_zero_confirmed_findings():
 
 
 def test_low_confidence_finding_goes_to_summary_body_not_inline():
-    """Phase 8: a Quality/Test finding below quality_test_min_inline_confidence
+    """A Quality/Test finding below quality_test_min_inline_confidence
     is demoted to the summary body even though it's on a real diff line —
     the same demotion an out-of-diff finding already gets, never dropped."""
     threshold = get_settings().quality_test_min_inline_confidence
@@ -163,7 +163,7 @@ def test_high_confidence_finding_is_still_inlined():
 
 
 def test_suppressed_fingerprint_never_appears_inline_or_in_summary():
-    """Phase 10: a fingerprint a maintainer already marked false_positive
+    """A fingerprint a maintainer already marked false_positive
     on a past PR is excluded before dedup — not demoted like a
     low-confidence or out-of-diff finding, fully absent."""
     f = make_finding(file="a.py", line=3, rule_id="B105", message="suppressed one")
@@ -220,10 +220,10 @@ def test_summary_intro_omitted_when_call_fails():
     assert "tokens_in" not in result
 
 
-# --- Phase 11.2: grouped dismissals in a <details> block, consistent
+# --- Grouped dismissals in a <details> block, consistent
 # found/dismissed counts, quality.docs as a count-only footnote, and
 # exact fix-threshold wording — all found via CodeGuard's own live
-# review of PR #3 (see evals/RESULTS.md's Phase 11.2 section).
+# review of one of its own PRs (see evals/RESULTS.md).
 
 def test_dismissed_findings_with_same_rule_and_reason_are_grouped_into_one_entry():
     f = make_finding(file="a.py", line=3, rule_id="B105", message="confirmed one")

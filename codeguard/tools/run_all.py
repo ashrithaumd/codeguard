@@ -1,7 +1,7 @@
 """Orchestrates all three deterministic tool runners against a PR's
 reviewed files and filters the combined output down to changed lines.
 
-Phase 4.1: each tool is invoked ONCE for the whole PR (see base.py's
+Each tool is invoked ONCE for the whole PR (see base.py's
 run_tool_on_pr) rather than once per file, and the three tools run
 CONCURRENTLY with each other via asyncio.gather — Semgrep, Bandit, and
 Ruff have no shared state, so there's no reason one has to wait on

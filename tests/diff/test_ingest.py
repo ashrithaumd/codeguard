@@ -1,6 +1,6 @@
 """Regression coverage for ingest_pr_diff's own orchestration, GitHub
-calls mocked out. Phase 11's own reason for existing: confirm a
-requirements.txt/pyproject.toml change reaches DiffIngestionResult's
+calls mocked out. Confirms a requirements.txt/pyproject.toml change
+reaches DiffIngestionResult's
 dependency_patches/dependency_contents even though it's dropped from
 `kept`/`patches` by filter_files (see test_filters.py) — without this,
 tools/osv_runner.py would silently never see a dependency bump.

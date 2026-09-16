@@ -1,7 +1,7 @@
-"""Regression coverage for review_ai_aware and its routing. Phase 7
-moved the actual Anthropic call behind codeguard.pipeline.llm_call's
-call_agent — mocked here directly (no more mocking anthropic.Anthropic
-three layers down), same "no live network calls" bar the rest of
+"""Regression coverage for review_ai_aware and its routing. The actual
+Anthropic call lives behind codeguard.pipeline.llm_call's call_agent —
+mocked here directly (not anthropic.Anthropic three layers down), same
+"no live network calls" bar the rest of
 tests/pipeline/ holds itself to; the eval harness (evals/run_eval.py)
 is what exercises the real API. review_security shares the exact same
 _run_verdict_agent/_apply_verdicts machinery — see
@@ -66,7 +66,7 @@ def test_review_ai_aware_confirmed_verdict_produces_a_finding_and_tracks_cost():
 
 
 def test_review_ai_aware_confirmed_verdict_with_dismissal_language_is_flipped_to_dismissed():
-    """Phase 11.2: found live on PR #3's own CodeGuard review — a model
+    """Found live on this repo's own CodeGuard review — a model
     can literally answer verdict="confirmed" while its own message says
     "No action needed... this pattern is appropriate for tests." The
     JSON verdict field shouldn't win over what the model's own words say.

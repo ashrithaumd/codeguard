@@ -1,4 +1,4 @@
-"""Fetches a bounded set of base-tree Python file contents for Phase 6's
+"""Fetches a bounded set of base-tree Python file contents for the
 repo-level eval-hygiene checks (see codeguard/pipeline/eval_hygiene.py).
 Always the PR's base ref, never the head — same reasoning as
 repo_config.py's load_repo_config: this describes the target repo's own

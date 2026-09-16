@@ -1,4 +1,4 @@
-"""Phase 10 feedback loop — see migrations/005_finding_feedback.sql for
+"""Feedback loop — see migrations/005_finding_feedback.sql for
 the table shapes and why fingerprint (not comment_id) is the identity
 a suppression is keyed on.
 

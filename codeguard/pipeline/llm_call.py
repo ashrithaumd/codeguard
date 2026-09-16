@@ -1,5 +1,5 @@
-"""Phase 7: the one place every agent's Anthropic call actually goes
-through — guardrail scanning, prompt caching, cost/latency/token
+"""The one place every agent's Anthropic call actually goes through —
+guardrail scanning, prompt caching, cost/latency/token
 accounting, and metrics, all centralized here instead of duplicated
 across review_ai_aware/review_security/review_quality/review_test/
 propose_fix/summarize. A node builds its own system prompt and user
@@ -41,12 +41,11 @@ def _tracing_enabled() -> bool:
 
 
 def _build_client(api_key: str) -> tuple[anthropic.Anthropic, bool]:
-    """Phase 10: LangSmith tracing, wired at the one real call site
-    rather than switching to langchain's ChatAnthropic — this pipeline
-    deliberately calls the raw Anthropic SDK directly for precise
-    cache-control and cost accounting (see this module's own docstring
-    history), and wrap_anthropic() traces a raw client without changing
-    any of that.
+    """LangSmith tracing, wired at the one real call site rather than
+    switching to langchain's ChatAnthropic — this pipeline deliberately
+    calls the raw Anthropic SDK directly for precise cache-control and
+    cost accounting (see this module's own docstring), and
+    wrap_anthropic() traces a raw client without changing any of that.
 
     Only wraps when LANGSMITH_TRACING is actually on (see .env.example)
     — not just because it's pointless overhead otherwise, but because
@@ -99,7 +98,7 @@ class AgentCallResult:
     latency_s: float = 0.0
     error: str | None = None
     guardrail_flags: list[str] = field(default_factory=list)
-    # Phase 8: how many prompt-injection matches were neutralized out of
+    # How many prompt-injection matches were neutralized out of
     # user_content before the prompt was ever built — 0 in the common
     # case. The raw matched text itself is never carried on this result
     # (see guardrails.InjectionAttempt); fingerprints only.
@@ -142,8 +141,8 @@ def call_agent(
     later, hit Anthropic's own cache for everything except the part
     that actually changed.
 
-    Phase 8: guardrails.neutralize_injections runs against user_content
-    BEFORE anything else — every matched span is stripped out and
+    guardrails.neutralize_injections runs against user_content BEFORE
+    anything else — every matched span is stripped out and
     replaced with a marker, logged with its fingerprint, and counted in
     injection_attempts_total. The neutralized text (never the original)
     is what actually goes into the API request; the review continues on

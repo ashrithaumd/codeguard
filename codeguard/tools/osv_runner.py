@@ -1,4 +1,4 @@
-"""Phase 11: dependency-vulnerability lookup via OSV.dev — deterministic,
+"""Dependency-vulnerability lookup via OSV.dev — deterministic,
 no LLM, no API key needed (OSV's query API is public and free). This
 runner has a fundamentally different shape than Bandit/Semgrep/Ruff:
 those scan a file's CONTENT; this one needs to know what CHANGED in a
@@ -171,8 +171,8 @@ def check_dependency_updates(
         return []
 
     if len(results) != len(pins):
-        # Phase 11.2, per CodeGuard's own review of PR #3: OSV's batch
-        # endpoint is documented as one result per query, same order,
+        # Found via CodeGuard's own review of one of its own PRs: OSV's
+        # batch endpoint is documented as one result per query, same order,
         # but nothing here enforces that contract — a short or
         # mismatched response would otherwise misalign every pin after
         # the gap if paired up positionally with a bare zip(). Indexing

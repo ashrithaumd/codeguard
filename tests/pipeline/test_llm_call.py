@@ -133,7 +133,7 @@ def test_call_agent_oversized_input_skips_the_call_entirely():
 
 
 def test_call_agent_blocks_and_neutralizes_prompt_injection():
-    """Phase 8: injection is block-not-flag — the matched span never
+    """Injection is block-not-flag — the matched span never
     reaches the model at all, but the call still proceeds on whatever
     content is left (unlike the oversized-input short-circuit above)."""
     with patch("codeguard.pipeline.llm_call.anthropic.Anthropic") as mock_cls:

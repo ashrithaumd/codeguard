@@ -1,9 +1,9 @@
 """Shared Finding construction helper for pipeline tests — same pattern
-as Phase 4's tests/tools/test_models.py and test_line_filter.py
+as tests/tools/test_models.py and test_line_filter.py
 (Finding.create with sensible defaults), centralized here so pipeline
 tests don't each reinvent it.
 
-`pool` (Phase 7): a real Postgres connection, for
+`pool`: a real Postgres connection, for
 tests/pipeline/test_hunk_cache.py only — mirrors tests/queue/conftest.py's
 own fixture exactly (separate `codeguard_test` database, Windows event
 loop policy fix), duplicated rather than imported across test packages

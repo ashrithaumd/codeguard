@@ -1,4 +1,4 @@
-"""Regression test for a real bug found during Phase 2 verification: a
+"""Regression test for a real bug found during live verification: a
 worker that successfully posts a GitHub comment and then crashes before
 ack() causes a redelivery that posts the same comment again — the queue
 guarantees at-least-once *delivery*, not at-most-once *side effect*.
@@ -6,8 +6,8 @@ Confirmed happening live against a real installed GitHub App (two
 identical comments landed on the same PR from one kill-mid-job test) and
 fixed with an idempotency guard (posted_comments, mirroring Reliqueue's
 sent_emails pattern) — see codeguard/worker/main.py's
-_review_already_posted / _record_review_posted (renamed in Phase 5 when
-posting moved from a single comment to a full PR Review; same guard).
+_review_already_posted / _record_review_posted (renamed when posting
+moved from a single comment to a full PR Review; same guard).
 
 This test proves the guard deterministically rather than via a real
 timing race (which is inherently flaky here — the actual "post succeeded,
