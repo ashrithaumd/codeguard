@@ -44,6 +44,15 @@ class DiffIngestionResult(BaseModel):
     # (narrower than a Hunk's ~30-line context window) for filtering
     # findings down to what the PR actually touched.
     patches: dict[str, str] = Field(default_factory=dict)
+    # Phase 11: requirements.txt/pyproject.toml patch+content, pulled
+    # from the raw PR file list separately from `patches`/`file_contents`
+    # above — those two only ever hold files that survived filter_files,
+    # and a dependency manifest never does (matches the docs "*.txt"
+    # pattern, or fails the Python-only extension check). Consumed only
+    # by tools/osv_runner.py; never fed into hunk building or AI-aware
+    # review, since a version pin isn't reviewable code.
+    dependency_patches: dict[str, str] = Field(default_factory=dict)
+    dependency_contents: dict[str, str] = Field(default_factory=dict)
 
     @property
     def files_reviewed(self) -> list[str]:

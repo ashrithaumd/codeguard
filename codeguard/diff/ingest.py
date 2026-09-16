@@ -18,7 +18,7 @@ import logging
 import tiktoken
 
 from codeguard.config import Budget, RepoConfig, Settings, effective_budget
-from codeguard.diff.filters import filter_files
+from codeguard.diff.filters import filter_files, is_dependency_manifest
 from codeguard.diff.metrics import (
     budget_exceeded_total,
     files_filtered_total,
@@ -129,12 +129,29 @@ async def ingest_pr_diff(
     for f in file_budget_filtered:
         files_filtered_total.labels(reason=f.reason).inc()
 
+    # Phase 11: requirements.txt/pyproject.toml never survive the filters
+    # above (a manifest matches "*.txt" or fails the Python-only check)
+    # yet osv_runner.py needs their raw patch — pulled straight from
+    # raw_files, independent of `kept`, and never added to `kept` itself
+    # so a version pin never becomes an AI-reviewable hunk.
+    dependency_files = [
+        f for f in raw_files if is_dependency_manifest(f["filename"]) and f.get("patch") is not None
+    ]
+
     # Bounded-concurrent content fetches — see CONTENT_FETCH_CONCURRENCY.
+    # Dependency manifests ride along in the same batched fetch rather
+    # than a second round-trip.
+    fetch_targets = kept + [f for f in dependency_files if f["filename"] not in {k["filename"] for k in kept}]
     semaphore = asyncio.Semaphore(CONTENT_FETCH_CONCURRENCY)
     fetch_results = await asyncio.gather(*(
-        _fetch_file_content(semaphore, token, owner, repo, f["filename"], head_sha) for f in kept
+        _fetch_file_content(semaphore, token, owner, repo, f["filename"], head_sha) for f in fetch_targets
     ))
-    content_by_path = {path: content for path, content in fetch_results if content is not None}
+    all_content_by_path = {path: content for path, content in fetch_results if content is not None}
+    # file_contents (the result field) documents "every kept file" —
+    # dependency manifests ride the same fetch batch above for
+    # efficiency but must not leak into it (they're not AI-reviewable
+    # code, and tools/run_all.py's runners would otherwise scan them).
+    content_by_path = {path: content for path, content in all_content_by_path.items() if path in {k["filename"] for k in kept}}
 
     all_hunks: list[Hunk] = []
     for f in kept:
@@ -154,6 +171,10 @@ async def ingest_pr_diff(
         hunks=selected, budget_exceeded=budget_exceeded,
         file_contents=content_by_path,
         patches={f["filename"]: f["patch"] for f in kept},
+        dependency_patches={f["filename"]: f["patch"] for f in dependency_files},
+        dependency_contents={
+            f["filename"]: all_content_by_path[f["filename"]] for f in dependency_files if f["filename"] in all_content_by_path
+        },
     )
 
     files_reviewed_total.inc(len(result.files_reviewed))

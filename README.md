@@ -143,9 +143,11 @@ codeguard/
 ├── worker/         Poll → claim → review → post, with heartbeat/lease/reaper
 ├── pipeline/        LangGraph nodes, guardrails, hunk cache, feedback loop
 ├── diff/            PR diff ingestion: fetch, filter, budget, hunk expansion
-├── tools/           Bandit/Semgrep/Ruff runners, changed-line filtering
+├── tools/           Bandit/Semgrep/Ruff/OSV runners, changed-line filtering
 ├── github/          GitHub REST calls: auth, reviews, check runs, repo config
 ├── queue/           Postgres-backed job queue (claim/heartbeat/nack/reap)
+├── mcp/             MCP server exposing review_diff/audit_repo as tools
+├── cli.py           `codeguard audit` — whole-repo scan, markdown report
 └── config.py         Settings (env) and RepoConfig (.codeguard.yml)
 
 evals/                Eval harness, fixtures, adversarial suite, dogfood runs, RESULTS.md
@@ -200,6 +202,71 @@ max_tokens_per_pr: 40000
 max_wall_clock_s: 120
 ignored_paths: []          # fnmatch patterns, checked before language/extension filtering
 ```
+
+## Audit mode: `codeguard audit`
+
+Scans a whole repo — not one PR's diff — reusing the exact same deterministic tool runners, OSV
+dependency-CVE lookup, eval-hygiene checks, and Security/AI-aware verdict agents the PR pipeline
+uses, plus a separate (lower) budget ceiling so an audit of a large public repo can't run away on
+tokens. AI-aware verdicts only run on files that import an LLM SDK; Quality/Test are intentionally
+skipped in audit mode (see `evals/RESULTS.md`'s Phase 11 section for why).
+
+```bash
+pip install -e .
+codeguard audit https://github.com/owner/repo        # or a local path
+codeguard audit . --output report.md --post-issue    # requires a GITHUB_TOKEN env var, github.com only
+```
+
+Writes a markdown report (findings by severity with `file:line`, dismissals, eval-hygiene results,
+token/cost/latency) to `--output` (default `codeguard-audit-report.md`). `--post-issue` also opens
+it as a GitHub Issue on the target repo — never pass a token on the command line; set `GITHUB_TOKEN`
+in the environment instead. See `evals/RESULTS.md`'s Phase 11 section for a real run against
+`simonw/llm`, including what it missed and why (large-file token-budget truncation, and the
+pre-existing `MAX_CHUNK_TOKENS` input guardrail refusing verdict calls on very large files).
+
+## MCP server
+
+`codeguard/mcp/server.py` exposes the pipeline to any MCP client (Claude Code, Cursor) over stdio,
+as two tools:
+
+- **`review_diff`** — runs the exact same compiled LangGraph (`review_graph`) a real PR review
+  runs, against the current repo's uncommitted changes (`git diff HEAD`, staged + unstaged +
+  untracked new files), and returns findings/dismissals/cost as structured JSON. No GitHub calls,
+  no Postgres — every hunk gets a fresh LLM call, nothing is pre-suppressed.
+- **`audit_repo`** — thin wrapper around `codeguard audit`, for a whole repo (URL or local path)
+  instead of a diff.
+
+Claude Code (`.mcp.json` at your project root, or `claude mcp add`):
+
+```json
+{
+  "mcpServers": {
+    "codeguard": {
+      "command": "python",
+      "args": ["-m", "codeguard.mcp.server"],
+      "env": { "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}" }
+    }
+  }
+}
+```
+
+Cursor (`.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "codeguard": {
+      "command": "python",
+      "args": ["-m", "codeguard.mcp.server"],
+      "env": { "ANTHROPIC_API_KEY": "${ANTHROPIC_API_KEY}" }
+    }
+  }
+}
+```
+
+Both tools were verified live from Claude Code in this session — see `evals/RESULTS.md`'s Phase 11
+section for real cost and findings, including a bug (untracked new files invisible to `git diff
+HEAD` alone) caught by a test before it ever reached a live run.
 
 ## Environment variables
 

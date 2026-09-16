@@ -12,8 +12,16 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     anthropic_api_key: str
-    database_url: str
-    github_app_id: str
+    # Phase 11: optional (default ""), not required — `codeguard audit`
+    # and the MCP server both call get_settings() (every review node
+    # does, for its own *_agent_model/timeout fields) but neither one
+    # ever calls codeguard.queue.db.create_pool() or touches the GitHub
+    # App at all for their core operation, so requiring a real Postgres
+    # URL and App ID just to run a standalone analysis tool would be
+    # pure friction — same "shared Settings, different entry points
+    # have different needs" reasoning as github_webhook_secret below.
+    database_url: str = ""
+    github_app_id: str = ""
     # Optional (default ""), not because it's unimportant — api's webhook
     # route depends on it for every signature check — but because
     # Settings is one shared class loaded by both api and worker
@@ -39,6 +47,19 @@ class Settings(BaseSettings):
     max_files_per_pr_ceiling: int = 50
     max_tokens_per_pr_ceiling: int = 200_000
     max_wall_clock_s_ceiling: int = 300
+
+    # Phase 11: `codeguard audit` scans a whole repo, not one PR's
+    # worth of changed hunks — an unbounded audit against a large
+    # public repo is exactly the "must not run away" cost risk a PR
+    # review's own ceilings were never sized for. A separate, lower
+    # ceiling (not a config knob on the PR-review path at all) means
+    # tightening audit's cost profile can never accidentally loosen a
+    # real PR review's, and vice versa. See effective_budget()'s
+    # `ceiling` parameter for how this actually gets applied instead of
+    # the PR-review ceiling.
+    audit_max_files_ceiling: int = 30
+    audit_max_tokens_ceiling: int = 100_000
+    audit_max_wall_clock_s_ceiling: int = 180
 
     # Queue / connection pool. Small per-process max_size is deliberate:
     # Azure Database for PostgreSQL Flexible Server has a hard total
@@ -238,9 +259,22 @@ class Budget(BaseModel):
     max_wall_clock_s: int
 
 
-def effective_budget(repo: RepoConfig, settings: Settings) -> Budget:
+def effective_budget(repo: RepoConfig, settings: Settings, ceiling: Budget | None = None) -> Budget:
+    """`ceiling` defaults to the PR-review global ceilings (unchanged
+    behavior for every existing caller); `codeguard audit` passes its
+    own, lower `audit_*_ceiling` values instead — see Settings' own
+    docstring on those fields for why this is a separate ceiling
+    dimension rather than a shared one PR review and audit both tune
+    together.
+    """
+    if ceiling is None:
+        ceiling = Budget(
+            max_files=settings.max_files_per_pr_ceiling,
+            max_tokens=settings.max_tokens_per_pr_ceiling,
+            max_wall_clock_s=settings.max_wall_clock_s_ceiling,
+        )
     return Budget(
-        max_files=min(repo.max_files_per_pr, settings.max_files_per_pr_ceiling),
-        max_tokens=min(repo.max_tokens_per_pr, settings.max_tokens_per_pr_ceiling),
-        max_wall_clock_s=min(repo.max_wall_clock_s, settings.max_wall_clock_s_ceiling),
+        max_files=min(repo.max_files_per_pr, ceiling.max_files),
+        max_tokens=min(repo.max_tokens_per_pr, ceiling.max_tokens),
+        max_wall_clock_s=min(repo.max_wall_clock_s, ceiling.max_wall_clock_s),
     )

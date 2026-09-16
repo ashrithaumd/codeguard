@@ -44,6 +44,7 @@ from codeguard.pipeline.nodes import _exclude_suppressed, compute_cache_keys
 from codeguard.queue.db import bootstrap_schema, create_pool
 from codeguard.queue.models import Job
 from codeguard.queue.queue import ack, claim_batch, extend_lease, nack
+from codeguard.tools.osv_runner import check_dependency_updates
 from codeguard.tools.run_all import run_tools_on_files
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -275,13 +276,25 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
     # work, no reason to serialize them. Skipped (empty dict, no GitHub
     # calls at all) when the repo has opted out of the AI-aware agent.
     tool_findings_task = asyncio.ensure_future(run_tools_on_files(diff_result.file_contents, diff_result.patches))
+    # Phase 11: OSV dependency-CVE lookup — deterministic, no LLM, and
+    # not gated on enable_ai_aware (it has nothing to do with AI-aware
+    # review; a known-vulnerable pin matters regardless). Doesn't fit
+    # RUNNERS/run_tools_on_files: it needs the diff itself (patches) to
+    # tell an added/bumped pin from one that was already there, not just
+    # file content — see osv_runner.py's own docstring.
+    osv_task = asyncio.ensure_future(
+        asyncio.to_thread(check_dependency_updates, diff_result.dependency_contents, diff_result.dependency_patches)
+    )
     if repo_config.enable_ai_aware:
         base_tree_task = asyncio.ensure_future(fetch_base_tree_python_files(token, owner, repo, base_ref))
     else:
         base_tree_task = None
     tool_findings = await tool_findings_task
+    osv_findings = await osv_task
     base_tree_files = await base_tree_task if base_tree_task is not None else {}
     _log_findings(pr_number, tool_findings)
+    if osv_findings:
+        logger.info("pr=%s: %d known-vulnerability finding(s) from OSV", pr_number, len(osv_findings))
 
     # Phase 7: prefetch every (path, content_hash, agent) this PR's
     # agents could possibly check — computed the same way the graph's
@@ -306,7 +319,7 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
         "hunk_cache_hits": hunk_cache_hits, "cache_writes": [],
         "suppressed_fingerprints": suppressed_fingerprints,
         "touches_ai_code": False,
-        "findings": [], "repo_level_findings": [], "dismissed_findings": [], "fix_suggestions": [],
+        "findings": [], "repo_level_findings": osv_findings, "dismissed_findings": [], "fix_suggestions": [],
         "should_fix": False, "summary": "", "inline_findings": [],
         "tokens_in": 0, "tokens_out": 0, "estimated_cost_usd": 0.0, "node_latencies": [],
     }
