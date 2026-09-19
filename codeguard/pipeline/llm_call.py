@@ -129,8 +129,24 @@ def call_agent(
     model: str,
     max_tokens: int,
     timeout: float,
+    temperature: float | None = None,
 ) -> AgentCallResult:
-    """system_prompt and repo_context are each their own prompt-cache
+    """temperature: passed straight through to the API when given, left
+    unset (the API's own default, not 0) otherwise. Every judgment call
+    this pipeline makes — confirm/dismiss a tool's finding, invent a
+    finding from a hunk, produce a fix — should give the same answer on
+    the same input every time; the summary intro's own free prose is the
+    one call in this pipeline where that's not the point. Found live: no
+    call anywhere set this at all before, so every agent ran at the
+    API's own default (1.0 for Claude, tuned for varied/creative output)
+    — confirmed as the real explanation for run-to-run flips like
+    quality-agent labeling the same hunk quality.complexity in one run
+    and quality.structure (or not flagging it at all) in another.
+    temperature=0 minimizes sampling variance; it doesn't guarantee
+    bit-for-bit reproducibility — there's residual non-determinism in
+    LLM APIs generally even at temperature 0.
+
+    system_prompt and repo_context are each their own prompt-cache
     breakpoint (see the `system=` list below): system_prompt is
     identical across every call this agent ever makes; repo_context
     (e.g. "reviewing a PR in owner/repo") is identical across every
@@ -186,6 +202,8 @@ def call_agent(
         max_tokens=max_tokens,
         timeout=timeout,
     )
+    if temperature is not None:
+        create_kwargs["temperature"] = temperature
     if traced:
         # Only added once wrap_anthropic actually succeeded — the raw
         # (unwrapped) client raises on this kwarg, it doesn't ignore it.

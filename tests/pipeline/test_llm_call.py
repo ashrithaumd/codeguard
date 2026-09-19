@@ -58,6 +58,30 @@ def test_call_agent_sends_two_cache_control_system_blocks():
     assert system[1]["text"] == "repo"
 
 
+def test_call_agent_omits_temperature_by_default():
+    """The summary intro is the one call that deliberately leaves this
+    unset — every other agent explicitly pins temperature=0 (see
+    nodes.py's _run_verdict_agent, _run_generative_agent, propose_fix).
+    Confirms the API kwarg is genuinely absent, not just falsy, so that
+    call keeps the API's own default rather than silently becoming 0.
+    """
+    with patch("codeguard.pipeline.llm_call.anthropic.Anthropic") as mock_cls:
+        mock_cls.return_value.messages.create.return_value = _fake_response("[]")
+        _call()
+
+    _, kwargs = mock_cls.return_value.messages.create.call_args
+    assert "temperature" not in kwargs
+
+
+def test_call_agent_passes_through_an_explicit_temperature():
+    with patch("codeguard.pipeline.llm_call.anthropic.Anthropic") as mock_cls:
+        mock_cls.return_value.messages.create.return_value = _fake_response("[]")
+        _call(temperature=0)
+
+    _, kwargs = mock_cls.return_value.messages.create.call_args
+    assert kwargs["temperature"] == 0
+
+
 def test_call_agent_cost_accounts_for_cache_write_and_read_tokens():
     with patch("codeguard.pipeline.llm_call.anthropic.Anthropic") as mock_cls:
         mock_cls.return_value.messages.create.return_value = _fake_response("[]", tokens_in=0, cache_write=1000, cache_read=0)

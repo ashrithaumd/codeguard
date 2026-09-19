@@ -25,6 +25,11 @@ from tests.pipeline.conftest import make_finding
 
 def _mock_summary_call(*, agent, **kwargs):
     assert agent == "summary"
+    # Deliberately NOT pinned to temperature=0 like the verdict/generative/
+    # fix agents — this is prose, not a judgment call; a differently-worded
+    # opening sentence between runs isn't wrong the way a flipped verdict
+    # or a different fix would be.
+    assert "temperature" not in kwargs
     return AgentCallResult(raw_text="Mock intro.", tokens_in=1, tokens_out=1, estimated_cost_usd=0.0, latency_s=0.0)
 
 

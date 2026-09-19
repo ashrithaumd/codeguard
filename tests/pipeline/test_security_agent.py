@@ -101,3 +101,20 @@ def test_review_security_hunk_cache_miss_queues_a_cache_write():
     write = result["cache_writes"][0]
     assert write.content_hash == hash_content(content)
     assert write.owner == "o" and write.repo == "r" and write.path == "app/db.py"
+
+
+def test_review_security_pins_temperature_to_zero():
+    """Verdict-contract agents confirm/dismiss a real tool's findings —
+    this should give the same verdict on the same input every time, not
+    vary with sampling temperature (found live: nothing anywhere pinned
+    this before, so every call ran at the API's own default of 1.0)."""
+    finding = make_finding(file="app/db.py", rule_id="B608", tool="bandit")
+    model_items = [{"rule_id": "B608", "verdict": "confirmed", "severity": "high", "message": "real issue"}]
+
+    with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(model_items)) as mock_call:
+        review_security({
+            "owner": "o", "repo": "r", "path": "app/db.py", "content": "x = 1\n",
+            "patch": "", "findings": [finding], "hunk_cache_hits": {},
+        })
+
+    assert mock_call.call_args.kwargs["temperature"] == 0

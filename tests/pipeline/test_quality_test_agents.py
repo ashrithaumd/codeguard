@@ -204,3 +204,16 @@ def test_review_quality_parses_a_fenced_empty_array_with_trailing_prose():
         result = review_quality(_hunk_state())
 
     assert result["findings"] == []
+
+
+def test_review_quality_pins_temperature_to_zero():
+    """Found live: quality-agent's own category label for the same hunk
+    flipped between runs (quality.complexity / quality.structure / not
+    flagged at all) — traced to no call anywhere pinning temperature,
+    so every call ran at the API's own default (1.0), not 0."""
+    items = [{"line": 1, "severity": "low", "category": "naming", "message": "x"}]
+
+    with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)) as mock_call:
+        review_quality(_hunk_state())
+
+    assert mock_call.call_args.kwargs["temperature"] == 0

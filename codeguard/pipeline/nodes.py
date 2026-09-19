@@ -501,7 +501,7 @@ def _run_verdict_agent(
     result = call_agent(
         agent=agent, api_key=settings.anthropic_api_key, system_prompt=system_prompt,
         repo_context=_repo_context(owner, repo), user_content=user_content,
-        model=model, max_tokens=max_tokens, timeout=timeout,
+        model=model, max_tokens=max_tokens, timeout=timeout, temperature=0,
     )
     node_latency = {"node": f"review_{agent}", "file": path, "seconds": result.latency_s}
     if not result.ok:
@@ -636,7 +636,7 @@ def _run_generative_agent(
     result = call_agent(
         agent=agent, api_key=settings.anthropic_api_key, system_prompt=system_prompt,
         repo_context=_repo_context(owner, repo), user_content=user_content,
-        model=model, max_tokens=max_tokens, timeout=timeout,
+        model=model, max_tokens=max_tokens, timeout=timeout, temperature=0,
     )
     node_latency = {"node": f"review_{agent}", "file": path, "seconds": result.latency_s}
     if not result.ok:
@@ -784,6 +784,7 @@ def propose_fix(state: dict) -> dict:
         agent="fix", api_key=settings.anthropic_api_key, system_prompt=_FIX_SYSTEM_PROMPT,
         repo_context=_repo_context(state["owner"], state["repo"]), user_content=user_content,
         model=settings.fix_agent_model, max_tokens=settings.fix_agent_max_tokens, timeout=settings.fix_agent_timeout_s,
+        temperature=0,
     )
     node_latency = {"node": "propose_fix", "file": state["path"], "seconds": result.latency_s}
     if not result.ok:

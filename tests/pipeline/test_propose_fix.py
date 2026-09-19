@@ -144,3 +144,16 @@ def test_propose_fix_drops_a_suggestion_whose_finding_targets_a_different_file()
         result = propose_fix({"owner": "o", "repo": "r", "path": "a.py", "content": "x\n", "findings": [finding]})
 
     assert result["fix_suggestions"] == []
+
+
+def test_propose_fix_pins_temperature_to_zero():
+    """A fix suggestion should be the same correct patch every time, not
+    one of several plausible random ones — pinned for the same reason
+    as the verdict-contract and Quality/Test agents."""
+    finding = make_finding(file="a.py", rule_id="B105", line=1, message="hardcoded secret")
+    items = [{"fingerprint": finding.fingerprint, "replacement": "x = 1"}]
+
+    with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)) as mock_call:
+        propose_fix({"owner": "o", "repo": "r", "path": "a.py", "content": "x\n", "findings": [finding]})
+
+    assert mock_call.call_args.kwargs["temperature"] == 0
