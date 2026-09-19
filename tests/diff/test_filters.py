@@ -66,3 +66,11 @@ def test_extension_no_dot_anywhere():
 def test_extension_normal_case():
     assert _extension("app.py") == ".py"
     assert _extension("dir/app.py") == ".py"
+
+
+def test_extension_handles_multiple_dots_and_uppercase():
+    assert _extension("archive.tar.gz") == ".gz"
+    assert _extension("Module.PY") == ".PY"
+    assert _extension("a/b/c.d.e.py") == ".py"
+    assert _extension("dir.with.dots/app.py") == ".py"
+    assert _extension(".hidden") == ".hidden"  # a leading dot alone isn't treated as "no extension"
