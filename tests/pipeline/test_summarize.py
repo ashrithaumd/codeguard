@@ -18,7 +18,7 @@ from unittest.mock import patch
 from codeguard.config import RepoConfig, get_settings
 from codeguard.pipeline.llm_call import AgentCallResult
 from codeguard.pipeline.models import DismissedFinding, FixSuggestion
-from codeguard.pipeline.nodes import summarize
+from codeguard.pipeline.nodes import _fold_cross_agent_duplicates, summarize
 from codeguard.severity import Severity
 from tests.pipeline.conftest import make_finding
 
@@ -327,3 +327,91 @@ def test_fix_suggestions_present_reports_the_count_not_the_threshold_line():
 
     assert "1 fix suggestion(s) proposed." in result["summary"]
     assert "No findings met the fix threshold" not in result["summary"]
+
+
+# --- Cross-agent duplicate folding (_fold_cross_agent_duplicates) —
+# found live on a real PR: the same SQL injection reported three times,
+# once each by security, quality-agent, and test-agent. Never deletes a
+# finding to resolve a duplicate — folds the "losing" one(s) into a
+# <details> block on the primary instead, so a false merge can't
+# silently drop a real finding (see nodes.py's own docstring on this).
+
+def test_fold_merges_security_and_quality_on_a_known_rule_id():
+    security = make_finding(file="a.py", line=2, rule_id="B608", tool="security", message="SQL injection vulnerability confirmed", severity=Severity.HIGH)
+    quality = make_finding(file="a.py", line=2, rule_id="quality.error-handling", tool="quality-agent", message="String formatting with user input creates SQL injection vulnerability", severity=Severity.MEDIUM)
+
+    result = _fold_cross_agent_duplicates([security, quality])
+
+    assert len(result) == 1
+    assert result[0].source_tool == "security"  # higher severity wins the primary slot
+    assert "SQL injection vulnerability confirmed" in result[0].message
+    assert "<details>" in result[0].message and "</details>" in result[0].message
+    assert "quality-agent" in result[0].message
+    assert "String formatting with user input" in result[0].message
+
+
+def test_fold_merges_all_three_real_agents_into_one():
+    security = make_finding(file="a.py", line=2, rule_id="B608", tool="security", message="SQL injection vulnerability confirmed", severity=Severity.HIGH)
+    quality = make_finding(file="a.py", line=2, rule_id="quality.error-handling", tool="quality-agent", message="creates SQL injection vulnerability", severity=Severity.MEDIUM)
+    test_f = make_finding(file="a.py", line=2, rule_id="test.test", tool="test-agent", message="SQL injection vulnerability in get_user_by_email, no test evident", severity=Severity.MEDIUM)
+
+    result = _fold_cross_agent_duplicates([security, quality, test_f])
+
+    assert len(result) == 1
+    assert "Also flagged by 2 other agent(s)" in result[0].message
+    assert "test-agent" in result[0].message and "quality-agent" in result[0].message
+
+
+def test_fold_does_nothing_for_a_rule_id_not_in_the_table():
+    security = make_finding(file="a.py", line=2, rule_id="B999-not-a-real-rule", tool="security", message="some finding mentioning sql injection", severity=Severity.HIGH)
+    quality = make_finding(file="a.py", line=2, rule_id="quality.error-handling", tool="quality-agent", message="also mentions sql injection", severity=Severity.MEDIUM)
+
+    result = _fold_cross_agent_duplicates([security, quality])
+
+    assert len(result) == 2  # unrecognized rule_id -> no folding attempted, both survive unchanged
+    assert security in result and quality in result
+
+
+def test_fold_does_nothing_when_keywords_dont_match():
+    security = make_finding(file="a.py", line=2, rule_id="B608", tool="security", message="SQL injection vulnerability confirmed", severity=Severity.HIGH)
+    quality = make_finding(file="a.py", line=2, rule_id="quality.naming", tool="quality-agent", message="variable name 'x' is unclear", severity=Severity.LOW)
+
+    result = _fold_cross_agent_duplicates([security, quality])
+
+    assert len(result) == 2  # unrelated finding on the same line, correctly left alone
+
+
+def test_fold_higher_severity_generative_finding_becomes_primary():
+    """The exact case asked about: quality-agent rates MEDIUM, security
+    rates LOW on the same defect — the more serious framing must not be
+    buried under the lower-severity grounded finding."""
+    security = make_finding(file="a.py", line=2, rule_id="B608", tool="security", message="SQL injection, low risk here", severity=Severity.LOW)
+    quality = make_finding(file="a.py", line=2, rule_id="quality.error-handling", tool="quality-agent", message="serious sql injection risk", severity=Severity.MEDIUM)
+
+    result = _fold_cross_agent_duplicates([security, quality])
+
+    assert len(result) == 1
+    assert result[0].source_tool == "quality-agent"
+    assert result[0].severity == Severity.MEDIUM
+    assert "serious sql injection risk" in result[0].message
+    assert "[security]" in result[0].message  # folded, not lost
+
+
+def test_fold_leaves_findings_on_different_lines_alone():
+    a = make_finding(file="a.py", line=2, rule_id="B608", tool="security", message="sql injection here", severity=Severity.HIGH)
+    b = make_finding(file="a.py", line=50, rule_id="quality.error-handling", tool="quality-agent", message="sql injection there too", severity=Severity.MEDIUM)
+
+    result = _fold_cross_agent_duplicates([a, b])
+
+    assert len(result) == 2  # different lines -> never candidates for the same fold
+
+
+def test_folded_duplicate_counts_as_one_inline_comment_not_two():
+    security = make_finding(file="a.py", line=3, rule_id="B608", tool="security", message="SQL injection vulnerability confirmed", severity=Severity.HIGH)
+    quality = make_finding(file="a.py", line=3, rule_id="quality.error-handling", tool="quality-agent", message="creates SQL injection vulnerability", severity=Severity.MEDIUM)
+    patches = {"a.py": "@@ -1,10 +1,10 @@\n context"}
+
+    result = _summarize(_state([security, quality], patches))
+
+    assert len(result["inline_findings"]) == 1
+    assert "found 1 issue" in result["summary"]

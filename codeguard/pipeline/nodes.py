@@ -954,22 +954,163 @@ def _generate_summary_intro(*, owner: str, repo: str, file_count: int, deduped: 
     }
 
 
+# Bandit/Semgrep rule_id -> keywords that would plausibly appear in a
+# Quality/Test agent's own free-text description of the SAME underlying
+# defect. Deliberately small and evidence-based — built only from
+# rule_ids that have actually fired in this project's own real
+# dogfooding/eval data (evals/RESULTS.md, evals/fixtures_security/), not
+# a speculative attempt to cover Bandit's full rule surface. A rule_id
+# NOT in this table is not a special case: the finding it belongs to is
+# simply never considered for folding and renders exactly as it always
+# has. Some entries are weaker anchors than others (B404/B603/B607
+# especially — their own semantic content doesn't map to one crisp
+# phrase a generative agent's prose is likely to actually use); a weak
+# anchor only costs recall (a real duplicate stays unfolded) — it can
+# never cause a false merge, since the keyword still has to actually
+# appear in the other finding's own message.
+_SECURITY_DEFECT_KEYWORDS: dict[str, tuple[str, ...]] = {
+    "B608": ("sql injection", "sql", "query injection"),
+    "B602": ("shell injection", "shell=true", "command injection"),
+    "B605": ("os.system", "shell injection", "command injection"),
+    "B105": ("hardcoded password", "hardcoded secret", "hardcoded credential"),
+    "B324": ("insecure hash", "weak hash", "md5", "sha1"),
+    "B102": ("exec(", "arbitrary code execution"),
+    "B307": ("eval(", "arbitrary code execution", "unsafe eval"),
+    "B108": ("temp file", "temporary file", "insecure temp"),
+    "B404": ("subprocess",),
+    "B603": ("command injection", "subprocess"),
+    "B607": ("partial path", "path injection"),
+    "B101": ("assert",),
+}
+_GROUNDED_SOURCE_TOOLS = ("security", "ai_aware")
+
+
+def _apply_fold(primary: Finding, folded: list[Finding]) -> Finding:
+    """Never deletes a finding to resolve a duplicate — a false merge
+    (two genuinely different defects on the same line, wrongly judged
+    the same) would silently drop a real finding a reviewer never sees,
+    which is worse than the duplicate it's meant to fix. The folded
+    finding(s) go into a <details> block appended to the primary's own
+    message instead — still fully visible, one click away, never
+    removed from the review. This runs before the inline/body split, so
+    the result is one Finding, one slot against max_inline_comments —
+    not two competing for it.
+    """
+    lines = [primary.message, "", f"<details><summary>Also flagged by {len(folded)} other agent(s)</summary>", ""]
+    for f in folded:
+        lines.append(f"- [{f.source_tool}] {f.message}")
+    lines.append("")
+    lines.append("</details>")
+    return Finding.create(
+        file=primary.file, start_line=primary.start_line, end_line=primary.end_line,
+        severity=primary.severity, source_tool=primary.source_tool, rule_id=primary.rule_id,
+        message="\n".join(lines), confidence=primary.confidence,
+    )
+
+
+def _fold_cross_agent_duplicates(findings: list[Finding]) -> list[Finding]:
+    """Security/AI-aware findings are grounded in a real deterministic
+    tool's rule_id; Quality/Test independently invent their own
+    free-text description of a hunk from scratch, with no visibility
+    into what Security already confirmed on the same line — the graph
+    fans every agent out concurrently (see graph.py), so there's no
+    point in the pipeline where one agent's output exists yet while
+    another's prompt is still being built. Seen live on a real PR: the
+    same SQL injection reported three times, once per agent, each from
+    a different angle.
+
+    Anchored ONLY on a deterministic tool's rule_id being in
+    _SECURITY_DEFECT_KEYWORDS — a rule_id not in that table means the
+    Security/AI-aware finding it belongs to is never considered for
+    folding at all; it renders exactly as before this function existed.
+    The fuzzier Quality-vs-Test case (two generative agents, no rule_id
+    to anchor on) is deliberately NOT handled here — no validated
+    similarity threshold exists for it (see evals/RESULTS.md); shipping
+    an unvalidated fuzzy match risks silently folding two genuinely
+    different defects together, which this function's whole design
+    (fold, never delete) exists specifically to avoid.
+
+    The primary of a matched group is whichever finding has the
+    HIGHEST severity, never hardcoded to "the Security one" — a
+    generative agent's own (capped-at-MEDIUM, but still real) severity
+    judgment must never be buried under a lower-severity grounded
+    finding just because the grounded one is the anchor. Ties prefer
+    the grounded finding, since it's backed by a real tool rather than
+    invented from scratch.
+    """
+    by_location: dict[tuple[str, int], list[Finding]] = {}
+    order: list[tuple[str, int]] = []
+    for f in findings:
+        key = (f.file, f.start_line)
+        if key not in by_location:
+            by_location[key] = []
+            order.append(key)
+        by_location[key].append(f)
+
+    result: list[Finding] = []
+    for key in order:
+        group = by_location[key]
+        if len(group) == 1:
+            result.append(group[0])
+            continue
+
+        anchors = [f for f in group if f.source_tool in _GROUNDED_SOURCE_TOOLS and f.rule_id in _SECURITY_DEFECT_KEYWORDS]
+        if not anchors:
+            result.extend(group)
+            continue
+
+        already_matched: set[int] = set()
+        primary_by_id: dict[int, list[Finding]] = {}
+        for anchor in anchors:
+            keywords = _SECURITY_DEFECT_KEYWORDS[anchor.rule_id]
+            matches = [
+                f for f in group
+                if id(f) != id(anchor) and id(f) not in already_matched
+                and f.source_tool not in _GROUNDED_SOURCE_TOOLS
+                and any(kw in f.message.lower() for kw in keywords)
+            ]
+            if not matches:
+                continue
+            candidates = [anchor] + matches
+            candidates.sort(key=lambda f: (-f.severity, 0 if f.source_tool in _GROUNDED_SOURCE_TOOLS else 1))
+            primary, others = candidates[0], candidates[1:]
+            primary_by_id[id(primary)] = others
+            already_matched.add(id(anchor))
+            already_matched.update(id(m) for m in matches)
+
+        folded_member_ids = {id(f) for others in primary_by_id.values() for f in others}
+        for f in group:
+            if id(f) in primary_by_id:
+                result.append(_apply_fold(f, primary_by_id[id(f)]))
+            elif id(f) in folded_member_ids:
+                continue  # absorbed into a fold above — not dropped from existence, just not a separate top-level entry
+            else:
+                result.append(f)
+
+    return result
+
+
 def summarize(state: ReviewState) -> dict:
     """Dedupes findings by fingerprint across EVERY contributing agent
     (Ruff/Bandit passthrough, Security, AI-aware, Quality, Test,
     repo-level) — fingerprint is a hash of (file, rule_id, start_line,
-    message), so two agents genuinely flagging the same thing collapse
-    into one; two agents flagging the same LINE for different reasons
-    (different rule_id/message) correctly both survive. Dismissed
-    findings are grouped the same way (_group_dismissed), so "found" and
-    "dismissed" are always computed from equivalently-deduped data, not
-    one deduped count next to one raw per-occurrence count. Splits
-    what's left into inline (a real diff line, under the per-review cap)
-    versus the summary body — quality.docs findings never go inline,
-    reported as a count only — appends any fix suggestion under its
-    finding's own inline comment (worker/main.py does the actual
-    posting), and asks Haiku for a short intro paragraph from aggregate
-    counts only. Always produces a body, even with zero findings.
+    message), so two agents genuinely flagging the LITERAL same thing
+    (same rule_id, same message) collapse into one. Two agents flagging
+    the same LINE with different rule_id/message either both survive as
+    separate findings, or — when one is a Security/AI-aware finding
+    whose rule_id anchors to a known defect category the other agent's
+    own message also describes — get folded into one, the other's text
+    preserved in a <details> block rather than dropped (see
+    _fold_cross_agent_duplicates). Dismissed findings are grouped the
+    same way (_group_dismissed), so "found" and "dismissed" are always
+    computed from equivalently-deduped data, not one deduped count next
+    to one raw per-occurrence count. Splits what's left into inline (a
+    real diff line, under the per-review cap) versus the summary body —
+    quality.docs findings never go inline, reported as a count only —
+    appends any fix suggestion under its finding's own inline comment
+    (worker/main.py does the actual posting), and asks Haiku for a short
+    intro paragraph from aggregate counts only. Always produces a body,
+    even with zero findings.
     """
     settings = get_settings()
     all_findings = _exclude_suppressed(state["findings"] + state["repo_level_findings"], state["suppressed_fingerprints"])
@@ -981,6 +1122,10 @@ def summarize(state: ReviewState) -> dict:
         if f.fingerprint not in seen:
             seen.add(f.fingerprint)
             deduped.append(f)
+    # Cross-agent folding runs before the intro is generated, not after —
+    # "found" should mean the same thing everywhere in this function, the
+    # same principle already applied to dismissed_count above.
+    deduped = _fold_cross_agent_duplicates(deduped)
 
     file_count = len(state["files"])
     intro, summary_update = _generate_summary_intro(
