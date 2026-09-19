@@ -63,7 +63,16 @@ az provider register -n Microsoft.OperationalInsights --wait
 az provider register -n Microsoft.ContainerRegistry --wait
 
 # ---- resource group ------------------------------------------------------
-az group create --name "$RESOURCE_GROUP" --location "$LOCATION" --output none
+# Idempotency guard, same pattern as every other resource below — without
+# it, a re-run against an already-existing group fails outright
+# (InvalidResourceGroupLocation) if its recorded location metadata ever
+# differs from $LOCATION, even though nothing would actually need to
+# change: a resource group's own "location" is just metadata about where
+# its management data lives, not a constraint on where child resources
+# (Container Apps, Postgres) actually run.
+if ! az group show --name "$RESOURCE_GROUP" --output none 2>/dev/null; then
+    az group create --name "$RESOURCE_GROUP" --location "$LOCATION" --output none
+fi
 
 # ---- container registry --------------------------------------------------
 if ! az acr show --name "$ACR_NAME" --resource-group "$RESOURCE_GROUP" --output none 2>/dev/null; then
