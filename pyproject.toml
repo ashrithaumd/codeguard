@@ -58,7 +58,7 @@ dev = [
 # could become the default (bare `pytest`) again, but there's no
 # benefit to widening it back until something actually needs to live
 # outside these directories.
-testpaths = ["tests/queue", "tests/diff", "tests/tools", "tests/github", "tests/pipeline", "tests/cli", "tests/mcp"]
+testpaths = ["tests/queue", "tests/diff", "tests/tools", "tests/github", "tests/pipeline", "tests/cli", "tests/mcp", "tests/api"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 
