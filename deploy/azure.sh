@@ -244,16 +244,77 @@ fi
 # this CLI extension's --args parsing does not reliably accept more than
 # one value, contradicting its own --help example. Simplest fix: don't
 # override it — the image already knows how to start itself.)
-az containerapp update --name "$API_APP_NAME" --resource-group "$RESOURCE_GROUP" \
-    --image "$ACR_NAME.azurecr.io/codeguard:latest" \
-    --set-env-vars \
-        "ANTHROPIC_API_KEY=secretref:anthropic-api-key" \
-        "DATABASE_URL=secretref:database-url" \
-        "GITHUB_WEBHOOK_SECRET=secretref:github-webhook-secret" \
-        "GITHUB_PRIVATE_KEY=secretref:github-private-key" \
-        "GITHUB_APP_ID=$GITHUB_APP_ID" \
-        "DB_SSLMODE=require" \
-    --output none
+#
+# --revision-suffix, keyed to the deployed commit, not a timestamp: without
+# an explicit suffix, `update` with the exact same --image/--set-env-vars
+# values as last time is indistinguishable to Container Apps from a no-op
+# (it diffs the requested spec, not whatever a mutable :latest tag now
+# points at in the registry) — confirmed live: a real image rebuild+push
+# left the api revision from 2026-09-16 running, unchanged, through several
+# subsequent `update` calls. A timestamp suffix would force a fresh
+# revision on every run regardless of whether the code changed, piling up
+# junk revisions; the commit SHA only changes when the code does, and the
+# revision name itself then tells you which commit is actually live.
+#
+# Deployed by DIGEST, not the :latest tag: this is what makes the
+# same-SHA/different-digest case (a rebuild with no commit — a base image
+# update, a dependency resolving differently, a retried push) detectable
+# at all. With a floating tag, there's nothing to compare against; pinned
+# by digest, the existing revision's own spec already says exactly what
+# it's running, no separate tracking needed.
+API_REVISION_SUFFIX="$(git rev-parse --short HEAD)"
+API_REVISION_NAME="${API_APP_NAME}--${API_REVISION_SUFFIX}"
+LATEST_DIGEST="$(az acr repository show --name "$ACR_NAME" --image codeguard:latest --query digest -o tsv)"
+
+if az containerapp revision show --name "$API_APP_NAME" --resource-group "$RESOURCE_GROUP" --revision "$API_REVISION_NAME" --output none 2>/dev/null; then
+    EXISTING_IMAGE="$(az containerapp revision show --name "$API_APP_NAME" --resource-group "$RESOURCE_GROUP" --revision "$API_REVISION_NAME" --query "properties.template.containers[0].image" -o tsv)"
+    EXISTING_DIGEST="${EXISTING_IMAGE#*@}"
+    if [ "$EXISTING_DIGEST" = "$LATEST_DIGEST" ]; then
+        echo "Revision $API_REVISION_NAME already exists and runs the current image digest ($LATEST_DIGEST) — skipping."
+    elif [ "${ALLOW_DIGEST_DRIFT:-}" != "1" ]; then
+        # Same commit, different build output — this is NOT a case to
+        # silently fold into an ordinary deploy or auto-resolve: it means
+        # something changed that the git history doesn't explain (base
+        # image drift, an unpinned dependency resolving differently, a
+        # retried push that landed a different layer). Stop and let a
+        # human decide, rather than leave a decision like that in a log
+        # nobody read.
+        echo "==============================================================" >&2
+        echo "ERROR: same commit ($API_REVISION_SUFFIX) but a DIFFERENT image digest than what's currently deployed under that name." >&2
+        echo "  currently deployed: $EXISTING_DIGEST" >&2
+        echo "  now at :latest:     $LATEST_DIGEST" >&2
+        echo "  This means something changed without a commit — investigate before deploying it blind." >&2
+        echo "  Re-run with ALLOW_DIGEST_DRIFT=1 if you've confirmed this new digest should go out." >&2
+        echo "==============================================================" >&2
+        exit 1
+    else
+        echo "ALLOW_DIGEST_DRIFT=1: deploying the new digest under a distinct revision name (same commit, different build)."
+        API_REVISION_SUFFIX="${API_REVISION_SUFFIX}-$(echo "$LATEST_DIGEST" | cut -d: -f2 | cut -c1-8)"
+        az containerapp update --name "$API_APP_NAME" --resource-group "$RESOURCE_GROUP" \
+            --image "$ACR_NAME.azurecr.io/codeguard@$LATEST_DIGEST" \
+            --revision-suffix "$API_REVISION_SUFFIX" \
+            --set-env-vars \
+                "ANTHROPIC_API_KEY=secretref:anthropic-api-key" \
+                "DATABASE_URL=secretref:database-url" \
+                "GITHUB_WEBHOOK_SECRET=secretref:github-webhook-secret" \
+                "GITHUB_PRIVATE_KEY=secretref:github-private-key" \
+                "GITHUB_APP_ID=$GITHUB_APP_ID" \
+                "DB_SSLMODE=require" \
+            --output none
+    fi
+else
+    az containerapp update --name "$API_APP_NAME" --resource-group "$RESOURCE_GROUP" \
+        --image "$ACR_NAME.azurecr.io/codeguard@$LATEST_DIGEST" \
+        --revision-suffix "$API_REVISION_SUFFIX" \
+        --set-env-vars \
+            "ANTHROPIC_API_KEY=secretref:anthropic-api-key" \
+            "DATABASE_URL=secretref:database-url" \
+            "GITHUB_WEBHOOK_SECRET=secretref:github-webhook-secret" \
+            "GITHUB_PRIVATE_KEY=secretref:github-private-key" \
+            "GITHUB_APP_ID=$GITHUB_APP_ID" \
+            "DB_SSLMODE=require" \
+        --output none
+fi
 
 # worker: DOES need a command override (python -m codeguard.worker.main,
 # not the image's default). Same --args bug applies here, so this goes
