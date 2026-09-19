@@ -23,8 +23,8 @@ exactly once per PR, not once per file/hunk, by checking review logs).
 Every Send-based branch above contributes nothing to the join when it
 has nothing to dispatch (no files, no AI-touching files, no Bandit
 findings, enable_ai_aware off) — the same "zero Sends -> no join
-contribution" behavior route_to_file_reviews has relied on since
-Phase 5 for an empty `files` dict.
+contribution" behavior route_to_file_reviews has relied on for an
+empty `files` dict.
 
 route_after_fanin is the one router that returns EITHER a plain string
 ("summarize", when nothing meets fix_threshold) OR a list[Send]

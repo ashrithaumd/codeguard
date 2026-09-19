@@ -1,11 +1,10 @@
-"""Phase 7 pipeline-level metrics — per-agent latency/tokens/cost, plus
-the two distinct notions of "cache" this pipeline has: Anthropic's own
-prompt cache (does a single call reuse cached system/repo-context
-tokens) and this pipeline's own hunk-level result cache (does a call
-happen at all, see codeguard/pipeline/hunk_cache.py). Both matter for
-the Phase 7 done-when criterion ("measurable in cache hit rate and
-cost") but are genuinely different things, so they're separate metrics
-rather than one overloaded counter.
+"""Pipeline-level metrics — per-agent latency/tokens/cost, plus the two
+distinct notions of "cache" this pipeline has: Anthropic's own prompt
+cache (does a single call reuse cached system/repo-context tokens) and
+this pipeline's own hunk-level result cache (does a call happen at all,
+see codeguard/pipeline/hunk_cache.py). Both are measurable in cache hit
+rate and cost, but are genuinely different things, so they're separate
+metrics rather than one overloaded counter.
 """
 
 from prometheus_client import Counter, Histogram
@@ -38,7 +37,7 @@ guardrail_flags_total = Counter(
 )
 injection_attempts_total = Counter(
     "codeguard_injection_attempts_total",
-    "Phase 8: prompt-injection pattern matches neutralized before the prompt was built. Each "
+    "Prompt-injection pattern matches neutralized before the prompt was built. Each "
     "increment is one blocked attempt that never reached the model's instruction context.",
     ["agent", "pattern"],
 )
@@ -51,4 +50,11 @@ hunk_cache_total = Counter(
     "codeguard_hunk_cache_total",
     "This pipeline's own content-hash result cache: whether a call was skipped entirely.",
     ["agent", "outcome"],  # outcome: hit | miss
+)
+verdict_flip_total = Counter(
+    "codeguard_verdict_flip_total",
+    "A 'confirmed' verdict whose own rationale reads like a dismissal (e.g. 'no "
+    "action needed') and was flipped to dismissed instead of surfaced as actionable — see "
+    "nodes.py's _apply_verdicts. Labeled by agent only; rule_id cardinality is unbounded.",
+    ["agent"],
 )

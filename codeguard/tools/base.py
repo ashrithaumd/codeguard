@@ -1,13 +1,11 @@
 """Shared execution harness for all three tool runners.
 
-Phase 4.1 change from Phase 4's first pass: every reviewed file is
-written into ONE temp directory (preserving relative paths), and the
-tool is invoked ONCE for the whole PR, not once per file. Semgrep's
-rule-loading overhead measured at ~2s *per file* in Phase 4 — almost
-entirely fixed cost paid again on every single file. Amortizing it
-across all of a PR's files in one invocation is the single biggest
-lever on tooling latency; see the Phase 4.1 review for before/after
-numbers.
+Every reviewed file is written into ONE temp directory (preserving
+relative paths), and the tool is invoked ONCE for the whole PR, not
+once per file — an earlier per-file design measured Semgrep's
+rule-loading overhead at ~2s *per file*, almost entirely fixed cost
+paid again on every single file. Amortizing it across all of a PR's
+files in one invocation is the single biggest lever on tooling latency.
 
 A crash or timeout still never aborts the review — it produces one
 "tool unavailable" Finding (now PR-wide, not per-file, since there's

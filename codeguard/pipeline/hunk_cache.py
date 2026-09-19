@@ -1,4 +1,4 @@
-"""Phase 7: DB-backed reuse for agent results, keyed by content_hash —
+"""DB-backed reuse for agent results, keyed by content_hash —
 see migrations/004_hunk_findings.sql for the table shape and why
 content_hash alone isn't the whole key.
 

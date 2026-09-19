@@ -1,8 +1,7 @@
-"""Closes the last carried-over gap from Phase 2's review: the reaper's
-own crash-loop path (a worker that lease-expires repeatedly without ever
-calling nack()) was ported from Reliqueue and trusted by structural
-analogy to Reliqueue's own tested version, but never actually exercised
-here. It is now.
+"""Tests the reaper's own crash-loop path (a worker that lease-expires
+repeatedly without ever calling nack()), which was ported from
+Reliqueue and trusted by structural analogy to Reliqueue's own tested
+version, but never actually exercised here directly.
 
 Leases are forced into an "already expired" state via a direct SQL
 UPDATE rather than by sleeping past a real lease_seconds — sleeping

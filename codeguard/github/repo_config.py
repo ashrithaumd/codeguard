@@ -1,7 +1,7 @@
-"""Loads a repo's .codeguard.yml — the loader this deferred since Phase 0's
-RepoConfig docstring: reads from the PR's base branch, never the head,
-because PR content is untrusted and must not be able to edit the policy
-that governs its own review.
+"""Loads a repo's .codeguard.yml — reads from the PR's base branch,
+never the head, because PR content is untrusted and must not be able
+to edit the policy that governs its own review (see RepoConfig's own
+docstring in config.py).
 """
 
 from __future__ import annotations

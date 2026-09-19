@@ -1,8 +1,8 @@
 """Extracts a retry delay from a GitHub API rate-limit response, so a
 worker can pass an explicit delay to nack() instead of trusting generic
 exponential backoff to happen to be long enough — a real gap identified
-in the Phase 1 review (the generic backoff path was never tested against
-an actual rate-limit response).
+by review (the generic backoff path was never tested against an actual
+rate-limit response).
 
 GitHub signals rate limiting two ways:
   - Secondary rate limit / abuse detection: a `Retry-After` header with

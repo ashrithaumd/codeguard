@@ -12,9 +12,9 @@ DEFAULT_TIMEOUT = 60
 
 _SEVERITY_MAP = {"ERROR": Severity.HIGH, "WARNING": Severity.MEDIUM, "INFO": Severity.LOW}
 
-# Custom rulesets only, per the Phase 4.1 decision — Bandit owns generic
-# Python security. Phase 6 populates this directory with the real
-# AI-aware ruleset (rules/llm-security.yaml, 10 rules covering
+# Custom rulesets only — Bandit owns generic Python security. This
+# directory holds the real AI-aware ruleset (rules/llm-security.yaml,
+# 10 rules covering
 # prompt-injection concatenation, missing system/user separation,
 # LLM-output-to-dangerous-sink/SQL taint, missing max_tokens/timeout,
 # sync calls in async handlers, unpinned model aliases, hardcoded API

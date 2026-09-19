@@ -35,7 +35,14 @@ dependencies = [
     "semgrep==1.45.0",
     "bandit==1.7.9",
     "ruff==0.6.9",
+    # Phase 11: codeguard/mcp/server.py. Pinned to the v2 API
+    # (MCPServer in mcp.server.mcpserver) — v1's FastMCP is a different
+    # import path entirely, not just a version bump.
+    "mcp>=2.0.0,<3",
 ]
+
+[project.scripts]
+codeguard = "codeguard.cli:main"
 
 [project.optional-dependencies]
 dev = [
@@ -51,7 +58,7 @@ dev = [
 # could become the default (bare `pytest`) again, but there's no
 # benefit to widening it back until something actually needs to live
 # outside these directories.
-testpaths = ["tests/queue", "tests/diff", "tests/tools", "tests/github", "tests/pipeline"]
+testpaths = ["tests/queue", "tests/diff", "tests/tools", "tests/github", "tests/pipeline", "tests/cli", "tests/mcp"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 

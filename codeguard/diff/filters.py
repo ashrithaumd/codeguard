@@ -14,6 +14,20 @@ from codeguard.diff.models import FilteredFile
 
 REVIEWABLE_EXTENSIONS = {".py"}
 
+# Dependency manifests are never AI-reviewable code (nothing
+# for Quality/Test/Security agents to say about a version pin), but
+# tools/osv_runner.py still needs their raw patch — see
+# is_dependency_manifest's callers in diff/ingest.py, which pull these
+# out of the raw PR file list BEFORE the docs/non-Python filters below
+# would otherwise drop requirements.txt (matches "*.txt") and
+# pyproject.toml (non-Python extension) on the floor.
+DEPENDENCY_MANIFEST_FILENAMES = ("requirements.txt", "pyproject.toml")
+
+
+def is_dependency_manifest(path: str) -> bool:
+    return path.rsplit("/", 1)[-1] in DEPENDENCY_MANIFEST_FILENAMES
+
+
 BUILTIN_IGNORED_PATTERNS = (
     # Lockfiles
     "*package-lock.json", "*yarn.lock", "*pnpm-lock.yaml", "*poetry.lock",
@@ -29,6 +43,32 @@ BUILTIN_IGNORED_PATTERNS = (
 
 def _matches_any(path: str, patterns) -> bool:
     return any(fnmatch.fnmatch(path, pattern) for pattern in patterns)
+
+
+def _extension(path: str) -> str:
+    """Was duplicated verbatim between is_reviewable_path and
+    filter_files (found via CodeGuard's own review of one of its own
+    PRs) — extracted once here. No dot in the filename (or the dot is
+    part of a directory name, e.g. "a.b/README") means no extension at
+    all, not the directory segment's own suffix.
+    """
+    name = path.rsplit("/", 1)[-1]
+    return "." + name.rsplit(".", 1)[-1] if "." in name else ""
+
+
+def is_reviewable_path(path: str, repo_config: RepoConfig) -> bool:
+    """The part of filter_files' classification below that applies to
+    any path regardless of context, not just a PR's changed-file list —
+    not a builtin-ignored pattern, not repo-config-ignored, and a
+    reviewable extension. Used by `codeguard audit` (cli.py) walking a
+    full tree, which has no `additions`/`patch` per file to apply
+    filter_files' remaining, PR-specific checks against.
+    """
+    if _matches_any(path, BUILTIN_IGNORED_PATTERNS):
+        return False
+    if _matches_any(path, repo_config.ignored_paths):
+        return False
+    return _extension(path) in REVIEWABLE_EXTENSIONS
 
 
 def filter_files(files: list[dict], repo_config: RepoConfig) -> tuple[list[dict], list[FilteredFile]]:
@@ -54,8 +94,7 @@ def filter_files(files: list[dict], repo_config: RepoConfig) -> tuple[list[dict]
             filtered.append(FilteredFile(path=path, reason="pure deletion"))
             continue
 
-        ext = "." + path.rsplit(".", 1)[-1] if "." in path else ""
-        if ext not in REVIEWABLE_EXTENSIONS:
+        if _extension(path) not in REVIEWABLE_EXTENSIONS:
             filtered.append(FilteredFile(path=path, reason="non-Python (v1 scope is Python-only)"))
             continue
 

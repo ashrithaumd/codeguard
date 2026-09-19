@@ -1,10 +1,9 @@
 """Connection pool + schema bootstrap, shared by the API and worker.
 
 Ported from Reliqueue's core/db.py, translated from asyncpg to psycopg3 +
-psycopg_pool — see the Phase 2 audit for why: this project already uses
-psycopg3 for its own /ready check, and running two different Postgres
-drivers in one small codebase for no functional benefit isn't worth the
-maintenance cost.
+psycopg_pool: this project already uses psycopg3 for its own /ready
+check, and running two different Postgres drivers in one small codebase
+for no functional benefit isn't worth the maintenance cost.
 
 Two translation details worth being explicit about, since they're the
 easiest place to introduce a silent bug while porting:

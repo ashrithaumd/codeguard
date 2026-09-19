@@ -1,5 +1,5 @@
-"""Exercises the budget-truncation path Phase 3 never actually tested —
-only confirmed budget_exceeded=False against small PRs. apply_file_budget
+"""Exercises the budget-truncation path — not just budget_exceeded=False
+against small PRs. apply_file_budget
 and apply_token_budget were extracted as pure functions from ingest.py
 specifically to make this possible without hitting the real GitHub API.
 """

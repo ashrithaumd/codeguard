@@ -1,7 +1,6 @@
-"""Closes the other carried-over gap from Phase 1's review: rate-limit-
-aware backoff (extract_retry_after) was added in Phase 2 but never
-actually tested against a constructed rate-limit response — only the
-generic exponential-backoff path was exercised live. It is now.
+"""Tests rate-limit-aware backoff (extract_retry_after) against a
+constructed rate-limit response — not just the generic
+exponential-backoff path, which was the only one exercised live before.
 """
 
 from __future__ import annotations

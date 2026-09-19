@@ -17,7 +17,7 @@ class Finding(BaseModel):
     actual scanned code (e.g. Bandit's own hardcoded-secret message
     literally includes the matched string). It is derived from PR
     content, not written by us, and must be treated as untrusted the
-    moment it enters an LLM prompt (Phase 5+) — delimited as data, never
+    moment it enters an LLM prompt — delimited as data, never
     concatenated in as an instruction — the same discipline raw hunk
     content already requires.
     """
@@ -29,7 +29,7 @@ class Finding(BaseModel):
     rule_id: str
     message: str
     fingerprint: str
-    # Phase 8: only ever < 1.0 for a finding an ungrounded agent
+    # Only ever < 1.0 for a finding an ungrounded agent
     # (Quality/Test — see nodes.py) generated from scratch and
     # self-rated; every deterministic-tool and verdict-contract finding
     # (Bandit/Semgrep/Ruff passthrough, Security, AI-aware) keeps the
@@ -44,8 +44,8 @@ class Finding(BaseModel):
     ) -> "Finding":
         """fingerprint is derived, not caller-supplied, so two runs
         that produce the same logical finding always dedupe the same
-        way — the reuse groundwork Hunk.content_hash laid in Phase 3
-        for hunks applies the same idea here, to findings.
+        way — the same content-hash-keyed reuse idea Hunk.content_hash
+        applies to hunks, applied here to findings instead.
         """
         raw = f"{file}:{rule_id}:{start_line}:{message}"
         fingerprint = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]

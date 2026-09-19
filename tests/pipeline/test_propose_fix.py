@@ -1,7 +1,7 @@
 """Regression coverage for propose_fix and route_after_fanin's dual
 role (plain "summarize" string vs a list[Send] fan-out to propose_fix,
 from the same router — confirmed to actually work in LangGraph via a
-standalone smoke test during Phase 7's build, not just assumed).
+standalone smoke test, not just assumed).
 """
 
 from __future__ import annotations
@@ -88,7 +88,7 @@ def test_propose_fix_call_failure_still_marks_should_fix():
 
 
 def test_route_after_fanin_excludes_a_suppressed_fingerprint():
-    """Phase 10: a suppressed fingerprint doesn't qualify for a fix
+    """A suppressed fingerprint doesn't qualify for a fix
     suggestion even if its severity would otherwise meet fix_threshold."""
     suppressed = make_finding(file="a.py", severity=Severity.CRITICAL)
     state = {
@@ -102,7 +102,7 @@ def test_route_after_fanin_excludes_a_suppressed_fingerprint():
 
 
 def test_propose_fix_drops_a_suggestion_for_a_line_outside_the_diff():
-    """Phase 8: GitHub's suggestion-block API can only attach to a diff
+    """GitHub's suggestion-block API can only attach to a diff
     line — a suggestion for an unchanged line is dropped, but the
     finding itself is untouched (still reported elsewhere)."""
     finding = make_finding(file="a.py", rule_id="B105", line=50, message="hardcoded secret")

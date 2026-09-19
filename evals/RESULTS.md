@@ -334,3 +334,347 @@ bare pattern for their expected 3-attempts-per-fixture count, and `string_litera
   reproduces the shape of the confidently-wrong `getattr(usage, "field", 0) or 0` finding from
   dogfooding CodeGuard's own repo, with `expect_quality_flag: false` — a regression check that the
   Quality agent doesn't repeat that specific mistake going forward.
+
+## Phase 11 — audit mode, MCP server, OSV dependency-CVE lookup
+
+Three new entry points, all built on the existing pipeline nodes with no second implementation of
+any tool runner, verdict agent, or budget/filtering logic — see `codeguard/cli.py`,
+`codeguard/mcp/server.py`, `codeguard/tools/osv_runner.py`.
+
+### 1. Environment bug found by this phase's own live verification: Bandit/Ruff/Semgrep were not installed
+
+Before any of the three features below could be honestly verified, the first live `review_diff`
+run revealed that `bandit`, `ruff`, and `semgrep` were not installed in this dev environment at all
+(`pip show` confirmed all three absent) — `resolve_tool_command` was silently falling back to a
+bare-name `subprocess.run(["bandit", ...])`, which fails with `WinError 2` and gets swallowed into
+the existing "tool unavailable" fallback path (`tools/base.py`'s `run_tool_on_pr`), so the pipeline
+never crashed, it just silently produced zero real Bandit/Ruff/Semgrep findings for every file. The
+first `review_diff` verification run (below) was run against this broken environment before the gap
+was noticed — its 63 findings were entirely from Quality/Test/eval-hygiene, none from a real
+deterministic-tool verdict. Fixed with `pip install -e ".[dev]"` (this also revealed `codeguard`
+itself had never been installed as a package in this environment — imports were only working
+because tests happen to run from the repo root). Re-ran the full non-live suite (220 passed, 1
+skipped — the pre-existing, documented Windows semgrep-engine limitation) and the live tool-runner
+tests (5 passed, 1 skipped) to confirm the fix, then re-ran both live verifications below against
+the corrected environment. This was a pre-existing environment gap, not something Phase 11's code
+introduced — but it would have made both live verifications below silently meaningless if not
+caught before reporting them.
+
+### 2. `codeguard/cli.py` — audit mode, verified against `simonw/llm`
+
+Reuses `filter_files`/`is_reviewable_path` (new helper, factored out of `filter_files` for a
+full-tree walk), `apply_file_budget`/`apply_token_budget`, `run_tools_on_files`,
+`check_dependency_updates`, `review_eval_hygiene`, and `review_security`/`review_ai_aware` directly
+— the only genuinely new code is the tree walk, the whole-file-as-one-hunk synthetic patch header
+(`@@ -0,0 +1,N @@` — `parse_hunk_ranges`/`filter_findings_to_changed_lines` only ever read the
+header line, so this makes "the whole file is in scope" fall out of the same code path a real PR
+diff uses with zero special-casing), and the markdown report renderer. Quality/Test are
+deliberately **not** run in audit mode — fanning them out per-hunk across an entire repo instead of
+one PR's changed hunks is exactly the cost risk `audit_max_tokens_ceiling` exists to prevent, for
+findings that matter far less on code nobody just touched.
+
+**Verification target:** `https://github.com/simonw/llm` — Simon Willison's `llm` CLI tool, a
+well-known, actively maintained, modest-size (50 reviewable `.py` files) Python project that itself
+calls multiple LLM SDKs, chosen for exactly that reason (a real chance to exercise the AI-aware
+verdict path, not just Security).
+
+**What it found, honestly:**
+
+- **Only 5 of 50 files were actually scanned**, and the report says so explicitly (`budget_exceeded:
+  true`). `llm/cli.py` and `tests/test_logs_store.py` are both several thousand lines long; a
+  single-hunk-per-whole-file token count for a file that size consumes a large fraction of
+  `audit_max_tokens_ceiling` (100,000) by itself, so the file-count budget never even gets a chance
+  to bind — token budget alone drops 45 files first. This is the ceiling doing exactly the job it
+  was sized for ("audit of a big repo must not run away"), but it means audit mode's real-world
+  coverage on a repo with a few very large files is much narrower than "50 files, 30-file ceiling"
+  would suggest at a glance.
+- **Real Bandit findings on the 5 scanned files**: 3× `B608` (SQL-injection-shaped string query
+  construction) and 1× `B102` (`exec` use) in `llm/cli.py`, plus assorted `B101`/`B105`/`B108` in
+  test files and `llm/models.py`.
+- **None of them got an AI verdict.** Every file with a Bandit finding (`llm/cli.py`,
+  `llm/models.py`, `tests/test_logs_store.py`) individually exceeded
+  `guardrails.MAX_CHUNK_TOKENS` (20,000 tokens) — a pre-existing, pipeline-wide input-size guardrail,
+  not something Phase 11 added — so `review_security` fell back to raw, unverified Bandit findings
+  for all of them (`_run_verdict_agent`'s existing fail-safe, same one described in Phase 6). Net
+  effect: **estimated cost $0.0000** for this run — every LLM call that would have cost anything
+  was refused before it started. This is a real, worth-flagging gap: a PR review's own per-file
+  content is usually much smaller than a full file (a diff touches part of a file), so this
+  guardrail rarely binds there; a whole-repo audit routinely hits full files this size. Not fixed in
+  this phase — chunking large files for audit-mode verdict calls is a real design change, not a bug
+  fix, and out of scope for what was asked here.
+- **Semgrep found nothing** — it crashed on all 5 files with the same pre-existing, documented
+  Windows-only limitation `tests/tools/test_runners_live.py` already skips around (semgrep's native
+  scanning engine isn't available under this Windows install; the real deployment target is Linux
+  containers, where this doesn't occur).
+- **OSV found nothing** for the repo's `pyproject.toml` (no `requirements.txt` present) — not
+  because its dependencies are unpinned-and-vulnerable-checked-anyway, but because
+  `tools/osv_runner.py` only queries an exact `==` pin by design (a range has no single version to
+  ask OSV about), and `simonw/llm`'s dependencies are declared as ranges, not exact pins. Confirmed
+  by inspecting the cloned `pyproject.toml` directly, not assumed.
+- **Eval hygiene found nothing** — genuinely re-checked against all 50 files, not just the 5
+  budget-survivors (see the bug fixed below), so this is a real "this repo's LLM-related test
+  hygiene looks fine by these three heuristics," not an artifact of under-scoping.
+- **A real bug found and fixed during this verification**: eval-hygiene was initially being run
+  against the same budget-trimmed file set the deterministic-tool/verdict layer uses, rather than
+  every reviewable file — meaning on a repo like this one, the large files that ate the token budget
+  would also silently starve eval-hygiene of visibility into the other 45 files, for no cost reason
+  at all (eval-hygiene is a pure heuristic, no LLM, no subprocess — there's no budget rationale for
+  scoping it down). Fixed in `cli.py`'s `run_audit` by keeping the untrimmed file collection
+  (`all_files`) around specifically for the eval-hygiene call.
+
+### 3. `codeguard/mcp/server.py` — `review_diff` and `audit_repo` tools, verified live from this session
+
+Both tools registered and callable (confirmed via `mcp.list_tools()` and by invoking
+`_run_review_diff`/`run_audit` directly, the same functions the MCP tool wrappers call).
+`review_diff` runs the **exact same compiled graph** (`codeguard.pipeline.graph.review_graph`)
+worker/main.py runs for a real PR — not a narrower reimplementation — against `git status`/`git
+diff HEAD`, including brand-new untracked files (a plain `git diff HEAD` alone is blind to a file
+that hasn't been `git add`-ed yet, which is normal mid-edit; a bug caught and fixed by
+`tests/mcp/test_server.py` before ever reaching a live run).
+
+**Verification target:** this phase's own uncommitted changes (18 changed files: 7 tracked
+modifications + 11 new untracked files; the file-count budget ceiling of 15 dropped the smallest 1,
+leaving 17 reviewed).
+
+**Real result, corrected environment:** 107 findings (41 `security`-verdict, 40 `quality-agent`,
+24 `test-agent`, 1 `ruff`, 1 `eval-hygiene`), 81 dismissed as false positives, **$0.2462, 111,330
+tokens in / 9,533 out**. One dismissal breakdown worth naming: a `B101` (`assert` in test code)
+finding came back **confirmed at LOW severity** with the model's own reasoning ("these asserts are
+appropriate for their context... no action needed") rather than dismissed — the Phase 9.1
+`_VERDICT_CONTRACT` design working as intended (true-but-minor stays confirmed-at-LOW, not
+dismissed) rather than a bug, but a good illustration of why "confirmed" isn't the same claim as
+"actionable."
+
+**Before the environment fix** (item 1 above), the same run reported 63 findings and $0.1156 —
+entirely Quality/Test/eval-hygiene output, since Bandit/Semgrep/Ruff were silently non-functional.
+That run's cost was real money spent verifying nothing about the deterministic-tool or verdict
+layers; included here for an honest total, not hidden.
+
+**Combined live-verification spend, Phase 11: ~$0.36** ($0.1156 broken-env run + $0.2462
+corrected-env run + $0.0000 for the audit run, whose verdict calls were all refused by the
+`MAX_CHUNK_TOKENS` guardrail before billing anything).
+
+### 4. What these numbers do and don't prove
+
+- They prove the audit CLI and both MCP tools work end-to-end against real, external, unmodified
+  code and a real local diff — not just against fixtures this project wrote for itself.
+- They prove the token-budget ceiling and the `MAX_CHUNK_TOKENS` input guardrail both function as
+  designed, including in a combination (a large-file-heavy repo) that hadn't been exercised before.
+- They do **not** prove audit mode gives useful whole-repo coverage on a repo with a few very large
+  files — this run's 5-of-50 scanned and $0 AI-verdict spend is the honest counter-example, not the
+  success case, for that specific claim.
+- One repo, one diff, one run each — not three runs, unlike Phase 9's harness numbers above. These
+  are "does it work, and what does it honestly cost/find," not precision/recall claims; no
+  precision/recall table is claimed for Phase 11.
+
+## Phase 11.1 addendum — audit file ordering/chunking, dismissal breakdown, README limitations
+
+### 1. Audit mode: AI-touching-first + size-ascending ordering, AST chunking, explicit skip reporting
+
+Phase 11's audit run against `simonw/llm` scanned only 5 of 50 files — two large files
+(`llm/cli.py`, `tests/test_logs_store.py`) ate the whole `audit_max_tokens_ceiling` before the
+file-count ceiling even bound, and every file with a Bandit finding also individually exceeded the
+pipeline's `MAX_CHUNK_TOKENS` input guardrail, so the AI-verdict layer never engaged at all
+($0.0000 spent). Three real, live-verified fixes, in the order they were actually found:
+
+**Fix 1 — file selection order.** `codeguard/cli.py`'s `_select_files_for_audit` replaced the old
+two-stage `apply_file_budget`/`apply_token_budget` dance (sorted biggest-first, PR-review's own
+priority — appropriate for "review the highest-signal diff first," wrong for "get as much of a
+whole repo reviewed as the ceiling allows") with a single greedy walk sorted **AI-touching files
+first, then smallest-first within each group**: AI-touching first because only those files can ever
+get an AI-aware verdict at all; smallest-first because it lets far more files fit under the same
+token ceiling than a few huge files would.
+
+**Fix 2 — AST chunking instead of refusing.** `_chunk_file_by_ast`/`_ast_chunk_boundaries` split an
+oversized file at top-level function/class boundaries (recursing into a single oversized class's
+own methods when needed), and `_run_verdict_layer` calls `review_security`/`review_ai_aware` once
+per chunk — each chunk carrying only the raw findings that fall on its own lines — instead of one
+whole-file call that the pipeline's `MAX_CHUNK_TOKENS` guardrail would refuse outright.
+
+**Fix 3 — found by this phase's own live re-verification, not anticipated in advance.** The first
+re-run (ordering + chunking, flat `CHUNK_TOKEN_BUDGET = MAX_CHUNK_TOKENS - 1500`) still logged two
+`MAX_CHUNK_TOKENS` refusals: `tests/test_logs_store.py` (18,260 content tokens — comfortably under
+the flat 18,500 budget) and `tests/test_parts.py`. Both files have an unusually large number of
+Bandit findings (hundreds of `B101` assert-in-test occurrences), and `_run_verdict_agent`'s own
+`<findings>` block scales with finding *count*, not a fixed size — a flat content-only headroom
+constant doesn't account for that. Fixed by computing the chunk budget **per file**
+(`_effective_chunk_budget`): `MAX_CHUNK_TOKENS` minus the token cost of that file's own full
+findings block (a safe upper bound — any one chunk only ever carries a subset) minus a small fixed
+margin for the XML wrapper, floored at `MIN_CHUNK_TOKENS` so a pathological finding count still
+makes some progress rather than collapsing to zero.
+
+**Real numbers, same target (`simonw/llm`), three states:**
+
+| Run | Files scanned | Verdict call failures | Findings | Dismissed | Cost | In / out tokens | Wall clock |
+|---|---|---|---|---|---|---|---|
+| Phase 11 (biggest-first, no chunking) | 5 / 50 | 3 (whole-file refused) | 266 | 0 | $0.0000 | 0 / 0 | 7.5s |
+| + ordering + flat chunk budget | 25 / 50 | 2 (flat budget too tight) | 711 | 465 | $0.4209 | 128,981 / 2,264 | 98.0s |
+| + per-file effective chunk budget | 25 / 50 | 0 | 865 | 311 | $0.6683 | 206,821 / 3,187 | 130.7s |
+
+25-of-50 didn't move between the last two rows — that ceiling is the aggregate
+`audit_max_tokens_ceiling` binding on file *selection*, a different, still-real limit from the
+per-call `MAX_CHUNK_TOKENS` issue fixed above; see the README's new Limitations section. Going from
+0 verdict calls succeeding to a real, zero-failure verdict layer on every scanned file's findings is
+the actual fix this phase asked for — the honest caveat is that "reviews half the repo, for real
+money" is a genuinely different cost profile than the $0.00 Phase 11 first reported, and a repo
+operator should expect audit-mode cost to scale with how much of the ceiling a repo's file sizes
+actually let it use, not with repo size alone.
+
+### 2. Dismissal breakdown on PR #3's real review: Ruff has zero, by design — not what dominates
+
+Parsed directly from `codeguard-review-bot`'s actual review body on PR #3 (89 dismissed findings):
+
+| Rule ID | Tool | Count | Share |
+|---|---|---|---|
+| B101 (assert in test code) | Bandit | 87 | 97.8% |
+| B607 (partial executable path) | Bandit | 1 | 1.1% |
+| B603 (subprocess without shell equals true check) | Bandit | 1 | 1.1% |
+| — any Ruff rule — | Ruff | 0 | 0% |
+
+**Ruff cannot dominate the dismissals, or appear in them at all, structurally** — `review_file`
+(the node Ruff findings route through, see `nodes.py`'s `route_to_file_reviews`) is a pure
+passthrough with no LLM call; only Bandit (via `review_security`) and Semgrep (via
+`review_ai_aware`) findings ever go through a verdict-contract agent capable of dismissing
+anything. Per the task's own conditional ("if Ruff dominates, demote it"), that condition is false,
+so **no code change was made** — demoting a rule the pipeline was never spending verdict calls on
+in the first place wouldn't reduce any cost. What actually dominates is Bandit's `B101` in test
+files (97.8% of all dismissals on this PR) — a real, repeated pattern worth flagging as a candidate
+for a future deterministic short-circuit, but that's a different, not-yet-requested change against
+a different rule than the one this task named, so it's called out here rather than acted on
+unilaterally.
+
+### 3. README Limitations section
+
+Added, covering: hunk-scoped review's function-level blindness (citing the real "no return
+statement visible" false claim from PR #3's own CodeGuard review — the function has one; the model
+only saw a windowed slice), whole-file audit review's residual exposure to `MAX_CHUNK_TOKENS` on an
+unsplittable single statement, and the Bandit/Semgrep-only (never Ruff) shape of dismissals
+confirmed above.
+
+## Phase 11.2 — real findings fixed, review-output-quality pass, live before/after
+
+Everything below came from CodeGuard's own two real reviews of PR #3 (its first review of the
+initial Phase 11 commit, and its second of the Phase 11.1 commit) — not hypothetical cleanup.
+
+### 1. Four real findings fixed
+
+- **`codeguard/mcp/server.py` git subprocess error handling** (B603, PR #3's second review): every
+  `subprocess.run(..., check=True)` git call was uncaught — a non-git directory, git missing from
+  PATH, or a timeout would raise all the way up as an unhandled exception instead of a clean MCP
+  tool error. Added `GitError` (raised by a new shared `_run_git` helper) and a `git rev-parse
+  --git-dir` validation step before any other git command runs, caught once at `_run_review_diff`'s
+  own top level and returned as `{"error": "...", ...}` in the same shape a successful call uses.
+- **`tools/osv_runner.py` zip() length mismatch**: `zip(pins, results)` silently truncates to the
+  shorter list and, worse, would misattribute every pin *after* a gap if OSV's batch response ever
+  omits one result out of order. Replaced with explicit index-based lookup against `pins` (the
+  authoritative list) with a bounds check per pin, plus a warning log on any length mismatch — a
+  missing result can now only ever mean "this one pin is unchecked," never "shift every subsequent
+  pin's vulnerability onto the wrong package."
+- **`audit_repo` returning an empty report on failure**: `run_audit`'s signature changed from a bare
+  `int` exit code to `tuple[int, str | None]` (exit code, error message) — `codeguard`'s own CLI
+  `main()` only needed the code, but the MCP tool needed the actual reason (git clone failed, target
+  isn't a directory or a recognizable git URL) to return `{"exit_code": 1, "error": "...", ...}`
+  instead of a silent `{"exit_code": 1, "report_markdown": ""}` that looked like a no-op success.
+- **Extension-parsing duplicated between `is_reviewable_path` and `filter_files`**: extracted to a
+  shared `_extension(path)` in `diff/filters.py` — which also fixed a latent bug neither copy had a
+  test for: the old inline version ran `rsplit(".", 1)` on the *whole path*, so `"a.b/README"` (a dot
+  in a directory name, none in the filename) wrongly computed `.b/README` as the extension instead
+  of `""`. `_extension` now splits the basename off first.
+
+### 2. Review output quality — six changes, one live before/after on this repo's own diff
+
+- **(a) Dismissals grouped by (file, rule_id, reason), inside a collapsed `<details>` block.** One
+  agent verdict on a rule_id creates one `DismissedFinding` per raw occurrence (`_apply_verdicts`),
+  so a rule dismissed identically across many lines of one file used to produce that many near-
+  duplicate list entries. `_group_dismissed` collapses them into one entry naming every line
+  (`tests/cli/test_audit.py (lines 205, 206, 211, 212, 232, 235, 241, 242)`), wrapped in
+  `<details><summary>N finding(s) checked by an AI agent, not flagged</summary>...</details>` so a
+  clean file's dismissals don't dominate the visible review body.
+- **(b) Verdict consistency check.** A "confirmed" verdict whose own message reads like a dismissal
+  (`"no action needed"`, `"not a security risk"`, `"appropriate for tests"` — the exact phrases
+  PR #3's own review used) is now flipped to dismissed in `_apply_verdicts`, incrementing the new
+  `codeguard_verdict_flip_total{agent=...}` Prometheus counter. Deliberately narrow, exact-phrase
+  matching — broadening it risks swallowing a real confirmed finding that happens to share a word.
+- **(c) Found/dismissed counts computed consistently.** Root cause of PR #3's own "98 found, 126
+  dismissed" (dismissed *exceeding* found): "found" was already fingerprint-deduped, "dismissed" was
+  the raw per-occurrence count, fed straight to the Haiku summary intro as two numbers describing
+  supposedly-comparable things. Fix (b)'s grouping is what both the deterministic body and the LLM
+  intro are now given — never two different numbers describing the same dismissals. The "N
+  additional finding(s) not shown inline" announcement was changed the same way, for the same reason
+  (it used to announce the raw remainder count while displaying a grouped list under it).
+- **(d) One rationale covering N findings on different lines → one comment listing the lines.**
+  `_group_findings_for_display` applies the same grouping to the "not shown inline" list for
+  confirmed findings, not just dismissals — a verdict-contract agent's single rationale, or Quality/
+  Test independently producing an identical message on unrelated lines, now prints once.
+- **(e) `quality.docs` findings → summary count only, never inline.** Still counted in "found" (a
+  real finding), but never itemized in the "not shown inline" list and never eligible for an inline
+  comment — reported instead as `"N documentation (quality.docs) finding(s) not shown
+  individually."` This is this pipeline's single highest-volume, lowest-value finding category
+  (missing/incomplete comments) and was crowding out everything else in the body.
+- **(f) "No fix suggestions were generated" reworded.** This was never a fixed string — it was the
+  Haiku summary intro's own free-form paraphrase of `fix_suggestions_proposed=0`, phrased
+  differently every run ("no concrete/specific/particular fix suggestions..."). Made deterministic
+  instead: `fix_suggestions_proposed` is no longer given to the LLM at all (the system prompt now
+  explicitly tells it not to mention fixes), and `summarize()` appends its own exact sentence —
+  `"No findings met the fix threshold (HIGH)."` (or the repo's own configured `fix_threshold`) — or,
+  when fixes exist, `"N fix suggestion(s) proposed."`
+
+**Live before/after, this repo's own uncommitted diff** (`review_diff`, same 12 files, real API
+calls):
+
+| | Before (PR #3's first review) | After (Phase 11.2) |
+|---|---|---|
+| Dismissed section | 61 raw entries, one per line, no collapse | 8 grouped `<details>` entries, lines listed together |
+| "Not shown inline" list | 27 raw entries incl. ~20 `quality.docs` | 27 grouped entries, `quality.docs` moved to a 1-line count |
+| Fix-suggestion line | (varied LLM prose, sometimes absent) | `"No findings met the fix threshold (HIGH)."`, exact every run |
+| Found vs. dismissed | Could contradict (98 vs. 126, PR #3 live) | Both computed from the same grouped set |
+| Cost | $0.2462 (Phase 11 review_diff run) | $0.2208 (comparable — grouping is post-hoc on the same LLM output, not a call-count change) |
+
+The dismissed/not-shown-inline entry counts didn't shrink because fewer things were reviewed — the
+same LLM calls happened, the same findings came back; what changed is how many near-duplicate list
+entries a human has to read afterward. Cost is comparable between the two runs (not identical,
+since it's a different commit's diff and real model variance) precisely because grouping is a
+*display* change, not a change to how many LLM calls this pipeline makes — item (a)-(f) are all
+free at the token-cost level.
+
+The literal shape of that change, side by side — **before** (PR #3's first review, old code, 61 raw
+dismissals one line each):
+
+```
+61 finding(s) checked by an AI agent, not flagged:
+- tests/cli/test_audit.py:205 [B101]: ...
+- tests/cli/test_audit.py:206 [B101]: ...
+- tests/cli/test_audit.py:211 [B101]: ...
+  (58 more, one per line)
+```
+
+**after** (same repo, this branch's own changes applied):
+
+```
+No findings met the fix threshold (HIGH).
+
+27 additional finding(s) not shown inline:
+[... 27 grouped entries, no quality.docs among them ...]
+20 documentation (quality.docs) finding(s) not shown individually.
+
+<details><summary>8 finding(s) checked by an AI agent, not flagged</summary>
+
+- codeguard/mcp/server.py:57 [B603]: The subprocess call passes a hardcoded `git` command...
+- tests/cli/test_audit.py (lines 205, 206, 211, 212, 232, 235, 241, 242) [B101]: This is a test file...
+- tests/diff/test_filters.py (lines 46, 47, 48, 49, 50, 58, 59, 63, 67, 68) [B101]: ...
+[... 5 more grouped entries ...]
+
+</details>
+```
+
+### 3. Honest note: PR #3's own bot review doesn't reflect any of this yet
+
+The Azure-hosted App reviewing PR #3 is built from `main` (`deploy/azure.sh` refuses to build from
+anything else, by design) and hadn't been redeployed since before Phase 11 started, so PR #3's own
+bot reviews (through the Phase 11.2 push) don't reflect any of this phase's work — confirmed
+directly by checking the latest review body for zero occurrences of `<details>`, the `quality.docs`
+footnote, or the new fix-threshold wording; all absent. The before/after above was verified locally
+(`review_diff` run directly against this repo's own diff on this branch) instead, for exactly that
+reason. Once this merges to `main` and the Azure app is redeployed, PR #3's own bot review should
+show the same shape — a separate, deliberate infrastructure step, not something a code PR does on
+its own.

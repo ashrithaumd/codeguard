@@ -62,7 +62,7 @@ def get_file_content(token: str, owner: str, repo: str, path: str, ref: str) -> 
 
 def get_repo_tree(token: str, owner: str, repo: str, ref: str) -> list[dict]:
     """Full recursive file listing (path + type) at `ref` — no content,
-    one call regardless of repo size. Used by Phase 6's eval-hygiene
+    one call regardless of repo size. Used by the eval-hygiene
     checks to enumerate the base tree; `ref` must be the PR's base
     branch for the same reason load_repo_config's base_ref must be
     (repo_config.py) — repo-level checks describe the target repo's own

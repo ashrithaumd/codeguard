@@ -9,9 +9,9 @@ a naive "did it crash" test would pass even with broken parsing. This
 is the assertion that actually proves the real subprocess ran AND this
 module's own parsing succeeded.
 
-Phase 4.1: each runner now takes a `files: dict[path, content]` and is
-invoked once for a whole "PR" (possibly one file), not per file — these
-tests exercise that multi-file path directly, including the path being
+Each runner takes a `files: dict[path, content]` and is invoked once
+for a whole "PR" (possibly one file), not per file — these tests
+exercise that multi-file path directly, including the path being
 correctly resolved back from the tool's temp-directory-relative report
 to the original relative path.
 """
@@ -21,6 +21,7 @@ import sys
 import pytest
 
 from codeguard.tools.bandit_runner import run_bandit
+from codeguard.tools.osv_runner import check_dependency_updates
 from codeguard.tools.ruff_runner import run_ruff
 from codeguard.tools.semgrep_runner import run_semgrep
 
@@ -38,10 +39,10 @@ def get_user(username):
     return cursor.fetchall()
 '''
 
-# Real content from rules/llm-security.yaml's own domain (Phase 6) — a
-# floating model alias, no system prompt, no max_tokens. Semgrep's role
-# since Phase 4.1 is custom rulesets only (Bandit owns generic security);
-# this exercises that real ruleset, not a placeholder.
+# Real content from rules/llm-security.yaml's own domain — a floating
+# model alias, no system prompt, no max_tokens. Semgrep's role is
+# custom rulesets only (Bandit owns generic security); this exercises
+# that real ruleset, not a placeholder.
 LLM_CALL_SNIPPET = '''\
 import anthropic
 
@@ -67,7 +68,7 @@ def test_bandit_runs_and_finds_the_sql_injection():
 
 
 def test_bandit_partitions_findings_across_multiple_files_correctly():
-    """The core Phase 4.1 guarantee: one invocation over several files
+    """The core guarantee: one invocation over several files
     must attribute each finding back to the RIGHT original file, not
     just any file that happened to be in the batch.
     """
@@ -109,3 +110,17 @@ def test_a_clean_file_produces_no_bandit_findings():
     findings = run_bandit({"app/utils.py": clean})
     assert _ran_successfully(findings), findings
     assert findings == []
+
+
+def test_osv_flags_a_real_known_vulnerable_pin():
+    """pyyaml==5.3 is a real, confirmed-vulnerable pin
+    (GHSA-6757-jp84-gxfx, full_load arbitrary code execution) — verified
+    live against api.osv.dev before writing this fixture, not guessed."""
+    files = {"requirements.txt": "pyyaml==5.3\n"}
+    patches = {"requirements.txt": "@@ -1 +1 @@\n-pyyaml==5.0\n+pyyaml==5.3\n"}
+
+    findings = check_dependency_updates(files, patches)
+
+    assert findings, "expected OSV to report a known vulnerability for pyyaml==5.3"
+    assert any(f.rule_id == "GHSA-6757-jp84-gxfx" for f in findings), findings
+    assert all(f.source_tool == "osv" and f.file == "requirements.txt" for f in findings)

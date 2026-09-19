@@ -1,6 +1,6 @@
-"""Phase 7: shared guardrail layer every LLM-calling agent passes
-through (see codeguard/pipeline/llm_call.py's call_agent, the one place
-this is actually invoked). Ported from v1's guardrails/validators.py,
+"""Shared guardrail layer every LLM-calling agent passes through (see
+codeguard/pipeline/llm_call.py's call_agent, the one place this is
+actually invoked). Ported from v1's guardrails/validators.py,
 adapted for a fundamentally different job: v1 validated one human's
 interactive submission and could just refuse it outright; v2 reviews a
 PR that has to get *some* response regardless of what it contains — a
@@ -12,7 +12,7 @@ catch, not silently skip. So the adaptation is:
   back to whatever deterministic tool findings already exist for it,
   same "never crash the review" discipline as everywhere else in this
   pipeline.
-- Phase 8: prompt-injection hits are BLOCKED, not flagged — a detected
+- Prompt-injection hits are BLOCKED, not flagged — a detected
   attempt never reaches the model's instruction context at all. See
   neutralize_injections: every matched span is stripped out of the text
   before call_agent builds the prompt, the attempt is logged with a
@@ -75,8 +75,8 @@ PROMPT_INJECTION_PATTERNS = [
     rf"new{_SEP}instructions?",
     r"jailbreak",
     rf"act{_SEP}as{_SEP}(?:a|an|if)",
-    # Phase 9.1: dropped the old bare `system{_SEP}prompt` pattern —
-    # real dogfood runs (evals/RESULTS.md) showed it firing constantly
+    # Dropped the old bare `system{_SEP}prompt` pattern — real dogfood
+    # runs (evals/RESULTS.md) showed it firing constantly
     # on ordinary code/comments that just discuss LLM system prompts as
     # a technical term (including this very file's own docstrings). A
     # bare noun phrase isn't a directive; only flag "system prompt" (or
@@ -125,7 +125,7 @@ def chunk_exceeds_token_budget(text: str) -> bool:
 
 
 def neutralize_injections(text: str) -> tuple[str, list[InjectionAttempt]]:
-    """The Phase 8 block-not-flag gate: every span matching
+    """The block-not-flag gate: every span matching
     PROMPT_INJECTION_PATTERNS is replaced with INJECTION_REDACTION_MARKER
     before this text is allowed anywhere near a prompt — the caller
     (call_agent) uses the returned text, never the original, to build
@@ -165,7 +165,7 @@ def scan_for_flags(text: str) -> list[str]:
     anything — e.g. tests asserting the patterns themselves work. Never
     called by call_agent directly: it uses neutralize_injections
     (block) and scan_for_pii (flag) instead, since those are the two
-    genuinely different response policies Phase 8 requires.
+    genuinely different response policies actually required.
     """
     flags: list[str] = []
     lower = text.lower()

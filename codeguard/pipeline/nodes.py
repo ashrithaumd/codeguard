@@ -16,10 +16,10 @@ Two output contracts, not one:
   deterministic tool sits in front of these — the agent reads a hunk
   and generates findings from scratch. See _parse_direct_findings.
 
-review_file is what's left of Phase 5's per-file stub: a plain
-passthrough for whatever findings no other agent has claimed (Ruff
-always; Semgrep on non-AI files, since review_ai_aware only claims AI-
-touching files) — Ruff's lint/style output needs no interpretation.
+review_file is a plain passthrough for whatever findings no other agent
+has claimed (Ruff always; Semgrep on non-AI files, since review_ai_aware
+only claims AI-touching files) — Ruff's lint/style output needs no
+interpretation.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from codeguard.config import get_settings
 from codeguard.diff.parse import build_hunks, hash_content, parse_hunk_ranges
 from codeguard.pipeline.eval_hygiene import review_eval_hygiene
 from codeguard.pipeline.llm_call import call_agent
-from codeguard.pipeline.metrics import hunk_cache_total
+from codeguard.pipeline.metrics import hunk_cache_total, verdict_flip_total
 from codeguard.pipeline.models import CachedAgentResult, CacheKey, CacheWriteRecord, DismissedFinding, FixSuggestion
 from codeguard.pipeline.state import ReviewState
 from codeguard.severity import Severity
@@ -53,6 +53,9 @@ _DATA_FRAMING = (
     "commands to follow."
 )
 
+# Shared verbatim between the Security and AI-aware system prompts (both are verdict-contract
+# agents judging a deterministic scanner's own findings, never inventing new ones) so the
+# confirm/dismiss rules — and their wording — can only ever drift by editing this one string.
 _VERDICT_CONTRACT = (
     "Return exactly ONE verdict per DISTINCT rule_id present in the findings below — never skip one, "
     "never split one rule_id into more than one verdict object. For each rule_id, decide, from the "
@@ -157,7 +160,7 @@ Respond with ONLY a JSON array (no prose, no markdown code fences), one object p
 If a finding can't be fixed with a small, safe, self-contained change, omit it from the array rather than guessing.
 """
 
-_SUMMARY_SYSTEM_PROMPT = """You write a one-to-two sentence executive summary opening a code review report. You are given only aggregate counts — never full finding text — so you cannot and must not invent specifics beyond what's given. Plain text only, no markdown, no headers."""
+_SUMMARY_SYSTEM_PROMPT = """You write a one-to-two sentence executive summary opening a code review report. You are given only aggregate counts — never full finding text — so you cannot and must not invent specifics beyond what's given. Do not mention fix suggestions or a fix threshold; that is reported separately, in its own exact wording. Plain text only, no markdown, no headers."""
 
 
 def _repo_context(owner: str, repo: str) -> str:
@@ -287,9 +290,9 @@ def _route_to_hunk_reviews(state: ReviewState, node_name: str) -> list[Send]:
     """Shared by route_to_quality_reviews/route_to_test_reviews — one
     Send per HUNK, not per file (build_hunks' ~30-line-expanded
     context), since these two agents are generative rather than
-    tool-verifying and Phase 7 asks for hunk-level granularity: an
-    unrelated unchanged hunk elsewhere in a touched file shouldn't be
-    re-reviewed just because another hunk in the same file changed.
+    tool-verifying and need hunk-level granularity: an unrelated
+    unchanged hunk elsewhere in a touched file shouldn't be re-reviewed
+    just because another hunk in the same file changed.
     """
     sends = []
     for path, content in state["files"].items():
@@ -347,8 +350,8 @@ def _parse_json_array(raw_text: str, context: str, agent: str) -> list[dict]:
     back to raw tool findings (see _apply_verdicts), and for the
     direct-findings contract just means no findings from this call.
 
-    Phase 9: found via the live adversarial/dogfood runs — a response
-    like "```json\\n[]\\n```\\n\\nThe hunk contains..." (the model
+    Found via live adversarial/dogfood runs: a response like
+    "```json\\n[]\\n```\\n\\nThe hunk contains..." (the model
     explaining, correctly, why it's ignoring some redacted/suspicious
     content it noticed) used to fail outright, because the old
     strip-based approach only stripped a fence wrapping the ENTIRE
@@ -380,6 +383,23 @@ def _group_by_rule_id(findings: list[Finding]) -> dict[str, list[Finding]]:
     return grouped
 
 
+# Found via CodeGuard's own live review of one of its own PRs: a
+# "confirmed" verdict whose own rationale reads like a dismissal (the
+# model correctly judged the finding harmless but the verdict field
+# didn't match its own reasoning, e.g. "...No action needed; this
+# pattern is appropriate for tests.") shouldn't surface as an
+# actionable finding just because the JSON literally said "confirmed".
+# Deliberately narrow, exact phrases only — broadening this risks
+# silently swallowing a real confirmed finding that happens to share a
+# word with one of these.
+_DISMISSAL_LANGUAGE_MARKERS = ("no action needed", "not a security risk", "appropriate for tests")
+
+
+def _reads_like_a_dismissal(message: str) -> bool:
+    lowered = message.lower()
+    return any(marker in lowered for marker in _DISMISSAL_LANGUAGE_MARKERS)
+
+
 def _apply_verdicts(
     verdict_items: list[dict], raw_findings: list[Finding], path: str, agent: str, dismissals_enabled: bool,
 ) -> tuple[list[Finding], list[DismissedFinding]]:
@@ -392,11 +412,10 @@ def _apply_verdicts(
     Any input rule_id the model doesn't address at all — or, with
     dismissals_enabled=False (the agent's own fail-safe Settings flag),
     one it tries to dismiss — falls back to its raw finding(s),
-    confirmed. Added in Phase 6 after live verification showed an LLM
-    call won't reliably honor a prompt-level "never silently drop a
-    finding" instruction on its own; Phase 6.1 generalized it to catch
-    an untrusted dismissal too; Phase 7 reuses it for every
-    verdict-contract agent, not just AI-aware.
+    confirmed. This exists because live verification showed an LLM call
+    won't reliably honor a prompt-level "never silently drop a finding"
+    instruction on its own, including an untrusted dismissal; both
+    review_security and review_ai_aware share this same enforcement.
     """
     by_rule = _group_by_rule_id(raw_findings)
     confirmed: list[Finding] = []
@@ -424,6 +443,11 @@ def _apply_verdicts(
                 logger.warning("malformed 'confirmed' verdict for %s rule_id=%s in %s, using raw finding(s)", agent, rule_id, path)
                 continue
             addressed.add(rule_id)
+            if _reads_like_a_dismissal(message):
+                verdict_flip_total.labels(agent=agent).inc()
+                for raw in occurrences:
+                    dismissed.append(DismissedFinding(file=raw.file, start_line=raw.start_line, rule_id=rule_id, reason=message))
+                continue
             for raw in occurrences:
                 confirmed.append(Finding.create(
                     file=raw.file, start_line=raw.start_line, end_line=raw.end_line,
@@ -543,18 +567,19 @@ def _parse_direct_findings(
     to — a call failure or empty response just means zero findings from
     that hunk, never a crash. A line the model reports outside the
     hunk's own range is clamped into range rather than trusted verbatim
-    (self-reported line numbers are exactly what Phase 6 learned not to
-    trust from a model).
+    (self-reported line numbers are not reliable enough to trust from a
+    model).
 
-    Phase 8 noise budget, since these two agents are the only ones that
-    invent findings rather than verify a scanner's: severity is clamped
-    to max_severity even if the model reports higher (an LLM's own
-    opinion is never HIGH/CRITICAL, regardless of what it claims), a
-    missing/malformed confidence defaults to 1.0 (never silently
-    dropped for that alone), and the result is capped at max_findings —
-    worst severity/confidence first, so a hunk with more real issues
-    than the budget still surfaces its most important ones, not
-    whichever happened to come first in the model's own response order.
+    A noise budget applies here since these two agents are the only
+    ones that invent findings rather than verify a scanner's: severity
+    is clamped to max_severity even if the model reports higher (an
+    LLM's own opinion is never HIGH/CRITICAL, regardless of what it
+    claims), a missing/malformed confidence defaults to 1.0 (never
+    silently dropped for that alone), and the result is capped at
+    max_findings — worst severity/confidence first, so a hunk with more
+    real issues than the budget still surfaces its most important ones,
+    not whichever happened to come first in the model's own response
+    order.
     """
     results: list[Finding] = []
     for item in items:
@@ -680,7 +705,7 @@ def check_findings(state: ReviewState) -> dict:
 
 
 def _exclude_suppressed(findings: list[Finding], suppressed_fingerprints: frozenset[str]) -> list[Finding]:
-    """Phase 10: a fingerprint a repo maintainer has already marked
+    """A fingerprint a repo maintainer has already marked
     false_positive (via a reply on a past PR — see
     codeguard/pipeline/feedback.py) never resurfaces — not inline, not
     in the summary body, not counted toward fix_threshold or the Check
@@ -734,8 +759,8 @@ def propose_fix(state: dict) -> dict:
     — no fallback needed, since not proposing a fix is always safe (the
     finding itself was already going to be posted inline regardless).
 
-    Phase 8 hardening, independent of whatever the model actually
-    returns: a suggestion is dropped (never applied, never counted) if
+    Hardened independent of whatever the model actually returns: a
+    suggestion is dropped (never applied, never counted) if
     its finding's file isn't state["path"] — the only file this branch
     was ever given findings for (route_after_fanin already guarantees
     this structurally; this is defense-in-depth against a future wiring
@@ -806,24 +831,95 @@ def propose_fix(state: dict) -> dict:
     }
 
 
-def _append_dismissed_section(body_lines: list[str], dismissed: list[DismissedFinding]) -> None:
+_QUALITY_DOCS_RULE_ID = "quality.docs"
+
+
+def _format_grouped_location(file: str, lines: list[int]) -> str:
+    real_lines = sorted({line for line in lines if line > 0})
+    if not real_lines:
+        return file
+    if len(real_lines) == 1:
+        return f"{file}:{real_lines[0]}"
+    return f"{file} (lines {', '.join(str(line) for line in real_lines)})"
+
+
+def _group_dismissed(dismissed: list[DismissedFinding]) -> list[tuple[str, str, str, list[int]]]:
+    """Groups by (file, rule_id, reason) — an agent's single verdict on a
+    rule_id creates one DismissedFinding per raw occurrence (see
+    _apply_verdicts' dismissal branch), so a rule dismissed identically
+    on many lines of the same file used to produce that many near-
+    duplicate entries, inflating the reported dismissed count well past
+    the (already fingerprint-deduped) confirmed "found" count — which
+    read as a contradiction (found live on this repo's own PR #3 review:
+    126 dismissed vs 98 found). Grouping collapses that same information
+    into one entry per distinct rule-pattern-in-a-file, listing every
+    affected line; this grouped count is what both the deterministic
+    body AND the LLM summary intro are given — never two different
+    numbers describing the same dismissals.
+    """
+    groups: dict[tuple[str, str, str], list[int]] = {}
+    order: list[tuple[str, str, str]] = []
+    for d in dismissed:
+        key = (d.file, d.rule_id, d.reason)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(d.start_line)
+    return [(file, rule_id, reason, groups[(file, rule_id, reason)]) for file, rule_id, reason in order]
+
+
+def _group_findings_for_display(findings: list[Finding]) -> list[tuple[str, str, str, str, str, list[int]]]:
+    """Same idea as _group_dismissed, for the confirmed findings listed
+    in the "not shown inline" section: a verdict-contract agent's single
+    rationale can cover many raw occurrences on different lines of the
+    same file, and Quality/Test can independently produce the identical
+    message on unrelated lines too — one line listing every affected
+    line beats N identical entries.
+    """
+    groups: dict[tuple[str, str, str, str, str], list[int]] = {}
+    order: list[tuple[str, str, str, str, str]] = []
+    for f in findings:
+        key = (f.file, f.rule_id, f.message, f.source_tool, f.severity.name)
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(f.start_line)
+    return [
+        (file, rule_id, message, source_tool, severity, groups[(file, rule_id, message, source_tool, severity)])
+        for file, rule_id, message, source_tool, severity in order
+    ]
+
+
+def _append_dismissed_section(body_lines: list[str], grouped_dismissed: list[tuple[str, str, str, list[int]]]) -> None:
     """Dismissals are never posted inline but always show up here — a
     reviewer should be able to see what an agent actually checked and
-    dismissed, with its reasoning, not just what it flagged.
+    dismissed, with its reasoning, not just what it flagged. Collapsed
+    into a <details> block since a clean file can rack up dozens of
+    grouped dismissals that would otherwise dominate the visible review
+    body ahead of the findings that actually matter.
     """
-    if not dismissed:
+    if not grouped_dismissed:
         return
     body_lines.append("")
-    body_lines.append(f"{len(dismissed)} finding(s) checked by an AI agent, not flagged:")
-    for d in dismissed:
-        location = f"{d.file}:{d.start_line}" if d.start_line > 0 else d.file
-        body_lines.append(f"- {location} [{d.rule_id}]: {d.reason}")
+    body_lines.append(f"<details><summary>{len(grouped_dismissed)} finding(s) checked by an AI agent, not flagged</summary>")
+    body_lines.append("")
+    for file, rule_id, reason, lines in grouped_dismissed:
+        body_lines.append(f"- {_format_grouped_location(file, lines)} [{rule_id}]: {reason}")
+    body_lines.append("")
+    body_lines.append("</details>")
 
 
-def _generate_summary_intro(*, owner: str, repo: str, file_count: int, deduped: list[Finding], dismissed_count: int, fix_count: int) -> tuple[str | None, dict]:
+def _generate_summary_intro(*, owner: str, repo: str, file_count: int, deduped: list[Finding], dismissed_count: int) -> tuple[str | None, dict]:
     """Haiku tier — a short executive-summary opener, given only
     aggregate counts (never full finding text, so there's nothing for
-    it to hallucinate specifics from). Returns (intro_text_or_None,
+    it to hallucinate specifics from). dismissed_count is the GROUPED
+    count (see _group_dismissed) — the same number the deterministic
+    body reports below, so the two can never contradict each other the
+    way a raw per-occurrence count once did. Fix-suggestion count is
+    deliberately not given to this call at all — that's its own
+    deterministic sentence in summarize() instead, worded exactly ("no
+    findings met the fix threshold (X)"), not left to the model's own
+    paraphrase of a number it was handed. Returns (intro_text_or_None,
     partial_state_update) — the caller merges the update into its own
     return dict; None means the call failed and the deterministic body
     below is shown with no intro, never blocked or degraded further.
@@ -842,7 +938,6 @@ def _generate_summary_intro(*, owner: str, repo: str, file_count: int, deduped: 
         f"issues_found={len(deduped)}\n"
         f"severity_breakdown={severity_breakdown}\n"
         f"dismissed_as_false_positive={dismissed_count}\n"
-        f"fix_suggestions_proposed={fix_count}\n"
     )
     result = call_agent(
         agent="summary", api_key=settings.anthropic_api_key, system_prompt=_SUMMARY_SYSTEM_PROMPT,
@@ -864,16 +959,20 @@ def summarize(state: ReviewState) -> dict:
     repo-level) — fingerprint is a hash of (file, rule_id, start_line,
     message), so two agents genuinely flagging the same thing collapse
     into one; two agents flagging the same LINE for different reasons
-    (different rule_id/message) correctly both survive. Splits what's
-    left into inline (a real diff line, under the per-review cap)
-    versus the summary body, appends any fix suggestion under its
+    (different rule_id/message) correctly both survive. Dismissed
+    findings are grouped the same way (_group_dismissed), so "found" and
+    "dismissed" are always computed from equivalently-deduped data, not
+    one deduped count next to one raw per-occurrence count. Splits
+    what's left into inline (a real diff line, under the per-review cap)
+    versus the summary body — quality.docs findings never go inline,
+    reported as a count only — appends any fix suggestion under its
     finding's own inline comment (worker/main.py does the actual
     posting), and asks Haiku for a short intro paragraph from aggregate
     counts only. Always produces a body, even with zero findings.
     """
     settings = get_settings()
     all_findings = _exclude_suppressed(state["findings"] + state["repo_level_findings"], state["suppressed_fingerprints"])
-    dismissed = state["dismissed_findings"]
+    grouped_dismissed = _group_dismissed(state["dismissed_findings"])
 
     seen: set[str] = set()
     deduped = []
@@ -885,18 +984,27 @@ def summarize(state: ReviewState) -> dict:
     file_count = len(state["files"])
     intro, summary_update = _generate_summary_intro(
         owner=state["owner"], repo=state["repo"], file_count=file_count,
-        deduped=deduped, dismissed_count=len(dismissed), fix_count=len(state["fix_suggestions"]),
+        deduped=deduped, dismissed_count=len(grouped_dismissed),
     )
 
     if not deduped:
         body_lines = ([intro, ""] if intro else []) + [f"CodeGuard reviewed {file_count} file(s), no issues found."]
-        _append_dismissed_section(body_lines, dismissed)
+        _append_dismissed_section(body_lines, grouped_dismissed)
         return {**summary_update, "summary": "\n".join(body_lines), "inline_findings": []}
 
     changed_ranges = {path: parse_hunk_ranges(patch) for path, patch in state["patches"].items()}
 
+    # quality.docs (missing/incomplete comment findings) is real signal
+    # but the lowest-value, highest-volume category this pipeline
+    # produces — never worth an inline PR comment, and listing each one
+    # individually just buries findings that are. Still counted in
+    # "found" below (it's a real finding), just reported as a footnote
+    # count rather than itemized.
+    quality_docs = [f for f in deduped if f.rule_id == _QUALITY_DOCS_RULE_ID]
+    reviewable = [f for f in deduped if f.rule_id != _QUALITY_DOCS_RULE_ID]
+
     def _inlineable(f: Finding) -> bool:
-        # Phase 8: a low-confidence Quality/Test finding (see
+        # A low-confidence Quality/Test finding (see
         # settings.quality_test_min_inline_confidence) is never dropped
         # outright — it still counts, just in the summary body instead
         # of inline, the same demotion an out-of-diff finding already
@@ -906,21 +1014,35 @@ def summarize(state: ReviewState) -> dict:
             return False
         return f.start_line > 0 and is_line_in_diff(f.file, f.start_line, changed_ranges)
 
-    inlineable = [f for f in deduped if _inlineable(f)]
-    meta_or_outside_diff = [f for f in deduped if f not in inlineable]
+    inlineable = [f for f in reviewable if _inlineable(f)]
+    meta_or_outside_diff = [f for f in reviewable if f not in inlineable]
 
     inlineable.sort(key=lambda f: -f.severity)
     to_inline = inlineable[:settings.max_inline_comments]
     overflow = inlineable[settings.max_inline_comments:]
 
     body_lines = ([intro, ""] if intro else []) + [f"CodeGuard reviewed {file_count} file(s), found {len(deduped)} issue(s)."]
+
+    if state["fix_suggestions"]:
+        body_lines.append(f"{len(state['fix_suggestions'])} fix suggestion(s) proposed.")
+    else:
+        body_lines.append(f"No findings met the fix threshold ({state['repo_config'].fix_threshold.name}).")
+
     remainder = overflow + meta_or_outside_diff
     if remainder:
+        # Announced count is the GROUPED count, matching the number of
+        # lines actually printed below — the same "announced number
+        # doesn't match what's shown" confusion that motivated grouping
+        # the dismissed section in the first place (see
+        # _group_dismissed's own docstring).
+        grouped_remainder = _group_findings_for_display(remainder)
         body_lines.append("")
-        body_lines.append(f"{len(remainder)} additional finding(s) not shown inline:")
-        for f in remainder:
-            location = f"{f.file}:{f.start_line}" if f.start_line > 0 else f.file
-            body_lines.append(f"- {location} [{f.source_tool}/{f.severity.name}] {f.rule_id}: {f.message}")
-    _append_dismissed_section(body_lines, dismissed)
+        body_lines.append(f"{len(grouped_remainder)} additional finding(s) not shown inline:")
+        for file, rule_id, message, source_tool, severity, lines in grouped_remainder:
+            body_lines.append(f"- {_format_grouped_location(file, lines)} [{source_tool}/{severity}] {rule_id}: {message}")
+    if quality_docs:
+        body_lines.append(f"{len(quality_docs)} documentation ({_QUALITY_DOCS_RULE_ID}) finding(s) not shown individually.")
+
+    _append_dismissed_section(body_lines, grouped_dismissed)
 
     return {**summary_update, "summary": "\n".join(body_lines), "inline_findings": to_inline}

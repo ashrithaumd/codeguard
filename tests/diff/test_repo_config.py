@@ -1,6 +1,6 @@
-"""Exercises the .codeguard.yml fallback paths Phase 3 never actually
-tested — only the happy paths (missing file, valid YAML) were verified
-live. Mocked at get_file_content (the GitHub-fetching boundary) rather
+"""Exercises the .codeguard.yml fallback paths — not just the happy
+paths (missing file, valid YAML) verified live. Mocked at
+get_file_content (the GitHub-fetching boundary) rather
 than hitting the real API, since what's under test here is
 load_repo_config's own parsing/fallback logic, not GitHub connectivity.
 """

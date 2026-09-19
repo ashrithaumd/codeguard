@@ -76,7 +76,7 @@ async def webhook(request: Request, response: Response):
             pr_number = payload.get("number")
             logger.info("pull_request event: action=%s pr=%s", action, pr_number)
 
-            # Phase 2: enqueue and return immediately — no GitHub API call
+            # Enqueue and return immediately — no GitHub API call
             # happens on this request path at all. delivery_id (GitHub's
             # own X-GitHub-Delivery) is the idempotency key, so a webhook
             # redelivery of the same delivery is a no-op enqueue, not a
@@ -90,7 +90,7 @@ async def webhook(request: Request, response: Response):
                     "pr_number": pr_number,
                     "action": action,
                     "head_sha": payload["pull_request"]["head"]["sha"],
-                    # Phase 3: .codeguard.yml is always read from this —
+                    # .codeguard.yml is always read from this —
                     # the base branch, never the head — see
                     # codeguard/github/repo_config.py.
                     "base_ref": payload["pull_request"]["base"]["ref"],
@@ -119,7 +119,7 @@ async def webhook(request: Request, response: Response):
 
 
 async def _handle_feedback_comment(request: Request, payload: dict, event: str) -> None:
-    """Phase 10 feedback loop. Handles both events that can carry a
+    """Feedback loop. Handles both events that can carry a
     reply to one of CodeGuard's own comments:
 
     - pull_request_review_comment (action="created"): a threaded reply

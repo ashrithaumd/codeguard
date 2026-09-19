@@ -1,6 +1,6 @@
 """Regression coverage for codeguard.pipeline.feedback — signal
 parsing (pure) and the DB round-trips (against a real Postgres, same
-convention as test_hunk_cache.py) for the Phase 10 feedback loop.
+convention as test_hunk_cache.py) for the feedback loop.
 """
 
 from __future__ import annotations

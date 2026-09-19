@@ -1,7 +1,7 @@
-"""Regression coverage for review_ai_aware and its routing. Phase 7
-moved the actual Anthropic call behind codeguard.pipeline.llm_call's
-call_agent — mocked here directly (no more mocking anthropic.Anthropic
-three layers down), same "no live network calls" bar the rest of
+"""Regression coverage for review_ai_aware and its routing. The actual
+Anthropic call lives behind codeguard.pipeline.llm_call's call_agent —
+mocked here directly (not anthropic.Anthropic three layers down), same
+"no live network calls" bar the rest of
 tests/pipeline/ holds itself to; the eval harness (evals/run_eval.py)
 is what exercises the real API. review_security shares the exact same
 _run_verdict_agent/_apply_verdicts machinery — see
@@ -63,6 +63,54 @@ def test_review_ai_aware_confirmed_verdict_produces_a_finding_and_tracks_cost():
     assert result["node_latencies"][0]["node"] == "review_ai_aware"
     assert len(result["cache_writes"]) == 1
     assert result["cache_writes"][0].agent == "ai_aware"
+
+
+def test_review_ai_aware_confirmed_verdict_with_dismissal_language_is_flipped_to_dismissed():
+    """Found live on this repo's own CodeGuard review — a model
+    can literally answer verdict="confirmed" while its own message says
+    "No action needed... this pattern is appropriate for tests." The
+    JSON verdict field shouldn't win over what the model's own words say.
+    """
+    finding = make_finding(file="app/assistant.py", rule_id="B101", tool="bandit")
+    model_items = [{
+        "rule_id": "B101", "verdict": "confirmed", "severity": "low",
+        "message": "Assert statements are standard in test code. No action needed; this pattern is appropriate for tests.",
+    }]
+
+    with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(model_items)):
+        result = review_ai_aware(_file_state(findings=[finding]))
+
+    assert result["findings"] == []
+    assert len(result["dismissed_findings"]) == 1
+    assert result["dismissed_findings"][0].rule_id == "B101"
+
+
+def test_review_ai_aware_confirmed_verdict_flip_increments_the_metric():
+    from codeguard.pipeline.metrics import verdict_flip_total
+
+    finding = make_finding(file="app/assistant.py", rule_id="B101", tool="bandit")
+    model_items = [{"rule_id": "B101", "verdict": "confirmed", "severity": "low", "message": "Not a security risk here."}]
+    before = verdict_flip_total.labels(agent="ai_aware")._value.get()
+
+    with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(model_items)):
+        review_ai_aware(_file_state(findings=[finding]))
+
+    after = verdict_flip_total.labels(agent="ai_aware")._value.get()
+    assert after == before + 1
+
+
+def test_review_ai_aware_confirmed_verdict_without_dismissal_language_stays_confirmed():
+    finding = make_finding(file="app/assistant.py", rule_id="llm-call-missing-max-tokens", tool="semgrep")
+    model_items = [{
+        "rule_id": "llm-call-missing-max-tokens", "verdict": "confirmed", "severity": "high",
+        "message": "no max_tokens set; bounded response size needed.",
+    }]
+
+    with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(model_items)):
+        result = review_ai_aware(_file_state(findings=[finding]))
+
+    assert len(result["findings"]) == 1
+    assert result["dismissed_findings"] == []
 
 
 def test_review_ai_aware_confirmed_verdict_applies_to_every_occurrence_of_the_rule_id():

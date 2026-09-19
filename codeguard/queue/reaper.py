@@ -14,7 +14,7 @@ Placement: run as a background asyncio task inside the API process (see
 codeguard/api/main.py's lifespan) — NOT inside the worker service, which is what
 gets `--scale worker=N`'d. Running the reaper in N replicas would risk sweeps
 racing each other; FOR UPDATE SKIP LOCKED would still protect correctness even if
-that happened, but there's no reason to invite it. TODO(Phase 10): the api service
+that happened, but there's no reason to invite it. TODO: the api service
 must stay single-replica in Azure Container Apps for this assumption to hold —
 if api ever needs to scale horizontally, the reaper needs to move to a dedicated
 single-instance process first.

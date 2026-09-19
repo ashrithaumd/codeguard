@@ -12,19 +12,27 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     anthropic_api_key: str
-    database_url: str
-    github_app_id: str
+    # Optional (default ""), not required — `codeguard audit` and the
+    # MCP server both call get_settings() (every review node does, for
+    # its own *_agent_model/timeout fields) but neither one ever calls
+    # codeguard.queue.db.create_pool() or touches the GitHub App at all
+    # for their core operation, so requiring a real Postgres URL and
+    # App ID just to run a standalone analysis tool would be pure
+    # friction — same "shared Settings, different entry points have
+    # different needs" reasoning as github_webhook_secret below.
+    database_url: str = ""
+    github_app_id: str = ""
     # Optional (default ""), not because it's unimportant — api's webhook
     # route depends on it for every signature check — but because
-    # Settings is one shared class loaded by both api and worker
-    # (Phase 10), and worker has no webhook endpoint to verify: it never
-    # reads this field at all. Requiring it unconditionally would force
-    # the worker's own deployment to carry a copy of a secret it has no
+    # Settings is one shared class loaded by both api and worker, and
+    # worker has no webhook endpoint to verify: it never reads this
+    # field at all. Requiring it unconditionally would force the
+    # worker's own deployment to carry a copy of a secret it has no
     # use for, purely to satisfy validation.
     github_webhook_secret: str = ""
     # Local dev: a file path (secrets/*.pem, gitignored) — see .env.example.
-    # Phase 10 / Azure: Container Apps secrets are env-vars, not mounted
-    # files, so github_private_key (the PEM content itself) takes
+    # Azure: Container Apps secrets are env-vars, not mounted files, so
+    # github_private_key (the PEM content itself) takes
     # precedence when set; build_app_jwt() falls back to reading
     # github_private_key_path only when it's empty. Both default to ""
     # rather than being required, since exactly one of the two must be
@@ -39,6 +47,19 @@ class Settings(BaseSettings):
     max_files_per_pr_ceiling: int = 50
     max_tokens_per_pr_ceiling: int = 200_000
     max_wall_clock_s_ceiling: int = 300
+
+    # `codeguard audit` scans a whole repo, not one PR's worth of
+    # changed hunks — an unbounded audit against a large
+    # public repo is exactly the "must not run away" cost risk a PR
+    # review's own ceilings were never sized for. A separate, lower
+    # ceiling (not a config knob on the PR-review path at all) means
+    # tightening audit's cost profile can never accidentally loosen a
+    # real PR review's, and vice versa. See effective_budget()'s
+    # `ceiling` parameter for how this actually gets applied instead of
+    # the PR-review ceiling.
+    audit_max_files_ceiling: int = 30
+    audit_max_tokens_ceiling: int = 100_000
+    audit_max_wall_clock_s_ceiling: int = 180
 
     # Queue / connection pool. Small per-process max_size is deliberate:
     # Azure Database for PostgreSQL Flexible Server has a hard total
@@ -69,22 +90,21 @@ class Settings(BaseSettings):
     queue_poll_interval_seconds: float = 1.0
     worker_metrics_port: int = 9000
 
-    # GitHub review reviews with hundreds of inline comments are
-    # unusable and can hit GitHub's own API limits. Above this many
-    # inlineable findings, the top-N by severity go inline; the rest
-    # are listed in the review's summary body instead of being dropped.
+    # A GitHub review with hundreds of inline comments is unusable and
+    # can hit GitHub's own API limits. Above this many inlineable
+    # findings, the top-N by severity go inline; the rest are listed in
+    # the review's summary body instead of being dropped.
     max_inline_comments: int = 25
 
-    # Model per-agent, never hardcoded in the node itself — Phase 6's
-    # AI-aware agent is the first real LLM call; Phase 7's Security/
-    # Quality/Test/Fix agents get their own *_agent_model fields here
-    # rather than sharing one, so cost/quality tuning per agent doesn't
-    # require touching node code.
+    # Model per-agent, never hardcoded in the node itself — AI-aware,
+    # Security, Quality, Test, and Fix each get their own *_agent_model
+    # fields here rather than sharing one, so cost/quality tuning per
+    # agent doesn't require touching node code.
     ai_aware_agent_model: str = "claude-sonnet-4-5"
     ai_aware_agent_max_tokens: int = 2048
     ai_aware_agent_timeout_s: float = 30.0
 
-    # Phase 6.1 fail-safe: when False, the AI-aware agent's "dismissed"
+    # Fail-safe: when False, the AI-aware agent's "dismissed"
     # verdicts are ignored entirely — every Semgrep finding it doesn't
     # explicitly confirm still gets posted, via the same unaddressed-
     # rule_id fallback that already covers a finding the model just
@@ -93,7 +113,7 @@ class Settings(BaseSettings):
     # prompt or redeploying rules.
     ai_aware_dismissals_enabled: bool = True
 
-    # Phase 7: the generic per-file/per-hunk agents. Security shares the
+    # The generic per-file/per-hunk agents. Security shares the
     # AI-aware node's Sonnet tier and verdict contract (it interprets a
     # deterministic tool's real candidates — Bandit's, not Semgrep's).
     # Quality/Test are generative, not verifying — Haiku tier, since
@@ -125,19 +145,19 @@ class Settings(BaseSettings):
     summary_agent_max_tokens: int = 256
     summary_agent_timeout_s: float = 15.0
 
-    # Phase 8: Quality/Test are the only ungrounded agents — no
-    # deterministic tool sits in front of them, so they're the only
-    # source of findings this pipeline invents from scratch rather than
-    # verifies. Three controls bound the noise that can introduce:
-    # a hard per-hunk cap (the worst single hunk can still only produce
-    # this many findings, sorted by severity/confidence before the
-    # cut — see nodes.py's _parse_direct_findings), a severity ceiling
-    # (an LLM's opinion on naming/structure is never HIGH/CRITICAL —
-    # clamped down to this even if the model reports higher), and a
-    # confidence-gated inline/summary split so a low-confidence finding
-    # still gets reported, just not inline (see summarize()). Phase 9
-    # validated 0.5 against 132 real findings from dogfooding two real
-    # repos (see evals/RESULTS.md): it demotes only the bottom ~8% by
+    # Quality/Test are the only ungrounded agents — no deterministic
+    # tool sits in front of them, so they're the only source of
+    # findings this pipeline invents from scratch rather than verifies.
+    # Three controls bound the noise that can introduce: a hard
+    # per-hunk cap (the worst single hunk can still only produce this
+    # many findings, sorted by severity/confidence before the cut — see
+    # nodes.py's _parse_direct_findings), a severity ceiling (an LLM's
+    # opinion on naming/structure is never HIGH/CRITICAL — clamped down
+    # to this even if the model reports higher), and a confidence-gated
+    # inline/summary split so a low-confidence finding still gets
+    # reported, just not inline (see summarize()). 0.5 was validated
+    # against 132 real findings from dogfooding two real repos (see
+    # evals/RESULTS.md): it demotes only the bottom ~8% by
     # confidence, and manual review of exactly those demoted findings
     # showed them to be the genuinely vaguest/most nitpicky ones, not
     # ones that should have stayed inline — kept unchanged rather than
@@ -173,8 +193,8 @@ class RepoConfig(BaseModel):
     content is untrusted input; if a PR could edit its own
     .codeguard.yml, an attacker could raise their own budget or disable
     the AI-aware agent immediately before submitting the thing it would
-    have caught. The loader (Phase 3) must enforce reading from the base
-    branch; nothing in this schema can override that.
+    have caught. The loader must enforce reading from the base branch;
+    nothing in this schema can override that.
 
     Fields below are *requests*. What actually gets enforced for a given
     PR is the tighter of this and Settings' global ceilings — see
@@ -183,8 +203,8 @@ class RepoConfig(BaseModel):
     fix_threshold: Severity = Severity.HIGH
     enable_ai_aware: bool = True
     max_files_per_pr: int = 15
-    # Phase 9: validated against real numbers, not a guess anymore (see
-    # evals/RESULTS.md's tuning section). A real 15-file, budget-capped
+    # Validated against real numbers, not a guess (see evals/RESULTS.md's
+    # tuning section). A real 15-file, budget-capped
     # PR (both codeguard's and DocuMind's dogfood runs landed right at
     # this ceiling) costs ~$0.15-0.24 and ~110-165s wall clock across
     # every agent combined — this hunk-content budget is what's fed
@@ -197,7 +217,7 @@ class RepoConfig(BaseModel):
     max_tokens_per_pr: int = 40_000
     max_wall_clock_s: int = 120
     ignored_paths: list[str] = Field(default_factory=list)
-    # Phase 10: the GitHub Check Run's conclusion — "failure" (blocks a
+    # The GitHub Check Run's conclusion — "failure" (blocks a
     # merge, if the repo turns this into a required check in its branch
     # protection rules) when ANY confirmed finding (across every agent,
     # same set fix_threshold reads) is >= this severity, else "success".
@@ -216,11 +236,9 @@ class RepoConfig(BaseModel):
     def _parse_severity_string(cls, v):
         """A human writing .codeguard.yml writes `fix_threshold: high`,
         a string — Severity itself is an IntEnum (see severity.py's own
-        docstring: this exact parsing was deliberately deferred to
-        Phase 3, when a real YAML loader would finally exist to need it).
-        Case-insensitive; anything not a valid name falls through to
-        pydantic's own validation, so a real typo still raises clearly
-        rather than being silently swallowed here.
+        docstring). Case-insensitive; anything not a valid name falls
+        through to pydantic's own validation, so a real typo still
+        raises clearly rather than being silently swallowed here.
         """
         if isinstance(v, str) and not v.isdigit():
             try:
@@ -238,9 +256,25 @@ class Budget(BaseModel):
     max_wall_clock_s: int
 
 
-def effective_budget(repo: RepoConfig, settings: Settings) -> Budget:
+def effective_budget(repo: RepoConfig, settings: Settings, ceiling: Budget | None = None) -> Budget:
+    """`ceiling=None` (every real PR review's own call site) builds the
+    default from Settings' PR-review global ceilings — Budget(max_files=
+    settings.max_files_per_pr_ceiling, max_tokens=settings.max_tokens_per_pr_ceiling,
+    max_wall_clock_s=settings.max_wall_clock_s_ceiling) — unchanged
+    behavior for every existing caller. `codeguard audit` passes its
+    own explicit, lower ceiling instead, built from the audit_*_ceiling
+    settings — see Settings' own docstring on those fields for why this
+    is a separate ceiling dimension rather than one PR review and audit
+    both tune together.
+    """
+    if ceiling is None:
+        ceiling = Budget(
+            max_files=settings.max_files_per_pr_ceiling,
+            max_tokens=settings.max_tokens_per_pr_ceiling,
+            max_wall_clock_s=settings.max_wall_clock_s_ceiling,
+        )
     return Budget(
-        max_files=min(repo.max_files_per_pr, settings.max_files_per_pr_ceiling),
-        max_tokens=min(repo.max_tokens_per_pr, settings.max_tokens_per_pr_ceiling),
-        max_wall_clock_s=min(repo.max_wall_clock_s, settings.max_wall_clock_s_ceiling),
+        max_files=min(repo.max_files_per_pr, ceiling.max_files),
+        max_tokens=min(repo.max_tokens_per_pr, ceiling.max_tokens),
+        max_wall_clock_s=min(repo.max_wall_clock_s, ceiling.max_wall_clock_s),
     )

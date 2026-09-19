@@ -1,6 +1,6 @@
 """Maps a Finding to the position GitHub's review-comment API needs to
-post it inline. Kept in exactly one place — per the requirement — so
-Phase 5 and anything else that posts findings never reimplements this.
+post it inline. Kept in exactly one place so anything that posts
+findings never reimplements this.
 
 Deliberately simple: Finding.start_line is already a real line number in
 the file at head_sha (tools ran on the full file, not a diff-relative
