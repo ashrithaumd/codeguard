@@ -224,7 +224,17 @@ echo '  az containerapp update --name '"$API_APP_NAME"' --resource-group '"$RESO
 echo '  az containerapp update --name '"$WORKER_APP_NAME"' --resource-group '"$RESOURCE_GROUP"' --yaml "$WORKER_YAML"'
 echo '  shred -u "$WORKER_YAML" 2>/dev/null || rm -f "$WORKER_YAML"'
 echo
-read -rp "Press enter once secrets are set on both apps to continue with the real image + config..." _
+
+# Safety checkpoint by default — do NOT remove or auto-pipe past this in a
+# non-interactive run, that defeats the whole point of a human confirming
+# secrets are actually set before the real image/config below goes live.
+# SKIP_SECRETS_PROMPT=1 exists ONLY for a re-run where secrets are already
+# known-good (e.g. a redeploy right after a rotation already verified
+# working in production) — it skips only this pause, never the printed
+# secret-setting instructions above, which still show every run.
+if [ "${SKIP_SECRETS_PROMPT:-}" != "1" ]; then
+    read -rp "Press enter once secrets are set on both apps to continue with the real image + config..." _
+fi
 
 # ---- switch both apps to the real image + real command/env ----------------
 # api: no --command/--args override needed at all — the Dockerfile's own
