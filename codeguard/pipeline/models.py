@@ -1,8 +1,31 @@
 from __future__ import annotations
 
+from typing import NamedTuple
+
 from pydantic import BaseModel, Field
 
 from codeguard.tools.models import Finding
+
+
+class VerdictCallFailure(NamedTuple):
+    """One verdict-agent call that did not produce a verdict, so the
+    file's raw tool findings were reported unverified.
+
+    Exists because the failure was previously inferred from the
+    ABSENCE of a "tokens_in" key on the node's return dict (see
+    cli.py's _run_verdict_layer). AgentCallResult already carries
+    .ok and .error; that signal was being discarded at the node
+    boundary and reconstructed one layer up, so any future change
+    that happened to add "tokens_in": 0 to the failure path would
+    have silently turned audit-mode failure reporting off.
+
+    reason is AgentCallResult.error verbatim (API exception, timeout,
+    guardrail refusal, or degenerate output) — not a re-derived
+    description of it.
+    """
+    path: str
+    agent: str
+    reason: str
 
 
 class DismissedFinding(BaseModel):

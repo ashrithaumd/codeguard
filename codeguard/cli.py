@@ -35,7 +35,9 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import NamedTuple
 
 import requests
 import tiktoken
@@ -47,6 +49,7 @@ from codeguard.pipeline.eval_hygiene import review_eval_hygiene
 from codeguard.pipeline.guardrails import MAX_CHUNK_TOKENS
 from codeguard.pipeline.models import DismissedFinding
 from codeguard.pipeline.nodes import _build_findings_block, _file_touches_ai_markers, review_ai_aware, review_security
+from codeguard.pipeline.state import FileReviewState
 from codeguard.severity import Severity
 from codeguard.tools.models import Finding
 from codeguard.tools.osv_runner import check_dependency_updates
@@ -323,9 +326,23 @@ def _chunk_file_by_ast(content: str, max_tokens: int) -> list[tuple[int, int]] |
     return bridged
 
 
+class VerdictLayerResult(NamedTuple):
+    """What one audit-mode verdict layer produced. Was a bare 6-tuple
+    unpacked positionally at both call sites, where nothing but
+    ordering distinguished tokens_in from tokens_out.
+    """
+    confirmed: list[Finding]
+    dismissed: list[DismissedFinding]
+    tokens_in: int
+    tokens_out: int
+    cost: float
+    call_failures: list[tuple[str, str]]
+
+
 def _run_verdict_layer(
-    verdict_fn, owner: str, repo: str, files: dict[str, str], findings_by_file: dict[str, list[Finding]],
-) -> tuple[list[Finding], list[DismissedFinding], int, int, float, list[tuple[str, str]]]:
+    verdict_fn: Callable[[FileReviewState], dict],
+    owner: str, repo: str, files: dict[str, str], findings_by_file: dict[str, list[Finding]],
+) -> VerdictLayerResult:
     """Shared driver for review_security/review_ai_aware in audit mode.
     findings_by_file: path -> that file's raw findings for this agent's
     own tool (Bandit for security, Semgrep for ai_aware — filtered by
@@ -335,14 +352,16 @@ def _run_verdict_layer(
     gets one call; an oversized file is split at AST boundaries so it
     still gets a real verdict instead of being silently refused.
 
-    A verdict call's own dict return has no "tokens_in" key on failure
-    (see nodes.py's _run_verdict_agent — only "findings" and
-    "node_latencies" survive a failed call) — used here as the signal
-    that a chunk's raw findings are being reported unverified, without
-    needing any pipeline-side change to expose that more explicitly.
+    A failed verdict call is read from the "verdict_call_failures" the
+    node itself reports (nodes.py's _run_verdict_agent, carrying
+    AgentCallResult.error verbatim). This used to be inferred from the
+    ABSENCE of a "tokens_in" key on the return dict, which made a
+    refactor that added "tokens_in": 0 to the failure path enough to
+    silently disable failure reporting here.
 
-    Returns (confirmed, dismissed, tokens_in, tokens_out, cost, call_failures)
-    — call_failures is [(path, reason)] for the report's Skipped section.
+    call_failures is [(path, reason)] for the report's Skipped section —
+    the node reports which agent failed and why, this adds the chunk's
+    own line range, which only the caller knows.
     """
     confirmed: list[Finding] = []
     dismissed: list[DismissedFinding] = []
@@ -365,19 +384,30 @@ def _run_verdict_layer(
             if not chunk_findings:
                 continue
             chunk_content = "\n".join(lines[start - 1:end])
-            result = verdict_fn({
+            state: FileReviewState = {
                 "owner": owner, "repo": repo, "path": path, "content": chunk_content,
+                # Audit mode has no diff: run_audit synthesises a
+                # whole-file patch header for the tool runners, and no
+                # verdict node reads this field at all. Present because
+                # FileReviewState requires it, empty because there is
+                # genuinely nothing to put here.
+                "patch": "",
                 "findings": chunk_findings, "hunk_cache_hits": {},
-            })
-            if "tokens_in" not in result:
-                call_failures.append((path, f"lines {start}-{end}: agent call failed, raw finding(s) reported unverified"))
+            }
+            result = verdict_fn(state)
+            for failure in result.get("verdict_call_failures", []):
+                call_failures.append((
+                    failure.path,
+                    f"lines {start}-{end}: {failure.agent} call failed ({failure.reason}); "
+                    "raw finding(s) reported unverified",
+                ))
             confirmed.extend(result.get("findings", []))
             dismissed.extend(result.get("dismissed_findings", []))
             tokens_in += result.get("tokens_in", 0)
             tokens_out += result.get("tokens_out", 0)
             cost += result.get("estimated_cost_usd", 0.0)
 
-    return confirmed, dismissed, tokens_in, tokens_out, cost, call_failures
+    return VerdictLayerResult(confirmed, dismissed, tokens_in, tokens_out, cost, call_failures)
 
 
 def _severity_label(sev: Severity) -> str:
@@ -557,7 +587,7 @@ def run_audit(target: str, output_path: str, post_issue_flag: bool) -> tuple[int
         security_findings_by_file = {
             p: [f for f in tool_findings if f.file == p and f.source_tool == "bandit"] for p in files
         }
-        sec_confirmed, sec_dismissed, sec_ti, sec_to, sec_cost, sec_failures = _run_verdict_layer(
+        sec = _run_verdict_layer(
             review_security, "audit", root.name, files, security_findings_by_file,
         )
 
@@ -567,13 +597,13 @@ def run_audit(target: str, output_path: str, post_issue_flag: bool) -> tuple[int
                 p: [f for f in tool_findings if f.file == p and f.source_tool == "semgrep"]
                 for p in files if _file_touches_ai_markers(files[p])
             }
-            aa_confirmed, aa_dismissed, aa_ti, aa_to, aa_cost, aa_failures = _run_verdict_layer(
+            aa = _run_verdict_layer(
                 review_ai_aware, "audit", root.name, files, ai_aware_findings_by_file,
             )
         else:
-            aa_confirmed, aa_dismissed, aa_ti, aa_to, aa_cost, aa_failures = [], [], 0, 0, 0.0, []
+            aa = VerdictLayerResult([], [], 0, 0, 0.0, [])
 
-        ai_reviewed_findings = sec_confirmed + aa_confirmed
+        ai_reviewed_findings = sec.confirmed + aa.confirmed
         # Passthrough: every tool finding not claimed by a verdict agent above.
         # Bandit findings are always claimed when present (review_security has
         # no touches_ai_code gate). Semgrep findings are claimed only on files
@@ -592,17 +622,17 @@ def run_audit(target: str, output_path: str, post_issue_flag: bool) -> tuple[int
             and not (f.source_tool == "semgrep" and f.file in claimed_semgrep_files)
         ]
 
-        dismissed = sec_dismissed + aa_dismissed
-        tokens_in = sec_ti + aa_ti
-        tokens_out = sec_to + aa_to
-        estimated_cost_usd = sec_cost + aa_cost
+        dismissed = sec.dismissed + aa.dismissed
+        tokens_in = sec.tokens_in + aa.tokens_in
+        tokens_out = sec.tokens_out + aa.tokens_out
+        estimated_cost_usd = sec.cost + aa.cost
         elapsed_s = time.monotonic() - start
 
         report = render_report(
             target=target, files_scanned=len(files), files_ai_aware=files_ai_aware,
             ai_reviewed_findings=ai_reviewed_findings, passthrough_findings=passthrough_findings,
             dismissed=dismissed, eval_hygiene_findings=eval_hygiene_findings, osv_findings=osv_findings,
-            skipped_files=skipped_files, verdict_call_failures=sec_failures + aa_failures,
+            skipped_files=skipped_files, verdict_call_failures=sec.call_failures + aa.call_failures,
             tokens_in=tokens_in, tokens_out=tokens_out,
             estimated_cost_usd=estimated_cost_usd, elapsed_s=elapsed_s,
         )

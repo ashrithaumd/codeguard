@@ -22,6 +22,44 @@ def _fake_result(items):
     return AgentCallResult(raw_text=json.dumps(items), tokens_in=10, tokens_out=5, estimated_cost_usd=0.001, latency_s=0.01)
 
 
+def test_a_failed_call_reports_raw_findings_with_an_explicit_verdict_call_failure():
+    """The fail-safe: a failed verdict call still emits the raw tool
+    findings, but must say so. AgentCallResult.error is passed through
+    verbatim on VerdictCallFailure rather than the caller inferring
+    failure from the shape of this dict (which is what cli.py's
+    _run_verdict_layer used to do, via the absence of "tokens_in").
+    """
+    finding = make_finding(file="a.py", tool="bandit", rule_id="B105")
+    state = {
+        "owner": "o", "repo": "r", "path": "a.py", "content": "x = 1\n", "patch": "",
+        "findings": [finding], "hunk_cache_hits": {},
+    }
+    failed = AgentCallResult(raw_text=None, error="output failed validation (empty/degenerate)", latency_s=0.01)
+
+    with patch("codeguard.pipeline.nodes.call_agent", return_value=failed):
+        out = review_security(state)
+
+    assert out["findings"] == [finding]  # raw findings still reported
+    assert len(out["verdict_call_failures"]) == 1
+    failure = out["verdict_call_failures"][0]
+    assert (failure.path, failure.agent) == ("a.py", "security")
+    assert failure.reason == "output failed validation (empty/degenerate)"
+
+
+def test_a_successful_call_reports_no_verdict_call_failure():
+    finding = make_finding(file="a.py", tool="bandit", rule_id="B105")
+    state = {
+        "owner": "o", "repo": "r", "path": "a.py", "content": "x = 1\n", "patch": "",
+        "findings": [finding], "hunk_cache_hits": {},
+    }
+    ok = _fake_result([{"rule_id": "B105", "verdict": "confirmed", "severity": "low", "message": "real"}])
+
+    with patch("codeguard.pipeline.nodes.call_agent", return_value=ok):
+        out = review_security(state)
+
+    assert "verdict_call_failures" not in out
+
+
 def test_route_to_security_reviews_dispatches_regardless_of_ai_markers():
     """Unlike review_ai_aware, review_security isn't gated on
     touches_ai_code — Bandit's generic Python security applies to any

@@ -29,7 +29,7 @@ from codeguard.cli import (
     run_audit,
 )
 from codeguard.config import RepoConfig, get_settings
-from codeguard.pipeline.models import DismissedFinding
+from codeguard.pipeline.models import DismissedFinding, VerdictCallFailure
 from codeguard.severity import Severity
 from codeguard.tools.models import Finding
 
@@ -390,16 +390,64 @@ def test_run_verdict_layer_chunks_an_oversized_file_and_attributes_findings_by_l
     assert failures == []
 
 
-def test_run_verdict_layer_records_a_call_failure_when_the_agent_returns_no_tokens():
+def test_run_verdict_layer_records_the_failure_the_node_reports():
+    """The node reports its own failure via verdict_call_failures,
+    carrying AgentCallResult.error verbatim; this layer adds the chunk's
+    line range and surfaces it in the report's Skipped section.
+    """
     f = _finding(file="a.py", line=1)
     files = {"a.py": "x = 1\n"}
-    mock_fn = lambda state: {"findings": state["findings"], "node_latencies": []}  # failure shape, no tokens_in key
+    def mock_fn(state):
+        return {
+            "findings": state["findings"],
+            "node_latencies": [],
+            "verdict_call_failures": [
+                VerdictCallFailure(path="a.py", agent="security", reason="output failed validation (empty/degenerate)")
+            ],
+        }
 
-    confirmed, dismissed, ti, to, cost, failures = _run_verdict_layer(mock_fn, "o", "r", files, {"a.py": [f]})
+    result = _run_verdict_layer(mock_fn, "o", "r", files, {"a.py": [f]})
 
-    assert confirmed == [f]  # raw finding still reported
-    assert len(failures) == 1
-    assert failures[0][0] == "a.py"
+    assert result.confirmed == [f]  # raw finding still reported, unverified
+    assert len(result.call_failures) == 1
+    path, reason = result.call_failures[0]
+    assert path == "a.py"
+    assert "security call failed" in reason
+    assert "output failed validation" in reason  # the real error, not a re-derived description
+
+
+def test_run_verdict_layer_detects_a_failure_that_still_carries_token_counts():
+    """The specific bug the old implementation had: failure used to be
+    inferred from the ABSENCE of a "tokens_in" key, so any failure path
+    that happened to report token counts was silently read as success.
+    A node reporting both is now still recognised as a failure.
+    """
+    f = _finding(file="a.py", line=1)
+    files = {"a.py": "x = 1\n"}
+    def mock_fn(state):
+        return {
+            "findings": state["findings"],
+            "tokens_in": 12, "tokens_out": 0, "estimated_cost_usd": 0.0,
+            "verdict_call_failures": [VerdictCallFailure(path="a.py", agent="security", reason="boom")],
+        }
+
+    result = _run_verdict_layer(mock_fn, "o", "r", files, {"a.py": [f]})
+
+    assert len(result.call_failures) == 1
+    assert result.tokens_in == 12  # still accounted for, not discarded
+
+
+def test_run_verdict_layer_reports_no_failure_on_a_clean_call():
+    """The mirror of the above: a successful call carries no
+    verdict_call_failures, and nothing is invented for it.
+    """
+    f = _finding(file="a.py", line=1)
+    files = {"a.py": "x = 1\n"}
+
+    result = _run_verdict_layer(lambda state: _mock_verdict_ok(state["findings"]), "o", "r", files, {"a.py": [f]})
+
+    assert result.call_failures == []
+    assert result.confirmed == [f]
 
 
 def test_run_verdict_layer_reports_unparseable_file_as_a_call_failure():

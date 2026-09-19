@@ -35,7 +35,14 @@ from codeguard.diff.parse import build_hunks, hash_content, parse_hunk_ranges
 from codeguard.pipeline.eval_hygiene import review_eval_hygiene
 from codeguard.pipeline.llm_call import call_agent
 from codeguard.pipeline.metrics import hunk_cache_total, verdict_flip_total
-from codeguard.pipeline.models import CachedAgentResult, CacheKey, CacheWriteRecord, DismissedFinding, FixSuggestion
+from codeguard.pipeline.models import (
+    CachedAgentResult,
+    CacheKey,
+    CacheWriteRecord,
+    DismissedFinding,
+    FixSuggestion,
+    VerdictCallFailure,
+)
 from codeguard.pipeline.state import FileReviewState, HunkReviewState, NodeLatency, ReviewState
 from codeguard.severity import Severity
 from codeguard.tools.diff_position import is_line_in_diff
@@ -506,7 +513,19 @@ def _run_verdict_agent(
     node_latency: NodeLatency = {"node": f"review_{agent}", "file": path, "seconds": result.latency_s}
     if not result.ok:
         logger.warning("%s call failed for %s (%s), falling back to raw findings", agent, path, result.error)
-        return {"findings": findings, "node_latencies": [node_latency]}
+        # The raw findings still go out, unverified — the fail-safe this
+        # pipeline is built around. verdict_call_failures is what makes
+        # "unverified" legible to a caller instead of indistinguishable
+        # from a clean run: result.error is passed through verbatim
+        # rather than the caller re-deriving failure from the shape of
+        # this dict.
+        return {
+            "findings": findings,
+            "node_latencies": [node_latency],
+            "verdict_call_failures": [
+                VerdictCallFailure(path=path, agent=agent, reason=result.error or "unknown error")
+            ],
+        }
 
     items = _parse_json_array(result.raw_text, path, agent)
     confirmed, dismissed = _apply_verdicts(items, findings, path, agent, dismissals_enabled)

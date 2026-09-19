@@ -21,7 +21,14 @@ import operator
 from typing import Annotated, NotRequired, TypedDict
 
 from codeguard.config import RepoConfig
-from codeguard.pipeline.models import CachedAgentResult, CacheKey, CacheWriteRecord, DismissedFinding, FixSuggestion
+from codeguard.pipeline.models import (
+    CachedAgentResult,
+    CacheKey,
+    CacheWriteRecord,
+    DismissedFinding,
+    FixSuggestion,
+    VerdictCallFailure,
+)
 from codeguard.tools.models import Finding
 
 
@@ -113,6 +120,17 @@ class ReviewState(TypedDict):
     # nothing new to write.
     hunk_cache_hits: dict[CacheKey, CachedAgentResult]
     cache_writes: Annotated[list[CacheWriteRecord], operator.add]
+
+    # A verdict agent whose LLM call failed reports the file's raw tool
+    # findings unverified rather than dropping them (see nodes.py's
+    # _run_verdict_agent). This records that it happened, so "we found
+    # nothing here" and "we could not check here" are distinguishable
+    # after the fact. Declared as a real channel rather than an extra
+    # key on the node's return dict because LangGraph silently DROPS
+    # keys absent from the state schema — verified, not assumed — so an
+    # undeclared key would reach audit mode (which calls the nodes
+    # directly) and vanish on the PR path.
+    verdict_call_failures: Annotated[list[VerdictCallFailure], operator.add]
 
     touches_ai_code: bool
 
