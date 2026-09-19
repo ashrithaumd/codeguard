@@ -36,7 +36,7 @@ from codeguard.pipeline.eval_hygiene import review_eval_hygiene
 from codeguard.pipeline.llm_call import call_agent
 from codeguard.pipeline.metrics import hunk_cache_total, verdict_flip_total
 from codeguard.pipeline.models import CachedAgentResult, CacheKey, CacheWriteRecord, DismissedFinding, FixSuggestion
-from codeguard.pipeline.state import ReviewState
+from codeguard.pipeline.state import FileReviewState, HunkReviewState, NodeLatency, ReviewState
 from codeguard.severity import Severity
 from codeguard.tools.diff_position import is_line_in_diff
 from codeguard.tools.models import Finding
@@ -232,7 +232,7 @@ def route_to_file_reviews(state: ReviewState) -> list[Send]:
     return sends
 
 
-def review_file(state: dict) -> dict:
+def review_file(state: FileReviewState) -> dict:
     """Passthrough for whatever findings route_to_file_reviews forwarded
     (see its docstring) — no LLM call, nothing to interpret.
     """
@@ -503,7 +503,7 @@ def _run_verdict_agent(
         repo_context=_repo_context(owner, repo), user_content=user_content,
         model=model, max_tokens=max_tokens, timeout=timeout, temperature=0,
     )
-    node_latency = {"node": f"review_{agent}", "file": path, "seconds": result.latency_s}
+    node_latency: NodeLatency = {"node": f"review_{agent}", "file": path, "seconds": result.latency_s}
     if not result.ok:
         logger.warning("%s call failed for %s (%s), falling back to raw findings", agent, path, result.error)
         return {"findings": findings, "node_latencies": [node_latency]}
@@ -526,7 +526,7 @@ def _run_verdict_agent(
     }
 
 
-def review_security(state: dict) -> dict:
+def review_security(state: FileReviewState) -> dict:
     """Bandit findings, verdict contract, Sonnet tier — see
     _run_verdict_agent. Runs for every file with Bandit findings,
     independent of touches_ai_code.
@@ -542,7 +542,7 @@ def review_security(state: dict) -> dict:
     )
 
 
-def review_ai_aware(state: dict) -> dict:
+def review_ai_aware(state: FileReviewState) -> dict:
     """Semgrep findings, verdict contract, Sonnet tier — see
     _run_verdict_agent. Only dispatched for AI-touching files (see
     route_to_ai_aware_reviews).
@@ -638,7 +638,7 @@ def _run_generative_agent(
         repo_context=_repo_context(owner, repo), user_content=user_content,
         model=model, max_tokens=max_tokens, timeout=timeout, temperature=0,
     )
-    node_latency = {"node": f"review_{agent}", "file": path, "seconds": result.latency_s}
+    node_latency: NodeLatency = {"node": f"review_{agent}", "file": path, "seconds": result.latency_s}
     if not result.ok:
         logger.warning("%s call failed for %s:%d-%d (%s)", agent, path, hunk_start, hunk_end, result.error)
         return {"node_latencies": [node_latency]}
@@ -660,7 +660,7 @@ def _run_generative_agent(
     }
 
 
-def review_quality(state: dict) -> dict:
+def review_quality(state: HunkReviewState) -> dict:
     settings = get_settings()
     return _run_generative_agent(
         agent="quality", owner=state["owner"], repo=state["repo"], path=state["path"],
@@ -672,7 +672,7 @@ def review_quality(state: dict) -> dict:
     )
 
 
-def review_test(state: dict) -> dict:
+def review_test(state: HunkReviewState) -> dict:
     settings = get_settings()
     return _run_generative_agent(
         agent="test", owner=state["owner"], repo=state["repo"], path=state["path"],
@@ -749,7 +749,7 @@ def route_after_fanin(state: ReviewState) -> str | list[Send]:
     ]
 
 
-def propose_fix(state: dict) -> dict:
+def propose_fix(state: FileReviewState) -> dict:
     """Sonnet tier — for confirmed findings >= fix_threshold in one
     file, proposes a GitHub suggestion-block replacement for each.
     Never applies anything: FixSuggestion.suggestion_body is appended
@@ -786,7 +786,7 @@ def propose_fix(state: dict) -> dict:
         model=settings.fix_agent_model, max_tokens=settings.fix_agent_max_tokens, timeout=settings.fix_agent_timeout_s,
         temperature=0,
     )
-    node_latency = {"node": "propose_fix", "file": state["path"], "seconds": result.latency_s}
+    node_latency: NodeLatency = {"node": "propose_fix", "file": state["path"], "seconds": result.latency_s}
     if not result.ok:
         logger.warning("fix agent call failed for %s (%s)", state["path"], result.error)
         return {"should_fix": True, "node_latencies": [node_latency]}
@@ -945,7 +945,7 @@ def _generate_summary_intro(*, owner: str, repo: str, file_count: int, deduped: 
         repo_context=_repo_context(owner, repo), user_content=user_content,
         model=settings.summary_agent_model, max_tokens=settings.summary_agent_max_tokens, timeout=settings.summary_agent_timeout_s,
     )
-    node_latency = {"node": "summarize", "file": None, "seconds": result.latency_s}
+    node_latency: NodeLatency = {"node": "summarize", "file": None, "seconds": result.latency_s}
     if not result.ok:
         return None, {"node_latencies": [node_latency]}
     return result.raw_text.strip(), {

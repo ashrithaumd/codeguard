@@ -18,7 +18,7 @@ the annotated reducer as it runs.
 from __future__ import annotations
 
 import operator
-from typing import Annotated, TypedDict
+from typing import Annotated, NotRequired, TypedDict
 
 from codeguard.config import RepoConfig
 from codeguard.pipeline.models import CachedAgentResult, CacheKey, CacheWriteRecord, DismissedFinding, FixSuggestion
@@ -35,9 +35,9 @@ class FileReviewState(TypedDict):
     """Send payload for one per-file fan-out branch — a narrower slice
     of ReviewState, since each branch only needs this file's own data.
     Used by review_file (Ruff passthrough), review_security (Bandit,
-    verdict contract) and review_ai_aware (Semgrep, verdict contract) —
-    the three agents scoped to a whole file's already file-level tool
-    findings, cached (see hunk_cache_hits) by the whole file's own
+    verdict contract), review_ai_aware (Semgrep, verdict contract) and
+    propose_fix — the agents scoped to a whole file's already file-level
+    tool findings, cached (see hunk_cache_hits) by the whole file's own
     content hash.
     """
     owner: str
@@ -46,7 +46,14 @@ class FileReviewState(TypedDict):
     content: str
     patch: str
     findings: list[Finding]
-    hunk_cache_hits: dict[CacheKey, CachedAgentResult]  # copied in by the router, same dict every branch shares
+    # NotRequired, because two of the four senders genuinely don't send
+    # it: review_file is a pure passthrough and propose_fix writes its
+    # own suggestions, so neither ever does a cache lookup and neither
+    # router puts the key in its Send payload (see nodes.py's
+    # route_to_file_reviews and route_after_fanin). Only the two
+    # verdict-contract agents read it. Declaring it required would make
+    # this type a description of two call sites rather than all four.
+    hunk_cache_hits: NotRequired[dict[CacheKey, CachedAgentResult]]  # copied in by the router, same dict every branch shares
 
 
 class HunkReviewState(TypedDict):

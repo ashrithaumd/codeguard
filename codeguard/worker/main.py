@@ -41,6 +41,7 @@ from codeguard.pipeline.feedback import FINGERPRINT_MARKER_RE, fetch_suppressed_
 from codeguard.pipeline.graph import review_graph
 from codeguard.pipeline.hunk_cache import fetch_cache_hits, write_cache_records
 from codeguard.pipeline.nodes import _exclude_suppressed, compute_cache_keys
+from codeguard.pipeline.state import ReviewState
 from codeguard.queue.db import bootstrap_schema, create_pool
 from codeguard.queue.models import Job
 from codeguard.queue.queue import ack, claim_batch, extend_lease, nack
@@ -310,7 +311,7 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
     if suppressed_fingerprints:
         logger.info("pr=%s: %d suppressed fingerprint(s) for %s/%s", pr_number, len(suppressed_fingerprints), owner, repo)
 
-    initial_state = {
+    initial_state: ReviewState = {
         "owner": owner, "repo": repo, "pr_number": pr_number, "head_sha": head_sha,
         "installation_id": installation_id, "repo_config": repo_config,
         "files": diff_result.file_contents, "patches": diff_result.patches,
