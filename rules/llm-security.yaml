@@ -12,22 +12,45 @@ rules:
       splicing it into the instruction text itself.
     patterns:
       - pattern-either:
+          # Anthropic Messages API
           - pattern: '$CLIENT.messages.create(..., messages=[..., {"role": "user", "content": $A + $B}, ...], ...)'
           - pattern: '$CLIENT.messages.create(..., messages=[..., {"role": "user", "content": f"..."}, ...], ...)'
+          # OpenAI Chat Completions API
+          - pattern: '$CLIENT.chat.completions.create(..., messages=[..., {"role": "user", "content": $A + $B}, ...], ...)'
+          - pattern: '$CLIENT.chat.completions.create(..., messages=[..., {"role": "user", "content": f"..."}, ...], ...)'
+          # OpenAI Responses API — one `input` string rather than a
+          # messages list, so the whole prompt is the injection surface.
+          - pattern: '$CLIENT.responses.create(..., input=$A + $B, ...)'
+          - pattern: '$CLIENT.responses.create(..., input=f"...", ...)'
 
   - id: llm-missing-system-user-separation
     languages: [python]
     severity: WARNING
     message: >
-      An Anthropic messages.create() call with no `system` parameter —
-      every instruction ends up folded into the user turn, with no
-      structural separation between "what the model should do" and
-      "what the user/PR/untrusted content said." A real system prompt
-      is the first line of defense against a user turn trying to
-      override instructions.
+      An LLM call with no system/developer instruction separate from the
+      user turn — every instruction ends up folded into user content,
+      with no structural separation between "what the model should do"
+      and "what the user/PR/untrusted content said." A real system
+      prompt is the first line of defense against a user turn trying to
+      override instructions. Anthropic takes this as the `system=`
+      parameter; OpenAI takes it as a leading {"role": "system"} (or
+      "developer") message in the messages list, or `instructions=` on
+      the Responses API. NOTE: for OpenAI this is a weaker signal than
+      for Anthropic — putting instructions in the first user turn is a
+      common, sometimes deliberate pattern — so weigh the surrounding
+      code before treating it as a real defect.
     patterns:
-      - pattern: '$CLIENT.messages.create(..., model=$M, messages=$MSGS, ...)'
-      - pattern-not: '$CLIENT.messages.create(..., system=$S, ...)'
+      - pattern-either:
+          - patterns:
+              - pattern: '$CLIENT.messages.create(..., model=$M, messages=$MSGS, ...)'
+              - pattern-not: '$CLIENT.messages.create(..., system=$S, ...)'
+          - patterns:
+              - pattern: '$CLIENT.chat.completions.create(..., model=$M, messages=$MSGS, ...)'
+              - pattern-not: '$CLIENT.chat.completions.create(..., messages=[..., {"role": "system", "content": $S}, ...], ...)'
+              - pattern-not: '$CLIENT.chat.completions.create(..., messages=[..., {"role": "developer", "content": $S}, ...], ...)'
+          - patterns:
+              - pattern: '$CLIENT.responses.create(..., model=$M, input=$INPUT, ...)'
+              - pattern-not: '$CLIENT.responses.create(..., instructions=$S, ...)'
 
   - id: llm-output-to-dangerous-sink
     languages: [python]
@@ -41,7 +64,13 @@ rules:
       explicit allowlist of safe operations, never a raw eval/exec/shell.
     mode: taint
     pattern-sources:
+      # Anthropic response shape
       - pattern: '$RESP.content[0].text'
+      # OpenAI Chat Completions, non-streaming and streaming
+      - pattern: '$RESP.choices[0].message.content'
+      - pattern: '$CHUNK.choices[0].delta.content'
+      # OpenAI Responses API convenience accessor
+      - pattern: '$RESP.output_text'
     pattern-sinks:
       - pattern: 'eval(...)'
       - pattern: 'exec(...)'
@@ -60,6 +89,9 @@ rules:
     mode: taint
     pattern-sources:
       - pattern: '$RESP.content[0].text'
+      - pattern: '$RESP.choices[0].message.content'
+      - pattern: '$CHUNK.choices[0].delta.content'
+      - pattern: '$RESP.output_text'
     pattern-sinks:
       - pattern: '$CURSOR.execute(...)'
 
@@ -67,12 +99,23 @@ rules:
     languages: [python]
     severity: WARNING
     message: >
-      messages.create() with no max_tokens — an unbounded response size
-      is an unbounded cost and latency tail per call. Set max_tokens
-      explicitly on every LLM call.
+      An LLM call with no explicit output-length cap — an unbounded
+      response size is an unbounded cost and latency tail per call. Set
+      the cap explicitly on every call: max_tokens (Anthropic, and
+      OpenAI Chat Completions), max_completion_tokens (OpenAI's newer
+      reasoning models), or max_output_tokens (OpenAI Responses API).
     patterns:
-      - pattern: '$CLIENT.messages.create(...)'
-      - pattern-not: '$CLIENT.messages.create(..., max_tokens=$N, ...)'
+      - pattern-either:
+          - patterns:
+              - pattern: '$CLIENT.messages.create(...)'
+              - pattern-not: '$CLIENT.messages.create(..., max_tokens=$N, ...)'
+          - patterns:
+              - pattern: '$CLIENT.chat.completions.create(...)'
+              - pattern-not: '$CLIENT.chat.completions.create(..., max_tokens=$N, ...)'
+              - pattern-not: '$CLIENT.chat.completions.create(..., max_completion_tokens=$N, ...)'
+          - patterns:
+              - pattern: '$CLIENT.responses.create(...)'
+              - pattern-not: '$CLIENT.responses.create(..., max_output_tokens=$N, ...)'
 
   - id: llm-unpinned-model-alias
     languages: [python]
@@ -81,7 +124,14 @@ rules:
       A floating model alias ("-latest") instead of a pinned version.
       The model backing a "-latest" alias can change without warning,
       silently changing review behavior, cost, and latency — pin an
-      exact, dated model version instead.
+      exact, dated model version instead. SCOPE: this rule detects the
+      Anthropic/"-latest" naming convention only. It deliberately does
+      NOT try to detect unpinned OpenAI models: OpenAI signals a
+      floating alias by the ABSENCE of a date suffix ("gpt-4o" floats,
+      "gpt-4o-2024-08-06" is pinned), so detecting it would mean
+      flagging every bare model name — including every model held in a
+      variable rather than a literal — at a false-positive rate that
+      would drown the rest of this ruleset.
     patterns:
       - pattern-regex: 'model\s*=\s*["''][^"'']*-latest["'']'
 
@@ -95,7 +145,9 @@ rules:
     patterns:
       - pattern-either:
           - pattern: 'anthropic.Anthropic(api_key="...")'
+          - pattern: 'anthropic.AsyncAnthropic(api_key="...")'
           - pattern: 'openai.OpenAI(api_key="...")'
+          - pattern: 'openai.AsyncOpenAI(api_key="...")'
           - pattern-regex: '(?i)(anthropic|openai)_api_key\s*=\s*["''][A-Za-z0-9\-_]{16,}["'']'
 
   - id: llm-logging-full-prompt-or-response
@@ -109,46 +161,92 @@ rules:
       of the raw text.
     patterns:
       - pattern-either:
+          # Anthropic response shape
           - pattern: 'print($RESP.content[0].text)'
           - pattern: 'logging.info(..., $RESP.content[0].text, ...)'
           - pattern: 'logger.info(..., $RESP.content[0].text, ...)'
+          # OpenAI Chat Completions
+          - pattern: 'print($RESP.choices[0].message.content)'
+          - pattern: 'logging.info(..., $RESP.choices[0].message.content, ...)'
+          - pattern: 'logger.info(..., $RESP.choices[0].message.content, ...)'
+          # OpenAI Responses API
+          - pattern: 'print($RESP.output_text)'
+          - pattern: 'logging.info(..., $RESP.output_text, ...)'
+          - pattern: 'logger.info(..., $RESP.output_text, ...)'
 
   - id: llm-call-missing-timeout
     languages: [python]
     severity: WARNING
     message: >
-      messages.create() with no explicit timeout — a hung upstream
-      connection blocks this call indefinitely instead of failing fast,
-      which is an unbounded latency tail for whatever's waiting on it
-      (a job's lease, an HTTP request). Pass timeout= explicitly rather
-      than relying on the SDK's default.
+      An LLM call with no explicit timeout — a hung upstream connection
+      blocks this call indefinitely instead of failing fast, which is an
+      unbounded latency tail for whatever's waiting on it (a job's
+      lease, an HTTP request). Pass timeout= explicitly rather than
+      relying on the SDK's default; both the Anthropic and OpenAI
+      clients accept it per-call or on the client constructor.
     patterns:
-      - pattern: '$CLIENT.messages.create(...)'
-      - pattern-not: '$CLIENT.messages.create(..., timeout=$T, ...)'
+      - pattern-either:
+          - patterns:
+              - pattern: '$CLIENT.messages.create(...)'
+              - pattern-not: '$CLIENT.messages.create(..., timeout=$T, ...)'
+          - patterns:
+              - pattern: '$CLIENT.chat.completions.create(...)'
+              - pattern-not: '$CLIENT.chat.completions.create(..., timeout=$T, ...)'
+          - patterns:
+              - pattern: '$CLIENT.responses.create(...)'
+              - pattern-not: '$CLIENT.responses.create(..., timeout=$T, ...)'
 
   - id: llm-sync-call-in-async-handler
     languages: [python]
     severity: ERROR
     message: >
-      A blocking messages.create() call made directly inside an `async
-      def` function with no `await`/`to_thread` around it. The
-      Anthropic SDK's sync client performs a real blocking network
-      call; invoked straight inside an async handler (an HTTP route, an
-      async worker task) it blocks the whole event loop for the
-      duration of the LLM call, stalling every other concurrent
-      request/heartbeat on that process. Use the async client (`await
-      $CLIENT.messages.create(...)`) or push the sync call through
+      A blocking LLM call made directly inside an `async def` function
+      with no `await`/`to_thread` around it. The Anthropic and OpenAI
+      SDKs' sync clients perform a real blocking network call; invoked
+      straight inside an async handler (an HTTP route, an async worker
+      task) it blocks the whole event loop for the duration of the LLM
+      call, stalling every other concurrent request/heartbeat on that
+      process. Use the async client (`await $CLIENT....create(...)`, via
+      AsyncAnthropic/AsyncOpenAI) or push the sync call through
       `asyncio.to_thread`.
     patterns:
-      - pattern: |
-          async def $FUNC(...):
-            ...
-            $CLIENT.messages.create(...)
-      - pattern-not: |
-          async def $FUNC(...):
-            ...
-            await $CLIENT.messages.create(...)
-      - pattern-not: |
-          async def $FUNC(...):
-            ...
-            asyncio.to_thread($CLIENT.messages.create, ...)
+      - pattern-either:
+          - patterns:
+              - pattern: |
+                  async def $FUNC(...):
+                    ...
+                    $CLIENT.messages.create(...)
+              - pattern-not: |
+                  async def $FUNC(...):
+                    ...
+                    await $CLIENT.messages.create(...)
+              - pattern-not: |
+                  async def $FUNC(...):
+                    ...
+                    asyncio.to_thread($CLIENT.messages.create, ...)
+          - patterns:
+              - pattern: |
+                  async def $FUNC(...):
+                    ...
+                    $CLIENT.chat.completions.create(...)
+              - pattern-not: |
+                  async def $FUNC(...):
+                    ...
+                    await $CLIENT.chat.completions.create(...)
+              - pattern-not: |
+                  async def $FUNC(...):
+                    ...
+                    asyncio.to_thread($CLIENT.chat.completions.create, ...)
+          - patterns:
+              - pattern: |
+                  async def $FUNC(...):
+                    ...
+                    $CLIENT.responses.create(...)
+              - pattern-not: |
+                  async def $FUNC(...):
+                    ...
+                    await $CLIENT.responses.create(...)
+              - pattern-not: |
+                  async def $FUNC(...):
+                    ...
+                    asyncio.to_thread($CLIENT.responses.create, ...)
