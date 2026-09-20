@@ -86,7 +86,7 @@ def test_no_test_case_references_an_unknown_rule():
     """
     declared = set(_declared_rule_ids())
     content = RULES_TESTS.read_text(encoding="utf-8")
-    annotated = set(re.findall(r"#\s*(?:ruleid|ok):\s*([\w-]+)", content))
+    annotated = set(re.findall(r"#\s*(?:ruleid|ok|todoruleid|todook):\s*([\w-]+)", content))
 
     unknown = sorted(annotated - declared)
 
