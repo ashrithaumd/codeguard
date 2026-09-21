@@ -32,6 +32,7 @@ from codeguard.config import Settings, get_settings
 from codeguard.diff.ingest import ingest_pr_diff
 from codeguard.github.auth import get_installation_token
 from codeguard.github.base_tree import fetch_base_tree_python_files
+from codeguard.github.check_summary import render_check_summary
 from codeguard.github.checks import complete_check_run, start_check_run
 from codeguard.github.errors import extract_retry_after
 from codeguard.github.notifications import notify_dead_letter
@@ -200,27 +201,24 @@ def _findings_to_review_comments(findings, fix_suggestions) -> list[dict]:
     return comments
 
 
-def _check_run_conclusion(all_findings, gate_threshold) -> tuple[str, str, str]:
-    """The Check Run's conclusion, derived purely from max confirmed
-    severity vs repo_config.gate_threshold — the same
+def _check_run_conclusion(all_findings, gate_threshold) -> tuple[str, str, list]:
+    """The Check Run's conclusion and title, derived purely from max
+    confirmed severity vs repo_config.gate_threshold — the same
     all_findings set (findings + repo_level_findings) fix_threshold
     already reads, so "would this have gotten a fix suggestion" and
     "does this block the check" are computed the same way, just against
     two independently-configurable thresholds (see RepoConfig.gate_threshold's
     own docstring for why they're separate).
+
+    Returns the blocking findings themselves rather than a rendered
+    summary: github/check_summary.py builds the body and needs this exact
+    list, and computing it in two places is how the gate and the panel
+    describing the gate start disagreeing.
     """
     blocking = [f for f in all_findings if f.severity >= gate_threshold]
     if not blocking:
-        return "success", "No blocking findings", f"No confirmed finding at or above {gate_threshold.name} severity."
-
-    worst = max(blocking, key=lambda f: f.severity)
-    title = f"{len(blocking)} finding(s) at or above {gate_threshold.name}"
-    summary = (
-        f"Worst: [{worst.source_tool}/{worst.severity.name}] {worst.rule_id} at {worst.file}:{worst.start_line}.\n\n"
-        f"{len(blocking)} confirmed finding(s) at or above the repo's gate_threshold ({gate_threshold.name}). "
-        "See the PR Review comments for details."
-    )
-    return "failure", title, summary
+        return "success", "No blocking findings", blocking
+    return "failure", f"{len(blocking)} finding(s) at or above {gate_threshold.name}", blocking
 
 
 async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -> bool:
@@ -379,7 +377,22 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
 
     conclusion = None
     if check_run_id is not None:
-        conclusion, title, summary = _check_run_conclusion(all_findings, repo_config.gate_threshold)
+        conclusion, title, blocking = _check_run_conclusion(all_findings, repo_config.gate_threshold)
+        summary = render_check_summary(
+            findings=all_findings,
+            tool_findings=tool_findings,
+            blocking=blocking,
+            gate_threshold=repo_config.gate_threshold,
+            files_seen=diff_result.files_seen,
+            files_reviewed=len(diff_result.files_reviewed),
+            budget_exceeded=diff_result.budget_exceeded,
+            fix_suggestion_count=len(final_state["fix_suggestions"]),
+            dismissed_count=len(final_state["dismissed_findings"]),
+            tokens_in=final_state["tokens_in"],
+            tokens_out=final_state["tokens_out"],
+            estimated_cost_usd=final_state["estimated_cost_usd"],
+            duration_s=time.perf_counter() - review_started,
+        )
         try:
             complete_check_run(token, owner, repo, check_run_id, conclusion=conclusion, title=title, summary=summary)
             CHECK_RUNS_COMPLETED.labels(conclusion=conclusion).inc()

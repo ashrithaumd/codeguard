@@ -126,10 +126,16 @@ def _platform_hint(tool_name: str) -> str:
     return ""
 
 
+# The meta-finding's rule_id, named here because it is the only handle
+# anything downstream has on "this tool did not run" -- see
+# github/check_summary.py's unavailable_tools().
+UNAVAILABLE_RULE_ID = "internal.tool_unavailable"
+
+
 def _unavailable_finding(tool_name: str, reason: str) -> Finding:
     return Finding.create(
         file="<pr>", start_line=0, end_line=0, severity=Severity.LOW,
-        source_tool=tool_name, rule_id="internal.tool_unavailable",
+        source_tool=tool_name, rule_id=UNAVAILABLE_RULE_ID,
         message=f"{tool_name} unavailable: {reason}",
     )
 
