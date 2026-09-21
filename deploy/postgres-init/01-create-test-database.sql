@@ -1,0 +1,19 @@
+-- Creates the database the test suite runs against, alongside the live
+-- development one Postgres' own entrypoint creates from POSTGRES_DB.
+--
+-- tests/queue/conftest.py and tests/pipeline/conftest.py deliberately
+-- point at a SEPARATE database: running them against the live one made
+-- their up-front `TRUNCATE jobs, dead_letters` race the running
+-- reaper/worker and fail with a real DeadlockDetected. Until now that
+-- database only ever existed because someone had created it by hand, so
+-- a clean clone brought the whole DB-backed half of the suite down with
+-- an "database codeguard_test does not exist" that named no remedy.
+--
+-- Everything in /docker-entrypoint-initdb.d runs as POSTGRES_USER, which
+-- is the database owner, so no ownership fixup is needed.
+--
+-- NOTE: Postgres runs this directory ONLY when initializing an empty
+-- data directory. An existing postgres_data volume predating this file
+-- will not pick it up -- create it once by hand there:
+--   docker compose exec db createdb -U "$POSTGRES_USER" codeguard_test
+CREATE DATABASE codeguard_test;
