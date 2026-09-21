@@ -50,6 +50,7 @@ def _base_state(files, tool_findings=None, repo_config=None):
             for path, content in files.items()
         },
         "tool_findings": tool_findings or [], "base_tree_files": {},
+        "budget_exceeded": False,
         "hunk_cache_hits": {}, "cache_writes": [],
         "suppressed_fingerprints": frozenset(),
         "touches_ai_code": False,

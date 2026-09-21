@@ -90,6 +90,15 @@ class ReviewState(TypedDict):
 
     files: dict[str, str]        # path -> full content at head_sha
     patches: dict[str, str]      # path -> GitHub patch text
+
+    # True when diff ingestion hit max_files_per_pr or max_tokens_per_pr
+    # and dropped part of the diff (DiffIngestionResult.budget_exceeded,
+    # or the MCP server's local equivalent). Carried into the graph
+    # purely so summarize() can say so in the review body: without it a
+    # truncated review renders identically to a complete one, and
+    # "reviewed N file(s), no issues found" reads as a clean bill of
+    # health for a PR most of which was never looked at.
+    budget_exceeded: bool
     tool_findings: list[Finding]  # deterministic tool runners' pre-computed findings for the whole PR, set once
 
     # Fingerprints a repo maintainer has marked false_positive

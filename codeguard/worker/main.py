@@ -323,6 +323,7 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
         "owner": owner, "repo": repo, "pr_number": pr_number, "head_sha": head_sha,
         "installation_id": installation_id, "repo_config": repo_config,
         "files": diff_result.file_contents, "patches": diff_result.patches,
+        "budget_exceeded": diff_result.budget_exceeded,
         "tool_findings": tool_findings, "base_tree_files": base_tree_files,
         "hunk_cache_hits": hunk_cache_hits, "cache_writes": [], "verdict_call_failures": [],
         "suppressed_fingerprints": suppressed_fingerprints,

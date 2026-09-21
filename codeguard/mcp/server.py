@@ -214,6 +214,7 @@ async def _run_review_diff(repo_path: str | None) -> dict:
     initial_state = {
         "owner": "local", "repo": repo_root.name, "pr_number": 0, "head_sha": "", "installation_id": 0,
         "repo_config": repo_config, "files": files, "patches": patches,
+        "budget_exceeded": budget_exceeded,
         "tool_findings": tool_findings, "base_tree_files": base_tree_files,
         "hunk_cache_hits": {}, "cache_writes": [], "verdict_call_failures": [],
         "suppressed_fingerprints": frozenset(),

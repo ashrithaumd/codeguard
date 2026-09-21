@@ -910,6 +910,22 @@ def _group_findings_for_display(findings: list[Finding]) -> list[tuple[str, str,
     ]
 
 
+# Rendered as a GitHub callout. Deliberately loud, and placed directly
+# under the "reviewed N file(s)" line it qualifies: a truncated review is
+# the one case where this body is actively misleading read at face value,
+# because N is the number of files CodeGuard looked at, not the number
+# the PR changed -- "no issues found" over a partial diff is not a clean
+# bill of health. Kept as lines rather than one embedded-newline string
+# so it composes with body_lines like every other section here.
+_BUDGET_EXCEEDED_NOTE_LINES = [
+    "> [!WARNING]",
+    "> This diff exceeded CodeGuard's review budget and was truncated -- some "
+    "changed files or hunks were **not reviewed**. The findings below cover "
+    "only the reviewed portion. Raise `max_files_per_pr` / `max_tokens_per_pr` "
+    "in the repo config to cover the whole diff.",
+]
+
+
 def _append_dismissed_section(body_lines: list[str], grouped_dismissed: list[tuple[str, str, str, list[int]]]) -> None:
     """Dismissals are never posted inline but always show up here — a
     reviewer should be able to see what an agent actually checked and
@@ -1154,6 +1170,8 @@ def summarize(state: ReviewState) -> dict:
 
     if not deduped:
         body_lines = ([intro, ""] if intro else []) + [f"CodeGuard reviewed {file_count} file(s), no issues found."]
+        if state["budget_exceeded"]:
+            body_lines += ["", *_BUDGET_EXCEEDED_NOTE_LINES]
         _append_dismissed_section(body_lines, grouped_dismissed)
         return {**summary_update, "summary": "\n".join(body_lines), "inline_findings": []}
 
@@ -1187,6 +1205,8 @@ def summarize(state: ReviewState) -> dict:
     overflow = inlineable[settings.max_inline_comments:]
 
     body_lines = ([intro, ""] if intro else []) + [f"CodeGuard reviewed {file_count} file(s), found {len(deduped)} issue(s)."]
+    if state["budget_exceeded"]:
+        body_lines += ["", *_BUDGET_EXCEEDED_NOTE_LINES, ""]
 
     if state["fix_suggestions"]:
         body_lines.append(f"{len(state['fix_suggestions'])} fix suggestion(s) proposed.")

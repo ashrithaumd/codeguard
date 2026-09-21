@@ -33,7 +33,7 @@ def _mock_summary_call(*, agent, **kwargs):
     return AgentCallResult(raw_text="Mock intro.", tokens_in=1, tokens_out=1, estimated_cost_usd=0.0, latency_s=0.0)
 
 
-def _state(findings, patches, files=None, repo_config=None, dismissed_findings=None, suppressed_fingerprints=None):
+def _state(findings, patches, files=None, repo_config=None, dismissed_findings=None, suppressed_fingerprints=None, budget_exceeded=False):
     return {
         "owner": "o", "repo": "r", "pr_number": 1, "head_sha": "sha", "installation_id": 1,
         "repo_config": repo_config or RepoConfig(),
@@ -46,6 +46,7 @@ def _state(findings, patches, files=None, repo_config=None, dismissed_findings=N
         "should_fix": False, "summary": "", "inline_findings": [],
         "tokens_in": 0, "tokens_out": 0, "estimated_cost_usd": 0.0, "node_latencies": [],
         "suppressed_fingerprints": suppressed_fingerprints or frozenset(),
+        "budget_exceeded": budget_exceeded,
     }
 
 
@@ -415,3 +416,39 @@ def test_folded_duplicate_counts_as_one_inline_comment_not_two():
 
     assert len(result["inline_findings"]) == 1
     assert "found 1 issue" in result["summary"]
+
+
+def test_truncated_review_warns_in_the_body_when_findings_exist():
+    """A budget-truncated review must say so. Without this the body is
+    indistinguishable from a complete one, and its "reviewed N file(s)"
+    count silently means "N of however many the PR actually changed".
+    """
+    f = make_finding(file="a.py", line=3, rule_id="B105")
+    patches = {"a.py": "@@ -1,10 +1,10 @@\n context"}
+
+    result = _summarize(_state([f], patches, budget_exceeded=True))
+
+    assert "> [!WARNING]" in result["summary"]
+    assert "not reviewed" in result["summary"]
+    assert "max_files_per_pr" in result["summary"]
+
+
+def test_truncated_review_warns_in_the_body_when_the_review_is_clean():
+    """The case that matters most: zero findings over a partial diff
+    reads as a clean bill of health for the whole PR unless the body
+    says otherwise, so the warning cannot live only on the
+    findings-exist branch.
+    """
+    result = _summarize(_state([], {}, files={"a.py": ""}, budget_exceeded=True))
+
+    assert "no issues found" in result["summary"]
+    assert "> [!WARNING]" in result["summary"]
+    assert "not reviewed" in result["summary"]
+
+
+def test_untruncated_review_carries_no_budget_warning():
+    f = make_finding(file="a.py", line=3, rule_id="B105")
+    patches = {"a.py": "@@ -1,10 +1,10 @@\n context"}
+
+    assert "[!WARNING]" not in _summarize(_state([f], patches))["summary"]
+    assert "[!WARNING]" not in _summarize(_state([], {}, files={"a.py": ""}))["summary"]
