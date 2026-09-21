@@ -17,7 +17,14 @@ services:
       retries: 5
 
   api:
-    build: .
+    # INSTALL_DEV: local compose builds carry pytest so `docker compose
+    # exec` can run the suite inside the container, where semgrep's
+    # engine actually works. The Azure production build does not pass
+    # this, so it gets no test runner.
+    build:
+      context: .
+      args:
+        INSTALL_DEV: "true"
     restart: unless-stopped
     command: ["uvicorn", "codeguard.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
     ports:
@@ -38,7 +45,10 @@ services:
       retries: 5
 
   worker:
-    build: .
+    build:
+      context: .
+      args:
+        INSTALL_DEV: "true"
     restart: unless-stopped
     command: ["python", "-m", "codeguard.worker.main"]
     env_file:

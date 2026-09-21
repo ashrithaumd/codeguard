@@ -2,13 +2,30 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Install curl for the health check
-RUN apt-get update && apt-get install -y --no-install-recommends curl \
+# curl: the health check. git: codeguard/mcp/server.py shells out to it
+# for every local-diff ingestion (_run_git), so it is a real runtime
+# dependency of the shipped image, not a test-only one -- without it that
+# whole MCP path raises GitError("git is not installed or not on PATH").
+RUN apt-get update && apt-get install -y --no-install-recommends curl git \
     && rm -rf /var/lib/apt/lists/*
+
+# Dev extras (pytest, pytest-asyncio) are opt-in at build time rather
+# than always-on: this same image is the production api and worker in
+# Azure, and a test runner has no business in it there. docker-compose
+# sets INSTALL_DEV=true so a clean clone gets a container that can
+# actually run the suite -- the deterministic tool runners (semgrep,
+# bandit, ruff) are real dependencies and live in the image either way,
+# which is precisely why running the tests HERE and not on the host is
+# the route that works on every platform.
+ARG INSTALL_DEV=false
 
 COPY pyproject.toml ./
 COPY codeguard/ ./codeguard/
-RUN pip install --no-cache-dir -e .
+RUN if [ "$INSTALL_DEV" = "true" ]; then \
+        pip install --no-cache-dir -e ".[dev]"; \
+    else \
+        pip install --no-cache-dir -e .; \
+    fi
 
 COPY . .
 
