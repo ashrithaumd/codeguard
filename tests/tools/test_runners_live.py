@@ -89,11 +89,34 @@ def test_bandit_partitions_findings_across_multiple_files_correctly():
            "actual deployment target is Linux containers, where this doesn't occur; "
            "verified separately there, not skipped on faith.",
 )
-def test_semgrep_runs_llm_security_ruleset_and_catches_unpinned_model():
+def test_semgrep_runs_llm_security_ruleset_and_catches_every_rule_the_snippet_trips():
+    """LLM_CALL_SNIPPET trips FOUR rules, not one: the model alias is
+    "-latest", and the call passes no max_tokens, no timeout and no
+    system. Asserting the exact set rather than just the unpinned-model
+    rule means a change that silently stops three of them from firing
+    fails here — which the old single-membership assertion would have
+    passed straight through.
+
+    Exact equality is deliberate and will fail if a NEW rule starts
+    matching this snippet too. That is the intended cost: a rule newly
+    firing on an Anthropic call this basic is something to look at, not
+    to absorb silently. Update the set when that happens.
+
+    rule_id arrives prefixed with the config directory's name
+    ("rules.llm-...") when semgrep is pointed at rules/ as a directory,
+    unprefixed when pointed at the file — normalized here so the test
+    pins the ruleset, not the invocation style.
+    """
     findings = run_semgrep({"app/assistant.py": LLM_CALL_SNIPPET})
     assert _ran_successfully(findings), findings
-    rule_ids = {f.rule_id for f in findings}
-    assert "rules.llm-unpinned-model-alias" in rule_ids or "llm-unpinned-model-alias" in rule_ids, findings
+
+    rule_ids = {f.rule_id.removeprefix("rules.") for f in findings}
+    assert rule_ids == {
+        "llm-unpinned-model-alias",
+        "llm-call-missing-max-tokens",
+        "llm-call-missing-timeout",
+        "llm-missing-system-user-separation",
+    }, findings
     for f in findings:
         assert f.file == "app/assistant.py"
 
