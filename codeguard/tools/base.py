@@ -85,6 +85,47 @@ def resolve_original_path(tmp_dir: str, reported_path: str) -> str:
     return Path(rel).as_posix()
 
 
+# Enough of the tool's stderr to identify the real cause without
+# flooding the log with a whole scan's worth of output.
+_STDERR_TAIL_CHARS = 2000
+
+
+def _stderr_tail(proc: subprocess.CompletedProcess | None) -> str:
+    """The failing tool's own stderr, which used to be discarded
+    outright. It is usually the only place the real cause appears: a
+    tool that dies before writing JSON leaves stdout empty, so what
+    surfaces here is a JSONDecodeError from parse_output -- an error
+    about this module's parsing, not about why the tool died. stderr is
+    where the actual traceback is.
+    """
+    stderr = getattr(proc, "stderr", None)
+    if not stderr:
+        return ""
+    return f" stderr_tail={stderr.strip()[-_STDERR_TAIL_CHARS:]!r}"
+
+
+def _platform_hint(tool_name: str) -> str:
+    """Names a known-unfixable platform failure instead of letting it
+    read as a transient crash. Semgrep's CLI is a Python script that
+    hands off to a compiled semgrep-core via os.execvp(); no such binary
+    is shipped for Windows, so the handoff dies with
+    FileNotFoundError [Errno 2] and semgrep cannot run on this host at
+    all -- no retry, reinstall or PATH fix changes that. Worth saying
+    out loud because semgrep owns this project's ENTIRE custom
+    llm-security ruleset: when it is the tool that silently didn't run,
+    the review keeps its AI-aware framing while having checked none of
+    the AI-aware rules.
+    """
+    if tool_name == "semgrep" and sys.platform == "win32":
+        return (
+            " CAUSE: semgrep's CLI execs a semgrep-core binary that is not shipped for "
+            "Windows, so semgrep cannot run on this host and this review has NO custom "
+            "llm-security rule coverage. Run the review inside the Linux container "
+            "instead (docker compose exec worker ...)."
+        )
+    return ""
+
+
 def _unavailable_finding(tool_name: str, reason: str) -> Finding:
     return Finding.create(
         file="<pr>", start_line=0, end_line=0, severity=Severity.LOW,
@@ -105,6 +146,10 @@ def run_tool_on_pr(
 
     tmp_dir = tempfile.mkdtemp(prefix=f"codeguard-{tool_name}-")
     start = time.perf_counter()
+    # Bound outside the try purely so the failure path can still read the
+    # tool's stderr when it was parse_output(), not subprocess.run(),
+    # that raised.
+    proc: subprocess.CompletedProcess | None = None
     try:
         for rel_path, content in files.items():
             dest = Path(tmp_dir) / rel_path
@@ -119,8 +164,17 @@ def run_tool_on_pr(
         return [_unavailable_finding(tool_name, f"timed out after {timeout}s")]
     except Exception as exc:
         tool_failures_total.labels(tool=tool_name).inc()
-        logger.exception("%s crashed on %d file(s)", tool_name, len(files))
-        return [_unavailable_finding(tool_name, str(exc))]
+        hint = _platform_hint(tool_name)
+        # Deliberately loud: a tool that did not run means the review is
+        # INCOMPLETE, not merely that one check was noisy, and the old
+        # "semgrep crashed" line named neither the consequence nor the
+        # cause.
+        logger.error(
+            "%s DID NOT RUN on %d file(s) -- this review has no %s coverage. error=%r%s%s",
+            tool_name, len(files), tool_name, exc, _stderr_tail(proc), hint,
+            exc_info=True,
+        )
+        return [_unavailable_finding(tool_name, f"{exc}{hint}")]
     finally:
         tool_run_duration_seconds.labels(tool=tool_name).observe(time.perf_counter() - start)
         shutil.rmtree(tmp_dir, ignore_errors=True)
