@@ -193,11 +193,37 @@ tunnel (e.g. `npx smee-client --url $SMEE_URL --target http://localhost:8000/web
 URL as the GitHub App's Webhook URL — the same field switches to the deployed URL in production,
 no code change either way.
 
+### Tests
+
+The whole suite, with nothing to install on the host:
+
+```bash
+docker compose exec worker pytest
+```
+
+That is the recommended route and the only one that covers everything on every platform: the image
+already carries `semgrep`, `bandit`, `ruff` and `git`, and compose builds it with the dev extras.
+The suite points itself at the separate `codeguard_test` database, so it is safe to run while the
+api and worker containers are up.
+
+On the host instead, install the dev extras and run the groups by what each actually needs:
+
 ```bash
 pip install -e ".[dev]"
-pytest tests/diff tests/tools tests/github tests/pipeline   # no external deps
-pytest tests/queue                                            # needs the local Postgres running
+pytest tests/diff tests/github tests/api        # pure unit tests, nothing external
+pytest tests/tools tests/cli tests/mcp          # + semgrep, bandit, ruff and git on PATH
+pytest tests/queue tests/pipeline               # + the local Postgres (docker compose up -d db)
 ```
+
+Two things worth knowing before trusting a green host run:
+
+- **`tests/pipeline` needs Postgres.** Most of it does not, but `test_hunk_cache.py`,
+  `test_feedback.py` and `test_feedback_webhook.py` open a real connection, so the directory as a
+  whole belongs with `tests/queue`.
+- **Semgrep cannot run on Windows at all.** Its CLI execs a `semgrep-core` binary that is not
+  shipped for that platform. The live-runner test is skipped there rather than failing, so a host
+  run on Windows comes back green having exercised none of the custom `rules/` ruleset — the
+  container is the only place that coverage is real.
 
 ## Installing the GitHub App on a repo
 

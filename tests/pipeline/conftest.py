@@ -3,8 +3,8 @@ as tests/tools/test_models.py and test_line_filter.py
 (Finding.create with sensible defaults), centralized here so pipeline
 tests don't each reinvent it.
 
-`pool`: a real Postgres connection, for
-tests/pipeline/test_hunk_cache.py only — mirrors tests/queue/conftest.py's
+`pool`: a real Postgres connection, used by test_hunk_cache.py,
+test_feedback.py and test_feedback_webhook.py — mirrors tests/queue/conftest.py's
 own fixture exactly (separate `codeguard_test` database, Windows event
 loop policy fix), duplicated rather than imported across test packages
 since the two are independent test suites that happen to need the same
