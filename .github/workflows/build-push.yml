@@ -1,0 +1,106 @@
+# Builds the CodeGuard image and pushes it to ACR.
+#
+# Why this exists: ACR Tasks (`az acr build`, server-side) are blocked
+# subscription-wide on this free-tier subscription —
+#   (TasksOperationsNotAllowed) ACR Tasks requests for the registry
+#   codeguardacr and 29ca79a0-... are not permitted.
+# — and local `docker push` through the corporate proxy is unreliable
+# (Docker Desktop 4.46.0 persists OverrideProxyExclude but never passes it
+# to the daemon, so *.azurecr.io cannot be bypassed). GitHub's runners have
+# neither problem: they build with their own Docker and push over the open
+# internet.
+#
+# This workflow does NOT deploy. It only puts an image in the registry.
+# The Container Apps update stays in deploy/azure.sh, run by hand — see
+# the comment there for why (secrets never enter CI, and the digest-drift
+# guard is a deliberate human stop).
+name: build and push to ACR
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  # Both of the commits this was built for were already on origin/main, so
+  # a push trigger alone would never have fired for them. Also the way to
+  # force a rebuild without an empty commit.
+  workflow_dispatch:
+
+# id-token: write is what lets GitHub mint the OIDC token that azure/login
+# exchanges for an Azure access token. Without it the login fails with an
+# opaque 401 that looks like a credentials problem but isn't.
+# contents: read is the default checkout needs once permissions are set
+# explicitly at all.
+permissions:
+  id-token: write
+  contents: read
+
+# Two runs pushing :latest concurrently would race, and the loser would
+# leave :latest pointing at the older commit. Queue instead of cancelling:
+# a superseded build still produces a valid :sha- tag worth keeping.
+concurrency:
+  group: acr-build
+  cancel-in-progress: false
+
+env:
+  ACR_NAME: codeguardacr
+  IMAGE: codeguard
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 7 chars sliced from the full 40-char SHA, NOT `git rev-parse
+      # --short`: git's abbreviation length scales with the repo's object
+      # count, and checkout is shallow here, so --short on the runner can
+      # produce a different length than --short in a full local clone.
+      # deploy/azure.sh slices the same 7 chars the same way, so the two
+      # sides always agree on the tag name.
+      - name: derive commit tag
+        id: tag
+        run: echo "short=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+      # OIDC federated credential — no client secret, nothing long-lived in
+      # the repo. These three are identifiers, not credentials, hence vars
+      # rather than secrets.
+      - name: azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      # Writes a registry token into the runner's docker config, which
+      # buildx then uses to push. The SP holds AcrPush on this registry
+      # only, so a compromised run can't reach anything else.
+      - name: acr login
+        run: az acr login --name "$ACR_NAME"
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Two tags, always both: :latest is what deploy/azure.sh reads, and
+      # :sha-<7> is the immutable record of which commit produced it. The
+      # deploy script cross-checks one against the other before shipping.
+      # The gha cache matters here — the pip-install layer is ~380MB and
+      # dominates build time.
+      - name: build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE }}:latest
+            ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE }}:sha-${{ steps.tag.outputs.short }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: report digest
+        run: |
+          echo "pushed $IMAGE:sha-${{ steps.tag.outputs.short }}"
+          az acr repository show --name "$ACR_NAME" \
+            --image "$IMAGE:sha-${{ steps.tag.outputs.short }}" \
+            --query digest -o tsv
+          echo "deploy with:  SKIP_BUILD=1 ./deploy/azure.sh"
