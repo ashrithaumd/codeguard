@@ -41,6 +41,7 @@ from codeguard.pipeline.feedback import FINGERPRINT_MARKER_RE, fetch_suppressed_
 from codeguard.pipeline.graph import review_graph
 from codeguard.pipeline.hunk_cache import fetch_cache_hits, write_cache_records
 from codeguard.pipeline.nodes import _exclude_suppressed, compute_cache_keys
+from codeguard.pipeline.reviews import record_review
 from codeguard.pipeline.state import ReviewState
 from codeguard.queue.db import bootstrap_schema, create_pool
 from codeguard.queue.models import Job
@@ -247,6 +248,13 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
         logger.warning("job %s missing head_sha/base_ref, nothing to review", job.id)
         return True
 
+    # The review handler's own wall clock, for the `reviews` row. Started
+    # here rather than at the top of the function so the two early returns
+    # above — neither of which reviews or posts anything — are excluded,
+    # and deliberately not process_job's JOB_PROCESSING_SECONDS, which is
+    # the caller's timer and also covers ack and the stats write itself.
+    review_started = time.perf_counter()
+
     token = get_installation_token(installation_id)
     settings = get_settings()
 
@@ -363,8 +371,13 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
         except requests.HTTPError:
             logger.warning("failed to fetch/record posted finding comments for pr=%s", pr_number, exc_info=True)
 
+    # Hoisted out of the check-run branch below: the `reviews` row must
+    # record the same suppressed-excluded set the Check Run gates on, so
+    # the two can never disagree about what this review found.
+    all_findings = _exclude_suppressed(final_state["findings"] + final_state["repo_level_findings"], suppressed_fingerprints)
+
+    conclusion = None
     if check_run_id is not None:
-        all_findings = _exclude_suppressed(final_state["findings"] + final_state["repo_level_findings"], suppressed_fingerprints)
         conclusion, title, summary = _check_run_conclusion(all_findings, repo_config.gate_threshold)
         try:
             complete_check_run(token, owner, repo, check_run_id, conclusion=conclusion, title=title, summary=summary)
@@ -372,6 +385,36 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
         except requests.HTTPError:
             CHECK_RUNS_FAILED.labels(stage="complete").inc()
             logger.warning("failed to complete check run %s for pr=%s", check_run_id, pr_number, exc_info=True)
+
+    # Last thing before returning: everything above is known by now,
+    # including the Check Run conclusion, which is only decided after the
+    # review has already been posted. record_review never raises (see its
+    # module docstring) — the review is live on GitHub at this point, and a
+    # stats failure must not skip the ack and cause a redelivery that posts
+    # it a second time.
+    await record_review(
+        pool,
+        job_id=job.id, owner=owner, repo=repo, pr_number=pr_number,
+        head_sha=head_sha, action=payload.get("action", ""),
+        summary_body=final_state["summary"],
+        check_conclusion=conclusion,
+        gate_threshold=repo_config.gate_threshold.name,
+        fix_threshold=repo_config.fix_threshold.name,
+        files_seen=diff_result.files_seen,
+        files_reviewed=len(diff_result.files_reviewed),
+        findings=all_findings,
+        dismissed=final_state["dismissed_findings"],
+        inline_count=len(final_state["inline_findings"]),
+        fix_suggestions=final_state["fix_suggestions"],
+        budget_exceeded=diff_result.budget_exceeded,
+        filtered_files=diff_result.files_filtered,
+        tokens_in=final_state["tokens_in"],
+        tokens_out=final_state["tokens_out"],
+        estimated_cost_usd=final_state["estimated_cost_usd"],
+        duration_s=time.perf_counter() - review_started,
+        node_latencies=final_state["node_latencies"],
+        verdict_call_failures=final_state["verdict_call_failures"],
+    )
 
     return True
 
