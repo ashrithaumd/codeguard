@@ -122,6 +122,15 @@ _NOISE_BUDGET_CONTRACT = (
     "something reasonable people could disagree on."
 )
 
+_LINE_ECHO_CONTRACT = (
+    '"line" and "code" must describe the SAME line: "code" is the text standing at "line" in the '
+    "hunk, copied from it, not retyped from memory and not reformatted. The two are checked against "
+    "the hunk before your issue is placed. If they disagree, or if the text you quote appears on "
+    "more than one line, the issue is reported without a line number rather than on a guessed one. "
+    "So quote the line your issue is actually about — if your message talks about a division, "
+    'quote the division line, not the line above it. Never quote a line you cannot see in the hunk.'
+)
+
 _QUALITY_SYSTEM_PROMPT = f"""You are a code quality reviewer. Your only job is to review one diff hunk (a small slice of a file, shown with surrounding context for orientation) for quality issues in its own changed lines — you do not comment on security (separate agents already cover that) and you do not invent issues outside: poor naming, missing error handling, excessive complexity, duplication, missing/misleading comments, poor structure, obvious performance problems.
 
 {_DATA_FRAMING}
@@ -130,10 +139,13 @@ _QUALITY_SYSTEM_PROMPT = f"""You are a code quality reviewer. Your only job is t
 
 Respond with ONLY a JSON array (no prose, no markdown code fences), one object per issue found, each with exactly these keys:
 "line" (integer, a real line number within the hunk shown),
+"code" (string, the FULL TEXT of that one line, copied verbatim from the hunk),
 "severity" ("low"|"medium"),
 "category" (short string: "naming"|"error-handling"|"complexity"|"duplication"|"docs"|"structure"|"performance"),
 "message" (string, one sentence, plain language, with a concrete suggestion),
 "confidence" (number, 0.0-1.0).
+
+{_LINE_ECHO_CONTRACT}
 
 If there are no real issues, respond with exactly: []
 """
@@ -148,9 +160,12 @@ Flag a gap only when the hunk adds a new function, branch, or edge case with no 
 
 Respond with ONLY a JSON array (no prose, no markdown code fences), one object per coverage gap found, each with exactly these keys:
 "line" (integer, a real line number within the hunk shown),
+"code" (string, the FULL TEXT of that one line, copied verbatim from the hunk),
 "severity" ("low"|"medium"),
 "message" (string, one sentence: what's untested and what a test for it should check),
 "confidence" (number, 0.0-1.0).
+
+{_LINE_ECHO_CONTRACT}
 
 If coverage looks adequate, respond with exactly: []
 """
@@ -198,8 +213,8 @@ def compute_cache_keys(
         if ai_aware_enabled and _file_touches_ai_markers(content):
             keys.append((path, content_hash, "ai_aware"))
         for h in build_hunks(path, patches.get(path, ""), content):
-            keys.append((path, h.content_hash, "quality"))
-            keys.append((path, h.content_hash, "test"))
+            keys.append((path, h.content_hash, generative_cache_agent("quality")))
+            keys.append((path, h.content_hash, generative_cache_agent("test")))
     return keys
 
 
@@ -593,6 +608,33 @@ def review_ai_aware(state: FileReviewState) -> dict:
 # carry it.
 _GENERATIVE_SOURCE_SUFFIX = "-agent"
 
+# Bumped when the direct-findings contract changes in a way that makes
+# an older cached result untrustworthy rather than merely stale.
+# hunk_findings is keyed on (path, content_hash, agent) and content_hash
+# is the hunk's content, which does not change when our own prompt or
+# parser does — so without this, every finding cached under the previous
+# contract would keep being served verbatim, unverified, for as long as
+# the file is unchanged. That is not theoretical: the live PR this was
+# built for served 3/3 quality and test findings from cache on every
+# run, so a change to how those findings are validated would have had no
+# observable effect at all.
+#
+# v2: findings must carry a `code` echo of the line they refer to, which
+# is verified against the hunk (see _verified_line). A v1 entry has no
+# echo and was accepted under the old rules, so it cannot be re-checked
+# — it is abandoned rather than trusted. Verdict-contract agents
+# (security, ai_aware) are unaffected and keep their bare agent key.
+_GENERATIVE_CONTRACT_VERSION = 2
+
+
+def generative_cache_agent(agent: str) -> str:
+    """The `agent` component of a generative agent's cache key. Used by
+    both compute_cache_keys (which prefetches) and _run_generative_agent
+    (which reads and writes), so the two can't drift into looking up a
+    key nothing ever writes.
+    """
+    return f"{agent}/v{_GENERATIVE_CONTRACT_VERSION}"
+
 
 def _is_model_located(finding: Finding) -> bool:
     """True when this finding's line number came out of the model's own
@@ -615,17 +657,92 @@ def _is_model_located(finding: Finding) -> bool:
     return finding.source_tool.endswith(_GENERATIVE_SOURCE_SUFFIX)
 
 
+def _verified_line(
+    *, claimed_line: int, echo: str, hunk_lines: list[str], hunk_start: int, hunk_end: int,
+    agent: str, path: str,
+) -> int:
+    """Where a generative finding actually goes: the line its own `code`
+    echo proves it is about, or 0 for "no specific line".
+
+    Same shape as the fix agent's echo check, for the same reason. A
+    generative agent invents both the observation and the coordinates,
+    and on codeguard-playground PR #5 it put a division finding on line
+    2, the SQL line. Every stage downstream then agreed on line 2,
+    because they had nothing to disagree with — the model's line number
+    was the only evidence in play. Making it echo the code it is talking
+    about adds a second, checkable piece of evidence, and the file is
+    the arbiter between them.
+
+    Four outcomes:
+      - echo matches the claimed line          -> keep it, corroborated
+      - echo matches exactly one other line    -> relocate there
+      - echo matches nothing, or several lines -> 0, summary body
+      - echo missing/blank, or no hunk to
+        check against                          -> 0, summary body
+
+    Relocating on a unique match is not the old clamp returning. That
+    moved a finding to the nearest hunk edge on no evidence whatsoever;
+    this moves it to the one line whose content the model itself quoted.
+    Several matches is ambiguous, so it fails closed rather than picking
+    one — a finding in the summary body is reported in full and costs a
+    reviewer nothing, while a finding on the wrong line actively misleads.
+
+    Compared with whitespace stripped: the model is locating a line, not
+    reproducing it for replacement the way the fix agent is, and
+    demanding exact indentation would throw away correct locations. Two
+    lines that differ only in indentation just make the echo ambiguous,
+    which already fails closed.
+
+    A degraded hunk (content fetch failed, so build_hunks fell back to
+    patch-only context with start_line/end_line 0) has no file line
+    numbers to verify against at all, so nothing can be placed from it.
+    """
+    if hunk_end <= 0 or not hunk_lines:
+        logger.warning(
+            "%s agent finding for %s cannot be placed: no line-numbered hunk to verify its echo against; "
+            "demoting to the summary body", agent, path,
+        )
+        return 0
+
+    needle = echo.strip()
+    if not needle:
+        logger.warning(
+            "%s agent finding for %s at line %d carries no `code` echo, so its line is unverifiable; "
+            "demoting to the summary body", agent, path, claimed_line,
+        )
+        return 0
+
+    matches = [hunk_start + i for i, line in enumerate(hunk_lines) if line.strip() == needle]
+    if claimed_line in matches:
+        return claimed_line
+    if len(matches) == 1:
+        logger.info(
+            "%s agent reported line %d for %s but its echo %r is at line %d; relocating to the line "
+            "it actually quoted", agent, claimed_line, path, needle[:80], matches[0],
+        )
+        return matches[0]
+
+    logger.warning(
+        "%s agent reported line %d for %s with an echo matching %d line(s) in the hunk (%d-%d); "
+        "demoting to the summary body rather than placing it on an unverified line",
+        agent, claimed_line, path, len(matches), hunk_start, hunk_end,
+    )
+    return 0
+
+
 def _parse_direct_findings(
-    items: list[dict], path: str, agent: str, hunk_start: int, hunk_end: int,
+    items: list[dict], path: str, agent: str, hunk_start: int, hunk_end: int, hunk_content: str,
     max_severity: Severity, max_findings: int,
 ) -> list[Finding]:
     """Direct-findings contract (review_quality/review_test): the agent
     generates findings from scratch, no raw tool baseline to fall back
     to — a call failure or empty response just means zero findings from
-    that hunk, never a crash. A line the model reports outside the
-    hunk's own range is clamped into range rather than trusted verbatim
-    (self-reported line numbers are not reliable enough to trust from a
-    model).
+    that hunk, never a crash.
+
+    Where each finding lands is decided by _verified_line, from the
+    `code` echo the contract requires, not from the line number the
+    model reports. A finding whose echo can't be located, or locates
+    ambiguously, keeps its message and loses its line.
 
     A noise budget applies here since these two agents are the only
     ones that invent findings rather than verify a scanner's: severity
@@ -643,34 +760,32 @@ def _parse_direct_findings(
         try:
             severity = Severity[str(item["severity"]).upper()]
             severity = min(severity, max_severity)
-            line = int(item["line"])
-            if hunk_end > 0 and not (hunk_start <= line <= hunk_end):
-                # Was min(max(line, hunk_start), hunk_end) -- a CLAMP,
-                # which silently relocated the finding to the nearest
-                # edge of this hunk while its message went on describing
-                # the line the model actually meant. Seen live: a
-                # quality finding reading "The division operation on
-                # line 13..." pinned to line 2, the SQL line, because
-                # that was this hunk's last line. propose_fix then
-                # generated a division-guard suggestion for it and its
-                # own is_line_in_diff guard passed -- line 2 IS in the
-                # diff -- so "Commit suggestion" would have replaced the
-                # SQL statement with division code.
-                #
-                # A line outside this hunk is a line this branch cannot
-                # place, so it is not placed. 0 means "no specific
-                # line": _inlineable already routes those to the summary
-                # body instead of an inline comment, and no suggestion
-                # can attach to one (is_line_in_diff rejects 0). The
-                # finding itself is still reported in full -- the
-                # observation is usually real, only its coordinates are
-                # not.
-                logger.warning(
-                    "%s agent reported line %d for %s outside its own hunk (%d-%d); "
-                    "demoting to the summary body rather than relocating it",
-                    agent, line, path, hunk_start, hunk_end,
-                )
-                line = 0
+            # The model's own line number is a claim, never the answer.
+            # It used to be min(max(line, hunk_start), hunk_end) -- a
+            # CLAMP, which silently relocated the finding to the nearest
+            # edge of this hunk while its message went on describing the
+            # line the model actually meant. Seen live: a quality finding
+            # reading "The division operation on line 13..." pinned to
+            # line 2, the SQL line, because that was this hunk's last
+            # line. propose_fix then generated a division-guard
+            # suggestion for it and its own is_line_in_diff guard passed
+            # -- line 2 IS in the diff -- so "Commit suggestion" would
+            # have replaced the SQL statement with division code.
+            #
+            # Dropping the clamp stopped the relocation but left the
+            # claim itself unchecked: a line inside the hunk was taken at
+            # face value, which is exactly what line 2 was. _verified_line
+            # checks it against the code the model quoted. 0 means "no
+            # specific line": _inlineable routes those to the summary
+            # body instead of an inline comment, and no suggestion can
+            # attach to one (is_line_in_diff rejects 0). The finding
+            # itself is still reported in full -- the observation is
+            # usually real, only its coordinates are not.
+            line = _verified_line(
+                claimed_line=int(item["line"]), echo=str(item.get("code", "")),
+                hunk_lines=hunk_content.splitlines(), hunk_start=hunk_start, hunk_end=hunk_end,
+                agent=agent, path=path,
+            )
             category = str(item.get("category", agent))
             message = str(item["message"])
         except (KeyError, ValueError, TypeError):
@@ -706,7 +821,7 @@ def _run_generative_agent(
     own content-hash cache first, and on a miss, call the agent, parse
     its direct findings, and queue a CacheWriteRecord.
     """
-    cache_key: CacheKey = (path, content_hash, agent)
+    cache_key: CacheKey = (path, content_hash, generative_cache_agent(agent))
     cached = hunk_cache_hits.get(cache_key)
     if cached is not None:
         hunk_cache_total.labels(agent=agent, outcome="hit").inc()
@@ -726,7 +841,9 @@ def _run_generative_agent(
         return {"node_latencies": [node_latency]}
 
     items = _parse_json_array(result.raw_text, f"{path}:{hunk_start}-{hunk_end}", agent)
-    findings = _parse_direct_findings(items, path, agent, hunk_start, hunk_end, max_severity, max_findings)
+    findings = _parse_direct_findings(
+        items, path, agent, hunk_start, hunk_end, hunk_content, max_severity, max_findings,
+    )
 
     return {
         "findings": findings,
@@ -735,7 +852,8 @@ def _run_generative_agent(
         "estimated_cost_usd": result.estimated_cost_usd,
         "node_latencies": [node_latency],
         "cache_writes": [CacheWriteRecord(
-            owner=owner, repo=repo, path=path, content_hash=content_hash, agent=agent,
+            owner=owner, repo=repo, path=path, content_hash=content_hash,
+            agent=generative_cache_agent(agent),
             findings=findings, tokens_in=result.tokens_in, tokens_out=result.tokens_out,
             estimated_cost_usd=result.estimated_cost_usd,
         )],

@@ -5,8 +5,11 @@ will independently decide to dispatch — this locks the two in step.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 from codeguard.diff.parse import hash_content
-from codeguard.pipeline.nodes import compute_cache_keys
+from codeguard.pipeline.models import CachedAgentResult
+from codeguard.pipeline.nodes import compute_cache_keys, review_quality, route_to_quality_reviews
 from tests.pipeline.conftest import make_finding
 
 
@@ -50,3 +53,31 @@ def test_compute_cache_keys_uses_the_same_hash_function_as_the_agents_do():
 
     security_hashes = {h for path, h, agent in keys if agent == "security"}
     assert security_hashes == {hash_content(content)}
+
+
+def test_the_generative_key_compute_cache_keys_prefetches_is_the_one_the_agent_reads():
+    """The two sides of the generative cache key, locked together.
+
+    compute_cache_keys prefetches; _run_generative_agent looks up and
+    writes. They derive the key independently, so a version bump applied
+    to one and not the other would not fail anything loudly — it would
+    just turn every quality/test call into a permanent cache miss, and
+    the only symptom would be a quietly larger API bill.
+    """
+    files = {"a.py": "def f(x):\n    return x + 1\n"}
+    patches = {"a.py": "@@ -1,2 +1,2 @@\n context"}
+    cached = make_finding(file="a.py", tool="quality-agent", message="from cache")
+
+    quality_keys = [k for k in compute_cache_keys(files, patches, [], ai_aware_enabled=False)
+                    if k[2].startswith("quality")]
+    assert len(quality_keys) == 1, "one hunk, one quality key"
+    hits = {quality_keys[0]: CachedAgentResult(findings=[cached])}
+
+    [send] = route_to_quality_reviews({"owner": "o", "repo": "r", "files": files,
+                                       "patches": patches, "hunk_cache_hits": hits})
+
+    with patch("codeguard.pipeline.nodes.call_agent") as mock_call:
+        result = review_quality(send.arg)
+
+    mock_call.assert_not_called()  # the prefetched key must be the key the agent looks up
+    assert result["findings"] == [cached]

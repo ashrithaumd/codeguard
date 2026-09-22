@@ -298,11 +298,12 @@ def test_a_reported_line_outside_the_hunk_is_demoted_not_relocated():
     that hunk was 1-22 and the reported line was 2, so the clamp never
     engaged.
     """
-    items = [{"line": 999, "severity": "MEDIUM", "category": "error-handling", "message": "out of range"}]
+    items = [{"line": 999, "code": "nothing in the hunk looks like this",
+              "severity": "MEDIUM", "category": "error-handling", "message": "out of range"}]
 
     [result] = _parse_direct_findings(
-        items, path=PATH, agent="quality",
-        hunk_start=1, hunk_end=SQL_LINE, max_severity=Severity.MEDIUM, max_findings=10,
+        items, path=PATH, agent="quality", hunk_start=1, hunk_end=SQL_LINE,
+        hunk_content=FILE_CONTENT, max_severity=Severity.MEDIUM, max_findings=10,
     )
 
     assert result.start_line == 0, "0 means 'no specific line', routed to the summary body"
@@ -310,13 +311,17 @@ def test_a_reported_line_outside_the_hunk_is_demoted_not_relocated():
 
 
 def test_the_real_pr5_hunk_leaves_every_relevant_line_untouched():
-    """Pins the fact that makes the clamp irrelevant to PR #5."""
-    items = [{"line": n, "severity": "MEDIUM", "category": "c", "message": f"about line {n}"}
+    """Pins the fact that makes the clamp irrelevant to PR #5: with an
+    echo that corroborates each line, all three survive untouched.
+    """
+    file_lines = FILE_CONTENT.splitlines()
+    items = [{"line": n, "code": file_lines[n - 1], "severity": "MEDIUM",
+              "category": "c", "message": f"about line {n}"}
              for n in (SQL_LINE, MULTIPLY_LINE, DIVISION_LINE)]
 
     results = _parse_direct_findings(
-        items, path=PATH, agent="quality",
-        hunk_start=1, hunk_end=22, max_severity=Severity.MEDIUM, max_findings=10,
+        items, path=PATH, agent="quality", hunk_start=1, hunk_end=22,
+        hunk_content=FILE_CONTENT, max_severity=Severity.MEDIUM, max_findings=10,
     )
 
     assert [f.start_line for f in results] == [SQL_LINE, MULTIPLY_LINE, DIVISION_LINE]
@@ -405,9 +410,10 @@ def test_every_finding_parse_direct_findings_builds_is_model_located():
     """
     for agent in ("quality", "test"):
         results = _parse_direct_findings(
-            [{"line": 1, "severity": "MEDIUM", "category": "c", "message": "m"}],
+            [{"line": 1, "code": FILE_CONTENT.splitlines()[0], "severity": "MEDIUM",
+              "category": "c", "message": "m"}],
             path=PATH, agent=agent, hunk_start=1, hunk_end=22,
-            max_severity=Severity.MEDIUM, max_findings=10,
+            hunk_content=FILE_CONTENT, max_severity=Severity.MEDIUM, max_findings=10,
         )
         assert results and all(_is_model_located(f) for f in results)
 
@@ -683,3 +689,75 @@ def test_duplicate_detection_ignores_a_blank_line_overlap():
 
     assert not _duplicates_the_lines_below(file_lines, 2, "    x = 2\n")
     assert _duplicates_the_lines_below(file_lines, 2, "    x = 2\n\ndef g():")
+
+
+# --- generative findings must echo the line they mean -------------------
+
+
+def _quality_findings(items, hunk_content=FILE_CONTENT, hunk_start=1, hunk_end=22):
+    return _parse_direct_findings(
+        items, path=PATH, agent="quality", hunk_start=hunk_start, hunk_end=hunk_end,
+        hunk_content=hunk_content, max_severity=Severity.MEDIUM, max_findings=10,
+    )
+
+
+def test_the_live_case_a_division_finding_claimed_on_the_sql_line():
+    """The exact production input, one stage earlier than
+    test_the_live_case_a_division_fix_generated_for_the_sql_line_is_dropped
+    catches it: the quality agent claims line 2 for a finding about the
+    division. Quoting the division line relocates it to line 15 — the
+    file, not the model, decides.
+    """
+    [result] = _quality_findings([{
+        "line": SQL_LINE,
+        "code": "        return a / b",
+        "severity": "MEDIUM", "category": "error-handling",
+        "message": "The division operation on line 13 lacks protection against division by zero.",
+    }])
+
+    assert result.start_line == DIVISION_LINE
+    assert result.start_line != SQL_LINE, "never the SQL line"
+
+
+def test_the_live_case_with_an_unquotable_echo_lands_in_the_summary_body():
+    """The same claim, but the model quotes something that isn't in the
+    hunk at all. There is nothing to place it by, so it is not placed —
+    and specifically it does NOT keep the line 2 it asked for.
+    """
+    [result] = _quality_findings([{
+        "line": SQL_LINE,
+        "code": "return a / b if b else None",
+        "severity": "MEDIUM", "category": "error-handling",
+        "message": "The division operation on line 13 lacks protection against division by zero.",
+    }])
+
+    assert result.start_line == 0
+    assert result.start_line != SQL_LINE, "never the SQL line"
+    assert "division" in result.message, "the observation survives, only its coordinates don't"
+
+
+def test_the_live_case_never_lands_on_the_sql_line_whatever_the_echo():
+    """The property the whole change exists for, over every echo the
+    model could plausibly have returned for that finding: the division
+    line, an unquotable line, no echo, and the SQL line itself.
+
+    Only an echo of the SQL line's own text can put a finding on line 2,
+    and then the finding really is about line 2.
+    """
+    file_lines = FILE_CONTENT.splitlines()
+    message = "The division operation on line 13 lacks protection against division by zero."
+
+    for echo, expected in [
+        ("        return a / b", DIVISION_LINE),          # quotes the division
+        ("return a / b", DIVISION_LINE),                  # same, unindented
+        ("no such line anywhere", 0),                     # quotes nothing real
+        ("", 0),                                          # quotes nothing at all
+        (file_lines[SQL_LINE - 1], SQL_LINE),             # genuinely about line 2
+    ]:
+        [result] = _quality_findings([{
+            "line": SQL_LINE, "code": echo, "severity": "MEDIUM",
+            "category": "error-handling", "message": message,
+        }])
+        assert result.start_line == expected, f"echo {echo!r} should land on {expected}"
+        if echo != file_lines[SQL_LINE - 1]:
+            assert result.start_line != SQL_LINE

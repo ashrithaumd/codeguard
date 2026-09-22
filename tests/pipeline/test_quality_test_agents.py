@@ -11,7 +11,13 @@ from unittest.mock import patch
 
 from codeguard.pipeline.llm_call import AgentCallResult
 from codeguard.pipeline.models import CachedAgentResult
-from codeguard.pipeline.nodes import review_quality, review_test, route_to_quality_reviews, route_to_test_reviews
+from codeguard.pipeline.nodes import (
+    generative_cache_agent,
+    review_quality,
+    review_test,
+    route_to_quality_reviews,
+    route_to_test_reviews,
+)
 from codeguard.severity import Severity
 from tests.pipeline.conftest import make_finding
 
@@ -63,7 +69,7 @@ def test_route_to_test_reviews_uses_the_same_hunks():
 
 
 def test_review_quality_parses_findings_from_model_output():
-    items = [{"line": 1, "severity": "low", "category": "naming", "message": "single-letter parameter name"}]
+    items = [{"line": 1, "code": "def f(x):", "severity": "low", "category": "naming", "message": "single-letter parameter name"}]
 
     with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)):
         result = review_quality(_hunk_state())
@@ -87,7 +93,8 @@ def test_review_quality_demotes_a_line_number_outside_the_hunk_range():
     A line this branch cannot place is not placed. 0 routes the finding
     to the summary body, where it is still reported in full.
     """
-    items = [{"line": 999, "severity": "low", "category": "naming", "message": "out of range"}]
+    items = [{"line": 999, "code": "nothing like this", "severity": "low",
+              "category": "naming", "message": "out of range"}]
 
     with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)):
         result = review_quality(_hunk_state(start_line=10, end_line=15))
@@ -95,6 +102,95 @@ def test_review_quality_demotes_a_line_number_outside_the_hunk_range():
     f = result["findings"][0]
     assert f.start_line == 0
     assert f.message == "out of range"   # kept, not dropped
+
+
+def test_review_quality_demotes_a_finding_with_no_line_echo():
+    """The `code` echo is what places a finding now, so a response that
+    omits it has nothing to place the finding by — even when its line
+    number is perfectly plausible.
+    """
+    items = [{"line": 1, "severity": "low", "category": "naming", "message": "no echo"}]
+
+    with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)):
+        result = review_quality(_hunk_state())
+
+    f = result["findings"][0]
+    assert f.start_line == 0
+    assert f.message == "no echo"
+
+
+def test_review_quality_relocates_a_finding_to_the_line_it_quoted():
+    """The model's line number and its echo disagree; the file settles
+    it. Not the old clamp: that moved findings to a hunk edge on no
+    evidence, this moves one to the single line whose text the model
+    itself quoted.
+    """
+    items = [{"line": 1, "code": "return x + 1", "severity": "low",
+              "category": "naming", "message": "about the return"}]
+
+    with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)):
+        result = review_quality(_hunk_state())
+
+    assert result["findings"][0].start_line == 2
+
+
+def test_review_quality_demotes_when_the_echo_is_ambiguous():
+    """The echo matches two lines and the claimed line is neither, so
+    relocating would mean picking one — it fails closed instead.
+    """
+    content = "x = compute()\ny = 1\nx = compute()\n"
+    items = [{"line": 2, "code": "x = compute()", "severity": "low",
+              "category": "duplication", "message": "duplicated call"}]
+
+    with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)):
+        result = review_quality(_hunk_state(content=content, start_line=1, end_line=3))
+
+    assert result["findings"][0].start_line == 0
+
+
+def test_review_quality_keeps_a_line_its_echo_corroborates():
+    """Ambiguity only matters when a line would have to be picked FOR
+    the model. Here the claimed line is itself one of the matches, so
+    the claim is corroborated and there is nothing to resolve — the
+    duplicate elsewhere is irrelevant.
+    """
+    content = "x = compute()\ny = 1\nx = compute()\n"
+    items = [{"line": 3, "code": "x = compute()", "severity": "low",
+              "category": "duplication", "message": "duplicated call"}]
+
+    with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)):
+        result = review_quality(_hunk_state(content=content, start_line=1, end_line=3))
+
+    assert result["findings"][0].start_line == 3
+
+
+def test_review_quality_echo_match_ignores_indentation():
+    """The model is locating a line, not reproducing it for replacement
+    the way the fix agent is, so leading whitespace it didn't copy
+    exactly must not cost a correct location.
+    """
+    items = [{"line": 2, "code": "    return x + 1", "severity": "low",
+              "category": "naming", "message": "indented echo"}]
+
+    with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)):
+        result = review_quality(_hunk_state())
+
+    assert result["findings"][0].start_line == 2
+
+
+def test_review_quality_demotes_everything_from_a_degraded_hunk():
+    """build_hunks falls back to patch-only context (start_line/end_line
+    0) when a file's content fetch fails. There are no file line numbers
+    to verify an echo against, so nothing can be placed from it.
+    """
+    items = [{"line": 1, "code": "def f(x):", "severity": "low",
+              "category": "naming", "message": "degraded"}]
+
+    with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)):
+        result = review_quality(_hunk_state(start_line=0, end_line=0))
+
+    assert result["findings"][0].start_line == 0
+    assert result["findings"][0].message == "degraded"
 
 
 def test_review_quality_empty_array_means_no_findings_no_fallback():
@@ -118,7 +214,7 @@ def test_review_test_call_failure_produces_no_findings_and_no_crash():
 
 def test_review_test_hunk_cache_hit_skips_the_call():
     cached_finding = make_finding(file="a.py", rule_id="test.coverage-gap", tool="test-agent", message="cached")
-    hits = {("a.py", "abc123", "test"): CachedAgentResult(findings=[cached_finding])}
+    hits = {("a.py", "abc123", generative_cache_agent("test")): CachedAgentResult(findings=[cached_finding])}
 
     with patch("codeguard.pipeline.nodes.call_agent") as mock_call:
         result = review_test(_hunk_state() | {"hunk_cache_hits": hits})
@@ -130,7 +226,7 @@ def test_review_test_hunk_cache_hit_skips_the_call():
 # --- Noise budget (Quality/Test are the only ungrounded agents) ---
 
 def test_review_quality_parses_confidence_field():
-    items = [{"line": 1, "severity": "low", "category": "naming", "message": "x", "confidence": 0.4}]
+    items = [{"line": 1, "code": "def f(x):", "severity": "low", "category": "naming", "message": "x", "confidence": 0.4}]
 
     with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)):
         result = review_quality(_hunk_state())
@@ -139,7 +235,7 @@ def test_review_quality_parses_confidence_field():
 
 
 def test_review_quality_missing_confidence_defaults_to_1():
-    items = [{"line": 1, "severity": "low", "category": "naming", "message": "x"}]
+    items = [{"line": 1, "code": "def f(x):", "severity": "low", "category": "naming", "message": "x"}]
 
     with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)):
         result = review_quality(_hunk_state())
@@ -148,7 +244,7 @@ def test_review_quality_missing_confidence_defaults_to_1():
 
 
 def test_review_quality_clamps_confidence_into_0_1_range():
-    items = [{"line": 1, "severity": "low", "category": "naming", "message": "a", "confidence": 5.0}]
+    items = [{"line": 1, "code": "def f(x):", "severity": "low", "category": "naming", "message": "a", "confidence": 5.0}]
 
     with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)):
         result = review_quality(_hunk_state())
@@ -159,7 +255,7 @@ def test_review_quality_clamps_confidence_into_0_1_range():
 def test_review_quality_clamps_severity_to_settings_max_severity():
     """An LLM's own opinion is never HIGH/CRITICAL, no matter what it
     reports — settings.quality_test_max_severity defaults to MEDIUM."""
-    items = [{"line": 1, "severity": "critical", "category": "structure", "message": "x"}]
+    items = [{"line": 1, "code": "def f(x):", "severity": "critical", "category": "structure", "message": "x"}]
 
     with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)):
         result = review_quality(_hunk_state())
@@ -169,11 +265,11 @@ def test_review_quality_clamps_severity_to_settings_max_severity():
 
 def test_review_quality_caps_findings_per_hunk_keeping_the_most_severe_and_confident():
     items = [
-        {"line": 1, "severity": "low", "category": "naming", "message": "1", "confidence": 0.9},
-        {"line": 1, "severity": "medium", "category": "naming", "message": "2", "confidence": 0.9},
-        {"line": 1, "severity": "low", "category": "naming", "message": "3", "confidence": 0.1},
-        {"line": 1, "severity": "low", "category": "naming", "message": "4", "confidence": 0.5},
-        {"line": 1, "severity": "low", "category": "naming", "message": "5", "confidence": 0.6},
+        {"line": 1, "code": "def f(x):", "severity": "low", "category": "naming", "message": "1", "confidence": 0.9},
+        {"line": 1, "code": "def f(x):", "severity": "medium", "category": "naming", "message": "2", "confidence": 0.9},
+        {"line": 1, "code": "def f(x):", "severity": "low", "category": "naming", "message": "3", "confidence": 0.1},
+        {"line": 1, "code": "def f(x):", "severity": "low", "category": "naming", "message": "4", "confidence": 0.5},
+        {"line": 1, "code": "def f(x):", "severity": "low", "category": "naming", "message": "5", "confidence": 0.6},
     ]
 
     with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)):
@@ -196,7 +292,7 @@ def test_review_quality_parses_a_fenced_response_with_trailing_prose():
     _JSON_FENCE_RE docstring."""
     raw_text = (
         '```json\n'
-        '[{"line": 1, "severity": "low", "category": "naming", "message": "single-letter names", "confidence": 0.8}]\n'
+        '[{"line": 1, "code": "def f(x):", "severity": "low", "category": "naming", "message": "single-letter names", "confidence": 0.8}]\n'
         '```\n\n'
         'The hunk contains a simple function. The comments appear to be placeholder/removed content '
         'markers, but they do not affect the actual code logic.'
@@ -223,7 +319,7 @@ def test_review_quality_pins_temperature_to_zero():
     flipped between runs (quality.complexity / quality.structure / not
     flagged at all) — traced to no call anywhere pinning temperature,
     so every call ran at the API's own default (1.0), not 0."""
-    items = [{"line": 1, "severity": "low", "category": "naming", "message": "x"}]
+    items = [{"line": 1, "code": "def f(x):", "severity": "low", "category": "naming", "message": "x"}]
 
     with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)) as mock_call:
         review_quality(_hunk_state())
