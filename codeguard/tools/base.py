@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -104,6 +105,37 @@ def _stderr_tail(proc: subprocess.CompletedProcess | None) -> str:
     return f" stderr_tail={stderr.strip()[-_STDERR_TAIL_CHARS:]!r}"
 
 
+def _exit_status(proc: subprocess.CompletedProcess | None) -> str:
+    """The failing tool's exit code and how much it managed to write.
+
+    This module deliberately never GATES on the exit code — Semgrep,
+    Bandit and Ruff all exit non-zero when they *find issues*, which is
+    success (see the module docstring). Logging it on the failure path
+    is a different thing from branching on it, and it is the one signal
+    that separates the failure modes that otherwise look identical here.
+
+    A negative code is a signal, and -9 (SIGKILL) is what an OOM kill
+    looks like from inside a memory-capped container: the process is
+    gone with no stdout and no stderr to explain itself. That exact
+    shape — empty stdout, empty stderr, a JSONDecodeError from
+    parse_output standing in for a cause — is what made the 2026-09-22
+    semgrep failure on codeguard-playground PR #5 undiagnosable after
+    the fact. `stdout_len` distinguishes "wrote nothing at all" from
+    "wrote something unparseable"; it is a LENGTH, never the content,
+    because tool stdout carries matched source lines.
+    """
+    if proc is None:
+        return " exit=<no subprocess result: failed before or during launch>"
+    code = proc.returncode
+    detail = f" exit={code}"
+    if code is not None and code < 0:
+        try:
+            detail += f" (killed by {signal.Signals(-code).name})"
+        except ValueError:
+            detail += f" (killed by signal {-code})"
+    return f"{detail} stdout_len={len(proc.stdout or '')}"
+
+
 def _platform_hint(tool_name: str) -> str:
     """Names a known-unfixable platform failure instead of letting it
     read as a transient crash. Semgrep's CLI is a Python script that
@@ -176,8 +208,8 @@ def run_tool_on_pr(
         # "semgrep crashed" line named neither the consequence nor the
         # cause.
         logger.error(
-            "%s DID NOT RUN on %d file(s) -- this review has no %s coverage. error=%r%s%s",
-            tool_name, len(files), tool_name, exc, _stderr_tail(proc), hint,
+            "%s DID NOT RUN on %d file(s) -- this review has no %s coverage. error=%r%s%s%s",
+            tool_name, len(files), tool_name, exc, _exit_status(proc), _stderr_tail(proc), hint,
             exc_info=True,
         )
         return [_unavailable_finding(tool_name, f"{exc}{hint}")]
