@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Reviews · CodeGuard{% endblock %}
+
+{% block content %}
+{% set totals = namespace(cost=0, findings=0, fixes=0) %}
+{% for r in reviews %}
+  {% set totals.cost = totals.cost + (r.estimated_cost_usd or 0) %}
+  {% set totals.findings = totals.findings + (r.findings_total or 0) %}
+  {% set totals.fixes = totals.fixes + (r.fix_suggestion_count or 0) %}
+{% endfor %}
+
+<div class="page-head">
+  <div>
+    <h1>Reviews</h1>
+    <div class="sub">
+      {% if principal %}
+        Every review you can see, newest first.
+      {% else %}
+        Public repositories only. Sign in to see private ones.
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+{% if reviews %}
+<div class="stats">
+  <div class="stat">
+    <div class="k">Reviews</div>
+    <div class="v">{{ total }}</div>
+  </div>
+  <div class="stat">
+    <div class="k">Repositories</div>
+    <div class="v">{{ repos|length }}</div>
+  </div>
+  <div class="stat">
+    <div class="k">Findings <small>this page</small></div>
+    <div class="v">{{ totals.findings }}</div>
+  </div>
+  <div class="stat">
+    <div class="k">Fix suggestions <small>this page</small></div>
+    <div class="v">{{ totals.fixes }}</div>
+  </div>
+  <div class="stat">
+    <div class="k">Cost <small>this page</small></div>
+    <div class="v">{{ m.cost(totals.cost) }}</div>
+  </div>
+</div>
+{% endif %}
+
+<div class="panel">
+  <div class="panel-head">
+    <h2>All reviews</h2>
+    <span class="count">{{ total }}</span>
+    <span class="spacer"></span>
+    {{ m.mix_legend() }}
+  </div>
+
+  {% if not reviews %}
+    {% if principal %}
+      {{ m.empty_state("No reviews yet",
+         "A review appears here the moment CodeGuard finishes one. Open a pull request on an installed repository to produce the first.") }}
+    {% else %}
+      {{ m.empty_state("Nothing public to show",
+         "No public repository has been reviewed yet. If you expect to see private repositories here, sign in.", "search") }}
+    {% endif %}
+  {% else %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Repository</th>
+          <th>PR</th>
+          <th>Gate</th>
+          <th class="num">Findings</th>
+          <th>Mix</th>
+          <th class="num">Inline</th>
+          <th class="num">Fixes</th>
+          <th class="num">Files</th>
+          <th class="num">Cost</th>
+          <th class="num">Time</th>
+          <th class="num">Reviewed</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in reviews %}
+        <tr class="row-link" data-href="/dashboard/reviews/{{ r.job_id }}">
+          <td>
+            <div class="repo-cell">
+              <span class="owner">{{ r.owner }}/</span><a class="name" href="/dashboard/repos/{{ r.owner }}/{{ r.repo }}">{{ r.repo }}</a>
+              {% if r.private %}<span class="pill neutral">Private</span>{% endif %}
+            </div>
+          </td>
+          <td class="nowrap">
+            <a href="/dashboard/reviews/{{ r.job_id }}" class="pr">#{{ r.pr_number }}</a>
+            <span class="sha">{{ r.head_sha[:7] }}</span>
+          </td>
+          <td>{{ m.gate_pill(r.check_conclusion) }}</td>
+          <td class="num">{{ r.findings_total }}</td>
+          <td>{{ m.findings_mix(r) }}</td>
+          <td class="num dim">{{ r.inline_count }}</td>
+          <td class="num">{{ r.fix_suggestion_count or "—" }}</td>
+          <td class="num dim">
+            {{ r.files_reviewed }}<span class="dim">/{{ r.files_seen }}</span>
+            {% if r.budget_exceeded %}<span class="pill warn" title="Diff truncated by the budget">!</span>{% endif %}
+          </td>
+          <td class="num">{{ m.cost(r.estimated_cost_usd) }}</td>
+          <td class="num dim">{{ "%.1f"|format(r.duration_s or 0) }}s</td>
+          <td class="num dim nowrap">{{ m.when(r.created_at) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if page > 1 or has_next %}
+  <div class="panel-head" style="border-bottom: 0; border-top: 1px solid var(--border);">
+    <span class="count">Page {{ page }}</span>
+    <span class="spacer"></span>
+    {% if page > 1 %}<a class="btn" href="/dashboard?page={{ page - 1 }}">Previous</a>{% endif %}
+    {% if has_next %}<a class="btn" href="/dashboard?page={{ page + 1 }}">Next</a>{% endif %}
+  </div>
+  {% endif %}
+  {% endif %}
+</div>
+
+{% if repos %}
+<div class="panel">
+  <div class="panel-head">
+    <h2>Repositories</h2>
+    <span class="count">{{ repos|length }}</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Repository</th>
+          <th class="num">Reviews</th>
+          <th class="num">Findings</th>
+          <th class="num">Total cost</th>
+          <th class="num">Last reviewed</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for rp in repos %}
+        <tr class="row-link" data-href="/dashboard/repos/{{ rp.owner }}/{{ rp.repo }}">
+          <td>
+            <div class="repo-cell">
+              <span class="owner">{{ rp.owner }}/</span><span class="name">{{ rp.repo }}</span>
+              {% if rp.private %}<span class="pill neutral">Private</span>{% endif %}
+            </div>
+          </td>
+          <td class="num">{{ rp.review_count }}</td>
+          <td class="num">{{ rp.total_findings }}</td>
+          <td class="num">{{ m.cost(rp.total_cost) }}</td>
+          <td class="num dim nowrap">{{ m.when(rp.last_reviewed) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endif %}
+{% endblock %}

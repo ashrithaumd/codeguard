@@ -87,6 +87,12 @@ async def webhook(request: Request, response: Response):
                     "installation_id": payload["installation"]["id"],
                     "owner": payload["repository"]["owner"]["login"],
                     "repo": payload["repository"]["name"],
+                    # Captured here, at the only point GitHub tells us,
+                    # so the review row can record it (migrations/007).
+                    # Defaults to True when absent: an unknown visibility
+                    # is treated as private, since the dashboard renders
+                    # findings, file paths and source fragments.
+                    "private": bool(payload["repository"].get("private", True)),
                     "pr_number": pr_number,
                     "action": action,
                     "head_sha": payload["pull_request"]["head"]["sha"],

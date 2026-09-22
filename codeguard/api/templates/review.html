@@ -1,0 +1,207 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}{{ review.owner }}/{{ review.repo }} #{{ review.pr_number }} · CodeGuard{% endblock %}
+
+{% block crumbs %}
+  <a href="/dashboard">Reviews</a>
+  <span class="sep">/</span>
+  <a href="/dashboard/repos/{{ review.owner }}/{{ review.repo }}">{{ review.owner }}/{{ review.repo }}</a>
+  <span class="sep">/</span>
+  <strong>#{{ review.pr_number }}</strong>
+{% endblock %}
+
+{% block content %}
+{% set findings = review.findings_json or [] %}
+{% set dismissed = review.dismissed_json or [] %}
+{% set fixes = review.fix_suggestions_json or [] %}
+{% set filtered = review.filtered_files_json or [] %}
+{% set failures = review.verdict_call_failures_json or [] %}
+{% set fix_by_fp = {} %}
+{% for f in fixes %}{% set _ = fix_by_fp.update({f.fingerprint: f}) %}{% endfor %}
+
+<div class="page-head">
+  <div>
+    <h1>{{ review.owner }}/{{ review.repo }} <span class="dim">#{{ review.pr_number }}</span></h1>
+    <div class="sub">
+      {{ m.gate_pill(review.check_conclusion) }}
+      <span class="sha">{{ review.head_sha[:12] }}</span>
+      · {{ review.action }}
+      · {{ m.when(review.created_at) }}
+    </div>
+  </div>
+</div>
+
+{% if review.budget_exceeded %}
+<div class="callout warn">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+    <path d="M12 9v4M12 17h.01"></path><path d="M10.3 3.9L2.4 17.5A2 2 0 0 0 4.1 20.5h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path>
+  </svg>
+  <div>
+    <div class="title">Diff truncated — {{ review.files_reviewed }} of {{ review.files_seen }} changed files reviewed</div>
+    <div class="body">The rest exceeded the per-PR budget and were not looked at. Everything below describes the reviewed portion only.</div>
+  </div>
+</div>
+{% endif %}
+
+{% if failures %}
+<div class="callout warn">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+    <circle cx="12" cy="12" r="9"></circle><path d="M12 8v4.5M12 16h.01"></path>
+  </svg>
+  <div>
+    <div class="title">{{ failures|length }} verdict call(s) did not complete</div>
+    <div class="body">
+      {% for f in failures %}{{ f.path }} ({{ f.agent }}): {{ f.reason }}{% if not loop.last %} · {% endif %}{% endfor %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<div class="detail-grid">
+  <div>
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Findings</h2>
+        <span class="count">{{ findings|length }}</span>
+        <span class="spacer"></span>
+        {{ m.mix_legend() }}
+      </div>
+      {% if not findings %}
+        {{ m.empty_state("No findings",
+           "CodeGuard reviewed this pull request and found nothing to report. That is a result, not an absence of one.", "check") }}
+      {% else %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Severity</th>
+              <th>Location</th>
+              <th>Rule</th>
+              <th class="col-msg">Message</th>
+              <th class="num">Fix</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for f in findings %}
+            <tr>
+              <td>{{ m.severity(f.severity) }}</td>
+              <td class="loc">
+                {{ f.file }}{% if f.start_line %}:{{ f.start_line }}{% else %}<span class="dim"> (no line)</span>{% endif %}
+              </td>
+              <td>
+                <div class="finding-rule">{{ f.rule_id }}</div>
+                <div class="dim" style="font-size:11.5px">{{ f.source_tool }}</div>
+              </td>
+              <td class="finding-msg">{{ f.message }}</td>
+              <td class="num">
+                {% if fix_by_fp.get(f.fingerprint) %}
+                  <span class="pill ok"><span class="dot"></span>Yes</span>
+                {% else %}
+                  <span class="dim">—</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% endif %}
+    </div>
+
+    {% if dismissed %}
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Checked and dismissed</h2>
+        <span class="count">{{ dismissed|length }}</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Location</th><th>Rule</th><th>Why it was not flagged</th></tr></thead>
+          <tbody>
+            {% for d in dismissed %}
+            <tr>
+              <td class="loc">{{ d.file }}{% if d.start_line %}:{{ d.start_line }}{% endif %}</td>
+              <td class="finding-rule">{{ d.rule_id }}</td>
+              <td class="finding-msg dim">{{ d.reason }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+
+    <div class="panel">
+      <div class="panel-head"><h2>Summary posted to GitHub</h2></div>
+      {# Rendered as TEXT. This is Markdown that GitHub rendered inside
+         its own sandbox with its own sanitiser; we do not inherit that. #}
+      <div class="prose">{{ review.summary_body }}</div>
+    </div>
+
+    {% if filtered %}
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Files not reviewed</h2>
+        <span class="count">{{ filtered|length }}</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Path</th><th>Reason</th></tr></thead>
+          <tbody>
+            {% for f in filtered %}
+            <tr><td class="loc">{{ f.path }}</td><td class="dim">{{ f.reason }}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  <aside>
+    <div class="panel">
+      <div class="panel-head"><h2>Economics</h2></div>
+      <dl class="kv">
+        <dt>Cost</dt><dd>{{ m.cost(review.estimated_cost_usd) }}</dd>
+        <dt>Tokens in</dt><dd>{{ "{:,}".format(review.tokens_in or 0) }}</dd>
+        <dt>Tokens out</dt><dd>{{ "{:,}".format(review.tokens_out or 0) }}</dd>
+        <dt>Duration</dt><dd>{{ "%.1f"|format(review.duration_s or 0) }}s</dd>
+      </dl>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Composition</h2></div>
+      <dl class="kv">
+        <dt>Verdict-confirmed</dt><dd>{{ review.findings_verdict_confirmed }}</dd>
+        <dt>Generative</dt><dd>{{ review.findings_generative }}</dd>
+        <dt>Deterministic</dt><dd>{{ review.findings_deterministic }}</dd>
+        <dt>Unverified</dt><dd>{{ review.findings_unverified }}</dd>
+        <dt>Dismissed</dt><dd>{{ review.dismissed_count }}</dd>
+        <dt>Posted inline</dt><dd>{{ review.inline_count }}</dd>
+        <dt>Fix suggestions</dt><dd>{{ review.fix_suggestion_count }}</dd>
+      </dl>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head"><h2>Configuration</h2></div>
+      <dl class="kv">
+        <dt>Gate threshold</dt><dd>{{ m.severity(review.gate_threshold) }}</dd>
+        <dt>Fix threshold</dt><dd>{{ m.severity(review.fix_threshold) }}</dd>
+        <dt>Files reviewed</dt><dd>{{ review.files_reviewed }} / {{ review.files_seen }}</dd>
+        <dt>Visibility</dt><dd>{{ "Private" if review.private else "Public" }}</dd>
+      </dl>
+    </div>
+
+    {% if review.node_latencies_json %}
+    <div class="panel">
+      <div class="panel-head"><h2>Node latency</h2></div>
+      <dl class="kv">
+        {% for n in review.node_latencies_json %}
+        <dt>{{ n.node }}</dt><dd>{{ "%.2f"|format(n.seconds or 0) }}s</dd>
+        {% endfor %}
+      </dl>
+    </div>
+    {% endif %}
+  </aside>
+</div>
+{% endblock %}

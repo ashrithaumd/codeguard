@@ -41,6 +41,30 @@ class Settings(BaseSettings):
     github_private_key_path: str = ""
     github_private_key: str = ""
 
+    # Bearer token guarding /metrics. Empty = unauthenticated, which is
+    # what local compose and the Prometheus container rely on, and is
+    # also what production ran with until this was added — the endpoint
+    # was publicly reachable on the Container Apps ingress and served
+    # repo names, job counts and cost to anyone who asked. It is NOT
+    # behind EasyAuth, deliberately: EasyAuth would redirect Prometheus'
+    # scrape to a login page, so a token it can send as a header is the
+    # only gate that works for a machine client.
+    #
+    # Defaulting to "" rather than being required follows
+    # github_webhook_secret above: a local run must not need a secret to
+    # start. api/main.py logs a warning at startup when it is unset, so
+    # "open in production" is loud rather than silent.
+    metrics_auth_token: str = ""
+
+    # Dev-only override for the identity EasyAuth injects
+    # (X-MS-CLIENT-PRINCIPAL-NAME). Lets the dashboard's signed-in paths
+    # be exercised locally, where no EasyAuth sits in front. Read ONLY
+    # when dashboard_trust_dev_principal is also true, so setting a
+    # username alone can never spoof identity in a deployment that
+    # forgot to unset it.
+    dashboard_dev_principal: str = ""
+    dashboard_trust_dev_principal: bool = False
+
     # Global hard ceilings — operator-controlled, override-able via env
     # vars, but never per-repo. A repo's RepoConfig can only ask for
     # *less* than these, never more. See effective_budget().

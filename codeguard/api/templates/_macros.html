@@ -1,0 +1,70 @@
+{# Shared fragments. Every one of these renders stored data, so every
+   one of them relies on autoescape and none may use |safe. #}
+
+{% macro gate_pill(conclusion) -%}
+  {%- if conclusion == "success" -%}
+    <span class="pill ok"><span class="dot"></span>Passed</span>
+  {%- elif conclusion == "failure" -%}
+    <span class="pill warn"><span class="dot"></span>Blocked</span>
+  {%- else -%}
+    <span class="pill neutral"><span class="dot"></span>No check</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro severity(name) -%}
+  <span class="sev sev-{{ name }}"><span class="bar"></span>{{ name|title }}</span>
+{%- endmacro %}
+
+{#
+  Findings mix as one proportional bar. Percentages are computed here
+  rather than stored: the four buckets sum to findings_total by a CHECK
+  constraint in 006, so the ratio is always well-defined when total > 0.
+#}
+{% macro findings_mix(r) -%}
+  {%- set total = r.findings_total or 0 -%}
+  {%- if total > 0 -%}
+    <span class="mix" title="{{ r.findings_verdict_confirmed }} verdict-confirmed, {{ r.findings_generative }} generative, {{ r.findings_deterministic }} deterministic, {{ r.findings_unverified }} unverified">
+      <i class="m-conf" style="width: {{ (r.findings_verdict_confirmed / total * 100)|round(1) }}%"></i>
+      <i class="m-gen"  style="width: {{ (r.findings_generative / total * 100)|round(1) }}%"></i>
+      <i class="m-det"  style="width: {{ (r.findings_deterministic / total * 100)|round(1) }}%"></i>
+      <i class="m-unv"  style="width: {{ (r.findings_unverified / total * 100)|round(1) }}%"></i>
+    </span>
+  {%- else -%}
+    <span class="dim">—</span>
+  {%- endif -%}
+{%- endmacro %}
+
+{% macro mix_legend() -%}
+  <div class="legend">
+    <span><i style="background: var(--accent)"></i>Verdict-confirmed</span>
+    <span><i style="background: color-mix(in srgb, var(--accent) 42%, transparent)"></i>Generative</span>
+    <span><i style="background: var(--n-400)"></i>Deterministic</span>
+    <span><i style="background: color-mix(in srgb, var(--sev-medium) 70%, transparent)"></i>Unverified</span>
+  </div>
+{%- endmacro %}
+
+{% macro cost(v) -%}
+  ${{ "%.4f"|format(v or 0) }}
+{%- endmacro %}
+
+{% macro when(ts) -%}
+  <span title="{{ ts }}">{{ ts.strftime("%b %d, %H:%M") }}</span>
+{%- endmacro %}
+
+{% macro empty_state(title, body, glyph="inbox") -%}
+  <div class="state">
+    <svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      {% if glyph == "search" %}
+        <circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path>
+      {% elif glyph == "check" %}
+        <circle cx="12" cy="12" r="9"></circle><path d="M8.5 12.5l2.5 2.5 4.5-5"></path>
+      {% else %}
+        <path d="M3 13h5l1.5 3h5L16 13h5"></path>
+        <path d="M5.5 5h13l2.5 8v5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-5z"></path>
+      {% endif %}
+    </svg>
+    <div class="title">{{ title }}</div>
+    <div class="body">{{ body }}</div>
+  </div>
+{%- endmacro %}

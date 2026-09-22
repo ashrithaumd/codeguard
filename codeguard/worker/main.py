@@ -460,6 +460,9 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
         pool,
         job_id=job.id, owner=owner, repo=repo, pr_number=pr_number,
         head_sha=head_sha, action=payload.get("action", ""),
+        # Defaults to private when the job predates the webhook capturing
+        # it (migrations/007) — unknown visibility is treated as private.
+        private=bool(payload.get("private", True)),
         summary_body=final_state["summary"],
         check_conclusion=conclusion,
         gate_threshold=repo_config.gate_threshold.name,

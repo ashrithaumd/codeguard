@@ -88,6 +88,11 @@ services:
     restart: unless-stopped
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Gitignored; holds the bearer token for the Azure /metrics target.
+      # Created by hand to match the container app secret — see
+      # observability/prometheus.yml. Absent locally is fine: the two
+      # local targets need no token.
+      - ./observability/metrics-token:/etc/prometheus/metrics-token:ro
       - prometheus_data:/prometheus
     ports:
       - "9090:9090"

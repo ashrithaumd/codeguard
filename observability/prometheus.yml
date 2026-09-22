@@ -23,9 +23,25 @@ scrape_configs:
         labels:
           env: local
 
+  # The Azure target needs a bearer token; the two local targets do not.
+  # /metrics is on a public ingress there and used to answer anonymously,
+  # serving repo names, job counts and cost to anyone who asked. It is
+  # excluded from EasyAuth on purpose — EasyAuth would answer a scrape
+  # with a login redirect — so a token Prometheus can send as a header is
+  # the only gate that works for a machine client.
+  #
+  # The token lives in observability/metrics-token (gitignored). Create
+  # it with the same value as the container app's metrics-auth-token
+  # secret. Prometheus does no env-var interpolation in this file, which
+  # is why it is a file reference rather than ${VAR}. With no such file
+  # Prometheus fails this job loudly at startup rather than scraping
+  # unauthenticated and appearing to work.
   - job_name: codeguard-api-azure
     scheme: https
     metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/metrics-token
     static_configs:
       - targets: ["codeguard-api.ashyhill-c8f8312c.westus.azurecontainerapps.io"]
         labels:

@@ -2,10 +2,19 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
-from fastapi.responses import Response
+from fastapi import Depends, FastAPI, Request
+from fastapi.responses import JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from codeguard.api.auth import require_metrics_token
+from codeguard.api.routes.dashboard import (
+    STATIC_DIR,
+    asset_version,
+    router as dashboard_router,
+    templates,
+)
 from codeguard.api.routes.health import router as health_router
 from codeguard.api.routes.webhooks import router as webhooks_router
 from codeguard.config import get_settings
@@ -57,6 +66,24 @@ async def lifespan(app: FastAPI):
     logger.info("reaper started (interval=%ss, max_attempts=%d)",
                 settings.reaper_interval_seconds, settings.max_delivery_attempts)
 
+    # Loud, because the failure is invisible from the outside: an
+    # unauthenticated /metrics answers normally and looks healthy while
+    # serving repo names, job counts and cost to anyone who asks. It was
+    # publicly reachable on the Container Apps ingress until this was
+    # added. Expected to be empty in local compose, where Prometheus
+    # scrapes it over the compose network.
+    if not settings.metrics_auth_token:
+        logger.warning(
+            "METRICS_AUTH_TOKEN is not set — /metrics is UNAUTHENTICATED. Fine for local "
+            "compose; on a public ingress it exposes repo names, job counts and cost."
+        )
+    if settings.dashboard_trust_dev_principal:
+        logger.warning(
+            "DASHBOARD_TRUST_DEV_PRINCIPAL is on — dashboard identity is forced to %r and "
+            "the EasyAuth header is ignored. Never enable this in a deployment.",
+            settings.dashboard_dev_principal,
+        )
+
     try:
         yield
     finally:
@@ -71,9 +98,45 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="CodeGuard API", lifespan=lifespan)
 app.include_router(health_router)
 app.include_router(webhooks_router)
+app.include_router(dashboard_router)
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
-@app.get("/metrics")
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    """HTML error pages for the dashboard, JSON everywhere else.
+
+    Keyed on the path rather than on content negotiation: /webhook is
+    called by GitHub, which sends no useful Accept header, and a
+    browser-shaped HTML body in a webhook response would be actively
+    confusing in a delivery log.
+    """
+    if not request.url.path.startswith("/dashboard"):
+        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+
+    title, body = _ERROR_COPY.get(
+        exc.status_code,
+        ("Something went wrong", "That request could not be completed."),
+    )
+    return templates.TemplateResponse(
+        request=request, name="error.html", status_code=exc.status_code,
+        context={"status": exc.status_code, "title": title, "body": body,
+                 "principal": None, "asset_version": asset_version()},
+    )
+
+
+# 404 covers both "no such review" and "not yours" — routes/dashboard.py
+# answers 404 for both deliberately, so this copy must not hint at which.
+_ERROR_COPY = {
+    404: ("Not found",
+          "This review either does not exist or is not visible to you. "
+          "If it belongs to a private repository, sign in with a GitHub account that can access it."),
+    500: ("Something went wrong",
+          "The dashboard could not load this page. The error has been logged."),
+}
+
+
+@app.get("/metrics", dependencies=[Depends(require_metrics_token)])
 async def metrics(request: Request):
     await refresh_live_gauges(request.app.state.pool)
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
