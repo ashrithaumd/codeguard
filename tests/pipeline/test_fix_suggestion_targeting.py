@@ -40,7 +40,7 @@ Two independent causes:
      suggestion was generated for 2, it was posted on 2. No comparison of
      line numbers against each other can detect that. The only
      disagreement was between the suggestion's CONTENT and the code
-     actually at that line, which is what _echoes_the_findings_own_lines
+     actually at that line, which is what _matched_replacement_range
      now checks.
 """
 
@@ -54,9 +54,9 @@ from codeguard.pipeline.models import FixSuggestion
 from codeguard.pipeline.nodes import (
     _apply_fold,
     _breaks_a_file_that_parsed,
-    _echoes_the_findings_own_lines,
     _fold_cross_agent_duplicates,
     _is_model_located,
+    _matched_replacement_range,
     _parse_direct_findings,
     propose_fix,
 )
@@ -185,18 +185,18 @@ def test_echo_check_compares_against_the_findings_own_lines():
     file_lines = FILE_CONTENT.splitlines()
     sql = finding(line=SQL_LINE, severity=Severity.HIGH, tool="security", rule_id="B608", message="m")
 
-    assert _echoes_the_findings_own_lines(SQL_ORIGINAL, file_lines, sql)
-    assert _echoes_the_findings_own_lines(SQL_ORIGINAL + "   ", file_lines, sql), "trailing space is noise"
-    assert not _echoes_the_findings_own_lines("        return a / b", file_lines, sql)
-    assert not _echoes_the_findings_own_lines(SQL_ORIGINAL.lstrip(), file_lines, sql), "indentation matters"
-    assert not _echoes_the_findings_own_lines("", file_lines, sql)
+    assert _matched_replacement_range(SQL_ORIGINAL, file_lines, sql)
+    assert _matched_replacement_range(SQL_ORIGINAL + "   ", file_lines, sql), "trailing space is noise"
+    assert not _matched_replacement_range("        return a / b", file_lines, sql)
+    assert not _matched_replacement_range(SQL_ORIGINAL.lstrip(), file_lines, sql), "indentation matters"
+    assert not _matched_replacement_range("", file_lines, sql)
 
 
 def test_echo_check_rejects_a_line_outside_the_file():
     file_lines = FILE_CONTENT.splitlines()
     beyond = finding(line=9999, severity=Severity.LOW, tool="quality-agent", rule_id="q.x", message="m")
 
-    assert not _echoes_the_findings_own_lines("anything", file_lines, beyond)
+    assert not _matched_replacement_range("anything", file_lines, beyond)
 
 
 # --- cause 1: the fold destroying finding identity ----------------------
@@ -332,7 +332,7 @@ def test_a_correct_echo_does_not_make_an_unrelated_replacement_safe():
     returns is division code. The suggestion would still replace the SQL
     statement with `if b == 0: ... return a / b`.
 
-    _echoes_the_findings_own_lines answers "are you replacing the line
+    _matched_replacement_range answers "are you replacing the line
     you say you are?". It cannot answer "is what you are putting there
     related to that line at all?", because it never looks at
     `replacement`.
@@ -482,7 +482,8 @@ def test_the_parse_backstop_only_fires_on_the_parses_to_broken_transition():
 
     def check(content, file_lines, replacement, path=PATH):
         return _breaks_a_file_that_parsed(
-            path=path, content=content, file_lines=file_lines, finding=sql, replacement=replacement,
+            path=path, content=content, file_lines=file_lines,
+            start_line=sql.start_line, end_line=sql.start_line, replacement=replacement,
         )
 
     good = SQL_REPLACEMENT
@@ -498,12 +499,128 @@ def test_the_parse_backstop_has_no_opinion_on_a_non_python_file():
     """No parser means no opinion — never 'reject'. A .go or .ts file's
     suggestions go through on the echo check alone.
     """
-    f = Finding.create(
-        file="main.go", start_line=1, end_line=1, severity=Severity.HIGH,
-        source_tool="semgrep", rule_id="g.1", message="m",
-    )
-
     assert not _breaks_a_file_that_parsed(
         path="main.go", content="package main\n", file_lines=["package main"],
-        finding=f, replacement="func ( {{{",
+        start_line=1, end_line=1, replacement="func ( {{{",
     )
+
+
+# --- a fix wider than the finding that prompted it ----------------------
+
+# The real shape of the B608 fix: Bandit flags line 2 (the string being
+# built), but parameterizing it also has to change line 3's execute call.
+SQL_ORIGINAL_2LINE = SQL_ORIGINAL + "\n    cursor.execute(query)"
+SQL_REPLACEMENT_2LINE = (
+    '    query = "SELECT * FROM users WHERE email = %s"\n'
+    "    cursor.execute(query, (email,))"
+)
+
+
+def test_an_echo_wider_than_the_finding_survives_and_reports_its_own_range():
+    """The live regression: every run dropped this suggestion because the
+    echo covered lines 2-3 while the B608 finding covers only line 2.
+    """
+    sql = finding(
+        line=SQL_LINE, severity=Severity.HIGH, tool="security", rule_id="B608",
+        message="SQL injection vulnerability confirmed.",
+    )
+
+    out = run_propose_fix([sql], [{
+        "fingerprint": sql.fingerprint,
+        "original": SQL_ORIGINAL_2LINE,
+        "replacement": SQL_REPLACEMENT_2LINE,
+    }])
+
+    [suggestion] = out["fix_suggestions"]
+    assert suggestion.target_line == SQL_LINE
+    assert suggestion.target_end_line == SQL_LINE + 1, "the range it actually replaces, not the finding's"
+    assert "cursor.execute(query, (email,))" in suggestion.suggestion_body
+
+
+def test_a_wider_echo_is_still_matched_verbatim():
+    """Extending past the finding buys the agent no latitude about what
+    the code says — the whole range is still compared to the file.
+    """
+    sql = finding(line=SQL_LINE, severity=Severity.HIGH, tool="security", rule_id="B608", message="m")
+    file_lines = FILE_CONTENT.splitlines()
+
+    assert _matched_replacement_range(SQL_ORIGINAL_2LINE, file_lines, sql) == SQL_LINE + 1
+    assert _matched_replacement_range(SQL_ORIGINAL + "\n    cursor.execute(wrong)", file_lines, sql) is None
+
+
+def test_an_echo_narrower_than_the_finding_is_rejected():
+    """Widening is a real need; narrowing gains nothing, so it stays
+    rejected rather than being loosened by accident along with it.
+    """
+    spans_two = Finding.create(
+        file=PATH, start_line=SQL_LINE, end_line=SQL_LINE + 1, severity=Severity.HIGH,
+        source_tool="security", rule_id="B608", message="m",
+    )
+    file_lines = FILE_CONTENT.splitlines()
+
+    assert _matched_replacement_range(SQL_ORIGINAL_2LINE, file_lines, spans_two) == SQL_LINE + 1
+    assert _matched_replacement_range(SQL_ORIGINAL, file_lines, spans_two) is None
+
+
+def test_a_range_running_past_the_diff_is_dropped():
+    """The whole replaced range has to be in the diff, not just its first
+    line — GitHub rejects the comment otherwise, and a range overrunning
+    the hunk would rewrite lines the PR never touched.
+    """
+    sql = finding(line=SQL_LINE, severity=Severity.HIGH, tool="security", rule_id="B608", message="m")
+    result = AgentCallResult(
+        raw_text=json.dumps([{
+            "fingerprint": sql.fingerprint,
+            "original": SQL_ORIGINAL_2LINE,
+            "replacement": SQL_REPLACEMENT_2LINE,
+        }]),
+        tokens_in=1, tokens_out=1, estimated_cost_usd=0.0, latency_s=0.0,
+    )
+    # Only lines 1-2 are in the diff; the echo reaches line 3.
+    state = {
+        "owner": "o", "repo": "r", "path": PATH, "content": FILE_CONTENT,
+        "patch": "@@ -1,2 +1,2 @@", "findings": [sql],
+    }
+    with mock_patch("codeguard.pipeline.nodes.call_agent", return_value=result):
+        out = propose_fix(state)
+
+    assert out["fix_suggestions"] == []
+
+
+def test_a_multi_line_suggestion_is_posted_as_a_multi_line_comment():
+    """A suggestion block applies to the lines its comment is anchored
+    to. Anchored to line 2 alone, this one would insert the replacement
+    and leave the original `cursor.execute(query)` behind on line 3.
+    """
+    sql = finding(line=SQL_LINE, severity=Severity.HIGH, tool="security", rule_id="B608",
+                  message="SQL injection")
+    suggestion = FixSuggestion(
+        fingerprint=sql.fingerprint,
+        suggestion_body=f"```suggestion\n{SQL_REPLACEMENT_2LINE}\n```",
+        target_file=PATH, target_line=SQL_LINE, target_end_line=SQL_LINE + 1,
+    )
+
+    [comment] = _findings_to_review_comments([sql], [suggestion])
+
+    assert comment["start_line"] == SQL_LINE
+    assert comment["start_side"] == "RIGHT"
+    assert comment["line"] == SQL_LINE + 1
+    assert "cursor.execute(query, (email,))" in comment["body"]
+
+
+def test_a_single_line_suggestion_stays_a_single_line_comment():
+    """No start_line on the common case — a single-line anchor is what
+    GitHub expects, and sending a degenerate range instead would be a
+    gratuitous change to every existing comment's shape.
+    """
+    sql = finding(line=SQL_LINE, severity=Severity.HIGH, tool="security", rule_id="B608",
+                  message="SQL injection")
+    suggestion = FixSuggestion(
+        fingerprint=sql.fingerprint, suggestion_body=f"```suggestion\n{SQL_REPLACEMENT}\n```",
+        target_file=PATH, target_line=SQL_LINE, target_end_line=SQL_LINE,
+    )
+
+    [comment] = _findings_to_review_comments([sql], [suggestion])
+
+    assert "start_line" not in comment
+    assert comment["line"] == SQL_LINE

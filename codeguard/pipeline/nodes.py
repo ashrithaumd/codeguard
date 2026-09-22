@@ -839,9 +839,10 @@ def route_after_fanin(state: ReviewState) -> str | list[Send]:
     ]
 
 
-def _echoes_the_findings_own_lines(original: str, file_lines: list[str], finding: Finding) -> bool:
-    """True when the text the fix agent says it is replacing really is
-    what stands at the finding's own line range in the file.
+def _matched_replacement_range(original: str, file_lines: list[str], finding: Finding) -> int | None:
+    """The 1-based last line the fix agent's `original` echo really
+    covers in the file, or None when the echo doesn't match — in which
+    case no suggestion is emitted.
 
     This is the check that catches the PR #5 corruption, which nothing
     else could. There, the quality agent returned line 2 (the SQL line)
@@ -857,19 +858,42 @@ def _echoes_the_findings_own_lines(original: str, file_lines: list[str], finding
     replacement that gets indentation wrong is a broken edit in Python
     regardless of intent.
 
+    The echo must START at the finding's own start_line and cover at
+    least the finding's own range, but it may extend PAST the finding's
+    end_line. That extension is deliberate: a correct fix is routinely
+    wider than the finding that prompted it. Bandit's B608 on
+    codeguard-playground PR #5 spans one line — the line building the
+    query string — while parameterizing it also has to change the
+    `cursor.execute(query)` on the line below. Requiring an exact range
+    match rejected that suggestion every run, which is not a safe
+    default so much as a permanently broken one for any multi-line fix.
+
+    Nothing is given up by allowing it. The echo is still matched
+    verbatim against the file, so the agent still has to prove it knows
+    exactly which text it is replacing; the returned end line is what
+    the suggestion is then anchored to, so it replaces exactly the lines
+    it echoed and nothing else. propose_fix additionally requires that
+    whole range to be inside the diff, which bounds how far an echo can
+    reach.
+
+    An echo covering LESS than the finding's own range is rejected —
+    that is a loosening with nothing to gain from it.
+
     A missing or empty `original` fails closed. Losing a suggestion
     costs a reviewer one click of convenience; applying a wrong one
     corrupts the file.
     """
     if not original.strip():
-        return False
+        return None
     start = finding.start_line
-    end = max(finding.end_line, start)
-    if start < 1 or end > len(file_lines):
-        return False
-    actual = [line.rstrip() for line in file_lines[start - 1:end]]
+    if start < 1 or start > len(file_lines):
+        return None
     claimed = [line.rstrip() for line in original.splitlines()]
-    return claimed == actual
+    end = start + len(claimed) - 1
+    if end > len(file_lines) or end < max(finding.end_line, start):
+        return None
+    actual = [line.rstrip() for line in file_lines[start - 1:end]]
+    return end if claimed == actual else None
 
 
 def _python_parses(source: str) -> bool:
@@ -885,7 +909,7 @@ def _python_parses(source: str) -> bool:
 
 
 def _breaks_a_file_that_parsed(
-    *, path: str, content: str, file_lines: list[str], finding: Finding, replacement: str,
+    *, path: str, content: str, file_lines: list[str], start_line: int, end_line: int, replacement: str,
 ) -> bool:
     """Backstop for the tool-grounded findings that still reach
     propose_fix: splices the replacement in, in memory, and asks whether
@@ -921,11 +945,9 @@ def _breaks_a_file_that_parsed(
         )
         return False
 
-    start = finding.start_line
-    end = max(finding.end_line, start)
-    if start < 1 or end > len(file_lines):
-        return False  # unspliceable; _echoes_the_findings_own_lines has already rejected it
-    patched = file_lines[:start - 1] + replacement.splitlines() + file_lines[end:]
+    if start_line < 1 or end_line > len(file_lines) or end_line < start_line:
+        return False  # unspliceable; _matched_replacement_range has already rejected it
+    patched = file_lines[:start_line - 1] + replacement.splitlines() + file_lines[end_line:]
     return not _python_parses("\n".join(patched) + "\n")
 
 
@@ -1018,7 +1040,8 @@ def propose_fix(state: FileReviewState) -> dict:
             )
             continue
 
-        if not _echoes_the_findings_own_lines(original, file_lines, finding):
+        end_line = _matched_replacement_range(original, file_lines, finding)
+        if end_line is None:
             fix_suggestions_dropped_total.labels(reason="original_mismatch").inc()
             logger.error(
                 "dropping fix suggestion for %s at %s:%d — the fix agent says it is replacing %r, "
@@ -1030,9 +1053,26 @@ def propose_fix(state: FileReviewState) -> dict:
             )
             continue
 
+        # The whole replaced range has to be in the diff, not just its
+        # first line: GitHub rejects a multi-line suggestion whose
+        # start_line or line falls outside the diff, and a range that
+        # runs off the end of a hunk would be rewriting lines the PR
+        # never touched. This is also what bounds how far past the
+        # finding an echo is allowed to reach.
+        if changed_ranges and not all(
+            is_line_in_diff(finding.file, line, {finding.file: changed_ranges})
+            for line in range(finding.start_line, end_line + 1)
+        ):
+            fix_suggestions_dropped_total.labels(reason="range_outside_diff").inc()
+            logger.warning(
+                "fix agent suggestion for %r covers %s:%d-%d, which is not entirely inside the diff, ignoring",
+                fingerprint, finding.file, finding.start_line, end_line,
+            )
+            continue
+
         if _breaks_a_file_that_parsed(
             path=state["path"], content=state["content"], file_lines=file_lines,
-            finding=finding, replacement=replacement,
+            start_line=finding.start_line, end_line=end_line, replacement=replacement,
         ):
             fix_suggestions_dropped_total.labels(reason="parse_break").inc()
             logger.error(
@@ -1047,6 +1087,7 @@ def propose_fix(state: FileReviewState) -> dict:
             suggestion_body=f"```suggestion\n{replacement}\n```",
             target_file=finding.file,
             target_line=finding.start_line,
+            target_end_line=end_line,
         ))
 
     return {

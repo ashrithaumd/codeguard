@@ -234,7 +234,20 @@ def _findings_to_review_comments(findings, fix_suggestions) -> list[dict]:
         if suggestion is not None:
             body = f"{body}\n\n{suggestion.suggestion_body}"
         body = f"{body}\n\n{fingerprint_marker(f.fingerprint)}"
-        comments.append({"path": f.file, "line": f.start_line, "side": "RIGHT", "body": body})
+        comment = {"path": f.file, "line": f.start_line, "side": "RIGHT", "body": body}
+        # A suggestion whose replacement is wider than one line has to be
+        # anchored as a multi-line comment, or GitHub applies the block to
+        # the single anchored line only -- inserting the replacement and
+        # leaving the rest of the code it was meant to replace behind. For
+        # a parameterized-query fix that means the old
+        # `cursor.execute(query)` survives below the new one. The range
+        # comes from the suggestion, not the finding: propose_fix verified
+        # the agent's echo against exactly these lines.
+        if suggestion is not None and suggestion.target_end_line > f.start_line:
+            comment["start_line"] = f.start_line
+            comment["start_side"] = "RIGHT"
+            comment["line"] = suggestion.target_end_line
+        comments.append(comment)
     return comments
 
 

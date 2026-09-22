@@ -72,6 +72,18 @@ class FixSuggestion(BaseModel):
     target_file: str = ""
     target_line: int = -1
 
+    # The LAST line this replacement covers. A correct fix is often
+    # wider than the finding that prompted it -- B608 flags the line
+    # building the query string, but parameterizing it also has to
+    # change the cursor.execute() call below it -- so the replaced range
+    # is recorded separately from the finding's own range rather than
+    # assumed equal to it. worker/main.py turns a range wider than one
+    # line into a multi-line suggestion (start_line..line), which
+    # replaces exactly these lines and nothing else.
+    # Defaulted to -1, meaning "single line, same as target_line", so
+    # older rows/records deserialize unchanged.
+    target_end_line: int = -1
+
 
 class CacheWriteRecord(BaseModel):
     """One agent's fresh (non-cache-hit) result for one piece of
