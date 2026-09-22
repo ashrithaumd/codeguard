@@ -159,14 +159,16 @@ _FIX_SYSTEM_PROMPT = f"""You are a senior engineer proposing fixes for already-c
 
 {_DATA_FRAMING}
 
-For each finding, propose the exact code that should replace file_content's lines start_line..end_line for that finding (see the finding's own `line` attribute), preserving indentation and surrounding style. Keep changes minimal — do not reformat or refactor anything not required to fix the finding.
+For each finding, choose the range of lines your fix replaces, preserving indentation and surrounding style. That range MUST begin at the finding's own start_line (see the finding's `line` attribute) and MUST cover at least the finding's own lines, but it MAY extend further down the file when a correct fix genuinely requires it — a SQL-injection fix that parameterizes a query, for example, usually has to change the execute() call below it too. Keep changes minimal — do not reformat or refactor anything not required to fix the finding.
 
 Respond with ONLY a JSON array (no prose, no markdown code fences), one object per finding you can confidently fix, each with exactly these keys:
 "fingerprint" (string, must exactly match one of the input findings' fingerprint),
-"original" (string — the CURRENT text of file_content's lines start_line..end_line for that finding, copied verbatim, including indentation. Copy it from file_content; do not retype it from memory and do not normalise it),
-"replacement" (string — the exact replacement code for that finding's line range; no markdown fences inside it).
+"original" (string — the CURRENT text of every line in the range you chose, copied verbatim from file_content, including indentation. Do not retype it from memory and do not normalise it),
+"replacement" (string — the code that replaces that same range; no markdown fences inside it).
 
-"original" is checked against the real file before your suggestion is used. If the lines you are replacing are not the finding's own lines, say so by omitting the finding rather than guessing which lines you meant — a suggestion attached to the wrong line is worse than no suggestion, because a reviewer can apply it in one click.
+"original" and "replacement" must describe the SAME range of lines. If your replacement changes three lines, "original" must be all three of those lines. Do not echo one line and then write a replacement that also restates the lines below it — that does not delete those lines, it duplicates them, and the result is broken code a reviewer can apply in one click.
+
+"original" is checked against the real file before your suggestion is used. If you cannot copy the lines you are replacing verbatim, omit the finding rather than guessing which lines you meant — a suggestion attached to the wrong line is worse than no suggestion.
 
 If a finding can't be fixed with a small, safe, self-contained change, omit it from the array rather than guessing.
 """
@@ -896,6 +898,49 @@ def _matched_replacement_range(original: str, file_lines: list[str], finding: Fi
     return end if claimed == actual else None
 
 
+def _duplicates_the_lines_below(file_lines: list[str], end_line: int, replacement: str) -> bool:
+    """True when the replacement ends with lines that are already sitting
+    just below the range it replaces.
+
+    The failure this catches, live on codeguard-playground PR #5: the fix
+    agent echoed line 2 alone but wrote a three-line replacement that
+    re-stated lines 3 and 4 as well. A suggestion block replaces only the
+    lines its comment is anchored to, so committing that inserts the
+    three lines and leaves the original two below them — a duplicated
+    execute() and an unreachable second return. Valid Python, so the
+    parse backstop cannot see it; correctly anchored, so the echo check
+    cannot either. The disagreement is between the replacement's tail and
+    the file's next lines, which is what this compares.
+
+    Fails closed rather than trying to infer the range the agent must
+    have meant and extending the replacement over it. That inference
+    would usually be right and is exactly the kind of guess that put a
+    division fix on a SQL line: the agent is the one that has to say
+    which lines it is replacing, in `original`, where it can be checked.
+    The system prompt now asks for precisely that.
+
+    The signature is the replacement's last real line already existing
+    just below the replaced range. Deliberately not "the replacement's
+    tail equals the next N lines": in the live case the duplicated line
+    was line 4 while line 3 (the execute the fix meant to delete) sat
+    between, so the overlap was not contiguous and a prefix comparison
+    saw nothing.
+
+    The search window is only as deep as the replacement is long. A fix
+    ending in `return result` will match some far-off identical line in
+    any large file, and flagging that would cost real suggestions for
+    nothing; a duplicate the agent created is always within a few lines
+    of where it wrote it. Blank lines are ignored — they line up by
+    coincidence constantly.
+    """
+    repl = [line.rstrip() for line in replacement.splitlines()]
+    last_real = next((line for line in reversed(repl) if line.strip()), None)
+    if last_real is None:
+        return False
+    window = [line.rstrip() for line in file_lines[end_line:end_line + len(repl)]]
+    return last_real in window
+
+
 def _python_parses(source: str) -> bool:
     # ValueError, not SyntaxError, is what ast.parse raises for source
     # containing a null byte; RecursionError for pathologically nested
@@ -1066,6 +1111,16 @@ def propose_fix(state: FileReviewState) -> dict:
             fix_suggestions_dropped_total.labels(reason="range_outside_diff").inc()
             logger.warning(
                 "fix agent suggestion for %r covers %s:%d-%d, which is not entirely inside the diff, ignoring",
+                fingerprint, finding.file, finding.start_line, end_line,
+            )
+            continue
+
+        if _duplicates_the_lines_below(file_lines, end_line, replacement):
+            fix_suggestions_dropped_total.labels(reason="duplicates_following_lines").inc()
+            logger.error(
+                "dropping fix suggestion for %s at %s:%d-%d — the replacement ends with lines that "
+                "already follow the range it replaces, so committing it would duplicate them rather "
+                "than change them.",
                 fingerprint, finding.file, finding.start_line, end_line,
             )
             continue

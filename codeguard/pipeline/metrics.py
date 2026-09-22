@@ -68,6 +68,9 @@ fix_suggestions_dropped_total = Counter(
     "generative agent rather than a scanner, so no suggestion is anchored to it at all — expected to "
     "be zero in practice, since route_after_fanin already filters those before the fix agent is "
     "called; a non-zero rate means something is routing generative findings into propose_fix. "
-    "reason='parse_break' means the file parses today and would not after the replacement.",
+    "reason='parse_break' means the file parses today and would not after the replacement. "
+    "reason='duplicates_following_lines' means the replacement ended with lines already sitting "
+    "below the range it replaces, which a suggestion block duplicates rather than changes. "
+    "reason='range_outside_diff' means the replaced range ran past the diff GitHub computed.",
     ["reason"],
 )

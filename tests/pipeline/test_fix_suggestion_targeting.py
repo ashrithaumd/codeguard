@@ -54,6 +54,7 @@ from codeguard.pipeline.models import FixSuggestion
 from codeguard.pipeline.nodes import (
     _apply_fold,
     _breaks_a_file_that_parsed,
+    _duplicates_the_lines_below,
     _fold_cross_agent_duplicates,
     _is_model_located,
     _matched_replacement_range,
@@ -624,3 +625,61 @@ def test_a_single_line_suggestion_stays_a_single_line_comment():
 
     assert "start_line" not in comment
     assert comment["line"] == SQL_LINE
+
+
+# --- a replacement that restates the lines below it ---------------------
+
+# Verbatim from the 2026-09-22T02:20 live review: `original` was line 2
+# alone, but the replacement re-stated lines 3 and 4. Anchored to line 2,
+# committing it would have left the old execute() and return behind.
+DUPLICATING_REPLACEMENT = (
+    '    query = "SELECT * FROM users WHERE email = ?"\n'
+    "    cursor.execute(query, (email,))\n"
+    "    return cursor.fetchone()"
+)
+
+
+def test_a_replacement_that_restates_the_lines_below_it_is_dropped():
+    sql = finding(
+        line=SQL_LINE, severity=Severity.HIGH, tool="security", rule_id="B608",
+        message="SQL injection vulnerability confirmed.",
+    )
+
+    out = run_propose_fix([sql], [{
+        "fingerprint": sql.fingerprint,
+        "original": SQL_ORIGINAL,             # one line
+        "replacement": DUPLICATING_REPLACEMENT,  # but rewrites three
+    }])
+
+    assert out["fix_suggestions"] == []
+
+
+def test_the_same_fix_survives_when_the_echo_covers_what_it_replaces():
+    """The same replacement is fine once `original` names the whole range
+    it actually replaces — which is what the fix prompt now asks for.
+    """
+    sql = finding(
+        line=SQL_LINE, severity=Severity.HIGH, tool="security", rule_id="B608",
+        message="SQL injection vulnerability confirmed.",
+    )
+    original_3line = "\n".join(FILE_CONTENT.splitlines()[SQL_LINE - 1:SQL_LINE + 2])
+
+    out = run_propose_fix([sql], [{
+        "fingerprint": sql.fingerprint,
+        "original": original_3line,
+        "replacement": DUPLICATING_REPLACEMENT,
+    }])
+
+    [suggestion] = out["fix_suggestions"]
+    assert suggestion.target_line == SQL_LINE
+    assert suggestion.target_end_line == SQL_LINE + 2
+
+
+def test_duplicate_detection_ignores_a_blank_line_overlap():
+    """Trailing blank lines line up by coincidence constantly; treating
+    that as duplication would drop ordinary suggestions.
+    """
+    file_lines = ["def f():", "    x = 1", "", "def g():"]
+
+    assert not _duplicates_the_lines_below(file_lines, 2, "    x = 2\n")
+    assert _duplicates_the_lines_below(file_lines, 2, "    x = 2\n\ndef g():")
