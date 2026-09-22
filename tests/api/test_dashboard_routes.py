@@ -249,3 +249,100 @@ async def test_a_non_dashboard_404_still_renders_json(pool, client):
 
     assert resp.status_code == 404
     assert "application/json" in resp.headers["content-type"]
+
+
+# --- explaining itself --------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_index_says_what_codeguard_is(pool, client):
+    """The rule this page is held to: nothing on it should require
+    having read the README.
+    """
+    await _insert(pool)
+
+    text = client.get("/dashboard").text
+
+    assert "reviews every pull request" in text
+
+
+@pytest.mark.asyncio
+async def test_a_signed_in_user_with_no_reviews_gets_setup_instructions(pool, client):
+    """Not an error and not a blank table — "not set up yet". The state
+    has to say what CodeGuard is and how to get a first review.
+    """
+    with patch("codeguard.api.routes.dashboard.client_principal", return_value="alice"):
+        text = client.get("/dashboard").text
+
+    assert "No reviews yet" in text
+    assert "GitHub App" in text
+    assert "Install the CodeGuard GitHub App" in text
+
+
+@pytest.mark.asyncio
+async def test_an_anonymous_visitor_with_no_reviews_is_told_to_sign_in_instead(pool, client):
+    """Install instructions would be the wrong advice for someone who
+    simply is not signed in — the reviews may well exist.
+    """
+    text = client.get("/dashboard").text
+
+    assert "Nothing public to show" in text
+    assert "Install the CodeGuard GitHub App" not in text
+
+
+@pytest.mark.asyncio
+async def test_every_column_term_carries_a_definition(pool, client):
+    """Each internal word in a column header is explained in place.
+    Asserts the definition text, not just the attribute, so a term
+    wired to an empty string still fails.
+    """
+    await _insert(pool)
+
+    text = client.get("/dashboard").text
+
+    for phrase in [
+        "Whether this review blocked the pull request",   # Gate
+        "How much of this review was machine-verified",   # Mix
+        "an LLM then confirmed it",                       # Verdict-confirmed
+        "no scanner found it",                            # Generative
+        "does not need interpreting",                     # Deterministic
+        "did not happen",                                 # Unverified
+        "posted as comments on specific lines",           # Inline
+        "one-click suggested fix",                        # Fixes
+    ]:
+        assert phrase in text, f"missing definition: {phrase}"
+
+
+@pytest.mark.asyncio
+async def test_the_mix_legend_sits_in_its_own_column_header(pool, client):
+    """The legend describes the MIX bar, so it lives in that column's
+    header rather than floating in the panel header.
+    """
+    await _insert(pool)
+
+    text = client.get("/dashboard").text
+    head = text.split("<tbody>")[0]
+
+    assert "mix-legend" in head, "the legend belongs inside the table header"
+    panel_head = text.split('<div class="panel-head">')[1].split("</div>")[0]
+    assert "mix-legend" not in panel_head
+
+
+@pytest.mark.asyncio
+async def test_rows_are_navigable_and_look_it(pool, client):
+    job_id = await _insert(pool)
+
+    text = client.get("/dashboard").text
+
+    assert f'data-href="/dashboard/reviews/{job_id}"' in text
+    assert 'class="row-link"' in text
+    assert 'class="chev"' in text, "a chevron marks the row as openable"
+
+
+@pytest.mark.asyncio
+async def test_the_review_page_says_what_a_review_is(pool, client):
+    job_id = await _insert(pool)
+
+    text = client.get(f"/dashboard/reviews/{job_id}").text
+
+    assert "single pass over one push" in text

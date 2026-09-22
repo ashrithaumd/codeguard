@@ -28,6 +28,10 @@
       · {{ review.action }}
       · {{ m.when(review.created_at) }}
     </div>
+    <div class="sub">
+      One review is a single pass over one push — CodeGuard re-runs from scratch on every push to
+      this pull request, so each push has its own row and its own cost.
+    </div>
   </div>
 </div>
 
@@ -64,7 +68,7 @@
         <h2>Findings</h2>
         <span class="count">{{ findings|length }}</span>
         <span class="spacer"></span>
-        {{ m.mix_legend() }}
+        <span class="count">Each one was posted on the pull request, inline or in the summary</span>
       </div>
       {% if not findings %}
         {{ m.empty_state("No findings",
@@ -162,7 +166,7 @@
     <div class="panel">
       <div class="panel-head"><h2>Economics</h2></div>
       <dl class="kv">
-        <dt>Cost</dt><dd>{{ m.cost(review.estimated_cost_usd) }}</dd>
+        <dt>{{ m.term("Cost") }}</dt><dd>{{ m.cost(review.estimated_cost_usd) }}</dd>
         <dt>Tokens in</dt><dd>{{ "{:,}".format(review.tokens_in or 0) }}</dd>
         <dt>Tokens out</dt><dd>{{ "{:,}".format(review.tokens_out or 0) }}</dd>
         <dt>Duration</dt><dd>{{ "%.1f"|format(review.duration_s or 0) }}s</dd>
@@ -172,13 +176,13 @@
     <div class="panel">
       <div class="panel-head"><h2>Composition</h2></div>
       <dl class="kv">
-        <dt>Verdict-confirmed</dt><dd>{{ review.findings_verdict_confirmed }}</dd>
-        <dt>Generative</dt><dd>{{ review.findings_generative }}</dd>
-        <dt>Deterministic</dt><dd>{{ review.findings_deterministic }}</dd>
-        <dt>Unverified</dt><dd>{{ review.findings_unverified }}</dd>
-        <dt>Dismissed</dt><dd>{{ review.dismissed_count }}</dd>
-        <dt>Posted inline</dt><dd>{{ review.inline_count }}</dd>
-        <dt>Fix suggestions</dt><dd>{{ review.fix_suggestion_count }}</dd>
+        <dt>{{ m.term("Verdict-confirmed") }}</dt><dd>{{ review.findings_verdict_confirmed }}</dd>
+        <dt>{{ m.term("Generative") }}</dt><dd>{{ review.findings_generative }}</dd>
+        <dt>{{ m.term("Deterministic") }}</dt><dd>{{ review.findings_deterministic }}</dd>
+        <dt>{{ m.term("Unverified") }}</dt><dd>{{ review.findings_unverified }}</dd>
+        <dt>{{ m.term("Dismissed") }}</dt><dd>{{ review.dismissed_count }}</dd>
+        <dt>{{ m.term("Inline", "Posted inline") }}</dt><dd>{{ review.inline_count }}</dd>
+        <dt>{{ m.term("Fixes", "Fix suggestions") }}</dt><dd>{{ review.fix_suggestion_count }}</dd>
       </dl>
     </div>
 
@@ -187,7 +191,7 @@
       <dl class="kv">
         <dt>Gate threshold</dt><dd>{{ m.severity(review.gate_threshold) }}</dd>
         <dt>Fix threshold</dt><dd>{{ m.severity(review.fix_threshold) }}</dd>
-        <dt>Files reviewed</dt><dd>{{ review.files_reviewed }} / {{ review.files_seen }}</dd>
+        <dt>{{ m.term("Files", "Files reviewed") }}</dt><dd>{{ review.files_reviewed }} / {{ review.files_seen }}</dd>
         <dt>Visibility</dt><dd>{{ "Private" if review.private else "Public" }}</dd>
       </dl>
     </div>

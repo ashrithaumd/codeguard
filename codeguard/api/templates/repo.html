@@ -28,9 +28,9 @@
 
 <div class="stats">
   <div class="stat"><div class="k">Reviews</div><div class="v">{{ reviews|length }}</div></div>
-  <div class="stat"><div class="k">Findings</div><div class="v">{{ agg.findings }}</div></div>
+  <div class="stat"><div class="k">{{ m.term("Findings") }}</div><div class="v">{{ agg.findings }}</div></div>
   <div class="stat"><div class="k">Tokens in</div><div class="v">{{ "{:,}".format(agg.tokens) }}</div></div>
-  <div class="stat"><div class="k">Total cost</div><div class="v">{{ m.cost(agg.cost) }}</div></div>
+  <div class="stat"><div class="k">Total {{ m.term("Cost", "cost") }}</div><div class="v">{{ m.cost(agg.cost) }}</div></div>
 </div>
 
 <div class="panel">
@@ -69,7 +69,6 @@
     <h2>History</h2>
     <span class="count">{{ reviews|length }}</span>
     <span class="spacer"></span>
-    {{ m.mix_legend() }}
   </div>
   <div class="table-wrap">
     <table>
@@ -78,13 +77,14 @@
           <th>PR</th>
           <th>Commit</th>
           <th>Trigger</th>
-          <th>Gate</th>
-          <th class="num">Findings</th>
-          <th>Mix</th>
-          <th class="num">Fixes</th>
+          <th>{{ m.term("Gate") }}</th>
+          <th class="num">{{ m.term("Findings") }}</th>
+          <th class="th-mix">{{ m.mix_header() }}</th>
+          <th class="num">{{ m.term("Fixes") }}</th>
           <th class="num">Tokens in</th>
-          <th class="num">Cost</th>
+          <th class="num">{{ m.term("Cost") }}</th>
           <th class="num">Reviewed</th>
+          <th class="chev"><span class="visually-hidden">Open</span></th>
         </tr>
       </thead>
       <tbody>
@@ -100,6 +100,7 @@
           <td class="num dim">{{ "{:,}".format(r.tokens_in or 0) }}</td>
           <td class="num">{{ m.cost(r.estimated_cost_usd) }}</td>
           <td class="num dim nowrap">{{ m.when(r.created_at) }}</td>
+          {{ m.chevron() }}
         </tr>
         {% endfor %}
       </tbody>

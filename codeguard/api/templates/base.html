@@ -90,6 +90,63 @@
       window.location = row.getAttribute("data-href");
     });
   });
+
+  // Tooltips for the terms this dashboard invents. The bubble is a
+  // single element on <body> positioned fixed, because .table-wrap sets
+  // overflow-x and a box clipping one axis clips both — a tooltip
+  // rendered inside the table would be cut off, and table headers are
+  // exactly where the unexplained terms live.
+  (function () {
+    var tip = null;
+
+    function show(el) {
+      var text = el.getAttribute("data-tip");
+      if (!text) return;
+      if (!tip) {
+        tip = document.createElement("div");
+        tip.className = "tip";
+        tip.setAttribute("role", "tooltip");
+        document.body.appendChild(tip);
+      }
+      // textContent, never innerHTML: these strings are authored here,
+      // but the rule that nothing reaches the DOM as markup is easier
+      // to keep than to remember exceptions to.
+      tip.textContent = "";
+      var term = el.getAttribute("data-term");
+      if (term) {
+        var b = document.createElement("span");
+        b.className = "tip-term";
+        b.textContent = term;
+        tip.appendChild(b);
+      }
+      tip.appendChild(document.createTextNode(text));
+
+      tip.style.left = "0px";
+      tip.style.top = "0px";
+      tip.classList.add("on");
+
+      var r = el.getBoundingClientRect();
+      var t = tip.getBoundingClientRect();
+      // Prefer below; flip above when there is no room. Clamp to the
+      // viewport so a tooltip on the last column stays readable.
+      var left = Math.min(Math.max(8, r.left), window.innerWidth - t.width - 8);
+      var top = r.bottom + 8;
+      if (top + t.height > window.innerHeight - 8) top = r.top - t.height - 8;
+      tip.style.left = left + "px";
+      tip.style.top = top + "px";
+    }
+
+    function hide() { if (tip) tip.classList.remove("on"); }
+
+    document.querySelectorAll("[data-tip]").forEach(function (el) {
+      el.addEventListener("mouseenter", function () { show(el); });
+      el.addEventListener("mouseleave", hide);
+      el.addEventListener("focus", function () { show(el); });
+      el.addEventListener("blur", hide);
+    });
+    document.addEventListener("keydown", function (e) { if (e.key === "Escape") hide(); });
+    window.addEventListener("scroll", hide, true);
+  })();
 </script>
 </body>
 </html>

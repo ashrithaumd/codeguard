@@ -14,11 +14,8 @@
   <div>
     <h1>Reviews</h1>
     <div class="sub">
-      {% if principal %}
-        Every review you can see, newest first.
-      {% else %}
-        Public repositories only. Sign in to see private ones.
-      {% endif %}
+      CodeGuard reviews every pull request on the repositories it is installed on — each row below is one
+      review it ran, with what it found and what it cost.
     </div>
   </div>
 </div>
@@ -34,15 +31,15 @@
     <div class="v">{{ repos|length }}</div>
   </div>
   <div class="stat">
-    <div class="k">Findings <small>this page</small></div>
+    <div class="k">{{ m.term("Findings") }} <small>this page</small></div>
     <div class="v">{{ totals.findings }}</div>
   </div>
   <div class="stat">
-    <div class="k">Fix suggestions <small>this page</small></div>
+    <div class="k">{{ m.term("Fixes", "Fix suggestions") }} <small>this page</small></div>
     <div class="v">{{ totals.fixes }}</div>
   </div>
   <div class="stat">
-    <div class="k">Cost <small>this page</small></div>
+    <div class="k">{{ m.term("Cost") }} <small>this page</small></div>
     <div class="v">{{ m.cost(totals.cost) }}</div>
   </div>
 </div>
@@ -52,17 +49,46 @@
   <div class="panel-head">
     <h2>All reviews</h2>
     <span class="count">{{ total }}</span>
-    <span class="spacer"></span>
-    {{ m.mix_legend() }}
   </div>
 
   {% if not reviews %}
     {% if principal %}
-      {{ m.empty_state("No reviews yet",
-         "A review appears here the moment CodeGuard finishes one. Open a pull request on an installed repository to produce the first.") }}
+      {#
+        A signed-in visitor with nothing to show has not hit an error —
+        they have hit "not set up yet". Telling them the table is empty
+        is useless; telling them how to make it non-empty is the whole
+        job of this state.
+      #}
+      <div class="onboard">
+        <svg class="glyph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+             stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 3l7.5 3.4v5.3c0 4.3-3.2 8.3-7.5 9.3-4.3-1-7.5-5-7.5-9.3V6.4z"></path>
+          <path d="M9.2 12.2l2 2 3.6-4"></path>
+        </svg>
+        <h3>No reviews yet</h3>
+        <p>
+          CodeGuard is a GitHub App that reviews pull requests: it runs real security and lint
+          scanners, has an LLM judge each finding in context, and posts what survives as review
+          comments — with a one-click fix where it can write one.
+        </p>
+        <ol>
+          <li>
+            Install the CodeGuard GitHub App on a repository
+            <span class="note">It needs read access to code and pull requests, and write access to checks and pull request comments.</span>
+          </li>
+          <li>
+            Open or update a pull request
+            <span class="note">Reviews run on <code>opened</code> and on every push to an open pull request.</span>
+          </li>
+          <li>
+            The review appears here
+            <span class="note">Optionally add a <code>.codeguard.yml</code> to the default branch to change which severities block the check.</span>
+          </li>
+        </ol>
+      </div>
     {% else %}
       {{ m.empty_state("Nothing public to show",
-         "No public repository has been reviewed yet. If you expect to see private repositories here, sign in.", "search") }}
+         "No public repository has been reviewed yet. If you expect to see private repositories here, sign in with a GitHub account that can access them.", "search") }}
     {% endif %}
   {% else %}
   <div class="table-wrap">
@@ -71,15 +97,15 @@
         <tr>
           <th>Repository</th>
           <th>PR</th>
-          <th>Gate</th>
-          <th class="num">Findings</th>
-          <th>Mix</th>
-          <th class="num">Inline</th>
-          <th class="num">Fixes</th>
-          <th class="num">Files</th>
-          <th class="num">Cost</th>
-          <th class="num">Time</th>
+          <th>{{ m.term("Gate") }}</th>
+          <th class="num">{{ m.term("Findings") }}</th>
+          <th class="th-mix">{{ m.mix_header() }}</th>
+          <th class="num">{{ m.term("Inline") }}</th>
+          <th class="num">{{ m.term("Fixes") }}</th>
+          <th class="num">{{ m.term("Files") }}</th>
+          <th class="num">{{ m.term("Cost") }}</th>
           <th class="num">Reviewed</th>
+          <th class="chev"><span class="visually-hidden">Open</span></th>
         </tr>
       </thead>
       <tbody>
@@ -102,11 +128,11 @@
           <td class="num">{{ r.fix_suggestion_count or "—" }}</td>
           <td class="num dim">
             {{ r.files_reviewed }}<span class="dim">/{{ r.files_seen }}</span>
-            {% if r.budget_exceeded %}<span class="pill warn" title="Diff truncated by the budget">!</span>{% endif %}
+            {% if r.budget_exceeded %}<span class="pill warn" title="Diff truncated — some changed files were not reviewed">!</span>{% endif %}
           </td>
           <td class="num">{{ m.cost(r.estimated_cost_usd) }}</td>
-          <td class="num dim">{{ "%.1f"|format(r.duration_s or 0) }}s</td>
           <td class="num dim nowrap">{{ m.when(r.created_at) }}</td>
+          {{ m.chevron() }}
         </tr>
         {% endfor %}
       </tbody>
@@ -136,9 +162,10 @@
         <tr>
           <th>Repository</th>
           <th class="num">Reviews</th>
-          <th class="num">Findings</th>
-          <th class="num">Total cost</th>
+          <th class="num">{{ m.term("Findings") }}</th>
+          <th class="num">Total {{ m.term("Cost", "cost") }}</th>
           <th class="num">Last reviewed</th>
+          <th class="chev"><span class="visually-hidden">Open</span></th>
         </tr>
       </thead>
       <tbody>
@@ -154,6 +181,7 @@
           <td class="num">{{ rp.total_findings }}</td>
           <td class="num">{{ m.cost(rp.total_cost) }}</td>
           <td class="num dim nowrap">{{ m.when(rp.last_reviewed) }}</td>
+          {{ m.chevron() }}
         </tr>
         {% endfor %}
       </tbody>

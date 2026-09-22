@@ -34,15 +34,6 @@
   {%- endif -%}
 {%- endmacro %}
 
-{% macro mix_legend() -%}
-  <div class="legend">
-    <span><i style="background: var(--accent)"></i>Verdict-confirmed</span>
-    <span><i style="background: color-mix(in srgb, var(--accent) 42%, transparent)"></i>Generative</span>
-    <span><i style="background: var(--n-400)"></i>Deterministic</span>
-    <span><i style="background: color-mix(in srgb, var(--sev-medium) 70%, transparent)"></i>Unverified</span>
-  </div>
-{%- endmacro %}
-
 {% macro cost(v) -%}
   ${{ "%.4f"|format(v or 0) }}
 {%- endmacro %}
@@ -67,4 +58,77 @@
     <div class="title">{{ title }}</div>
     <div class="body">{{ body }}</div>
   </div>
+{%- endmacro %}
+
+
+{#
+  The glossary. Every term this dashboard invents is defined in exactly
+  one place, so the column header, the sidebar label and the detail page
+  cannot drift into explaining the same word differently.
+
+  Written for someone who has never read the README: no "verdict layer",
+  no "direct-findings contract", no rule_ids.
+#}
+{% set GLOSSARY = {
+  "Gate":
+    "Whether this review blocked the pull request. CodeGuard fails the check when a finding is at or above the repository's gate threshold, and passes otherwise.",
+  "Mix":
+    "How much of this review was machine-verified. The bar splits the findings into the four kinds below, widest share first — a bar that is mostly dark blue was mostly confirmed by a real scanner.",
+  "Verdict-confirmed":
+    "A real scanner flagged it and an LLM then confirmed it is a genuine problem in this code's context. The most trustworthy kind.",
+  "Generative":
+    "An LLM noticed this on its own — no scanner found it. Useful but unverified, so its severity is capped at Medium.",
+  "Deterministic":
+    "A scanner found it and no LLM was asked, because this kind of finding does not need interpreting. Reliable, just not judged.",
+  "Unverified":
+    "A scanner found it and the LLM check that should have judged it did not happen. Not necessarily wrong — just not checked.",
+  "Inline":
+    "How many findings were posted as comments on specific lines of the pull request. The rest appear in the review summary instead, usually because their line could not be pinned down.",
+  "Fixes":
+    "How many findings came with a one-click suggested fix that a reviewer can commit straight from GitHub.",
+  "Findings":
+    "Everything this review reported, of every kind and severity.",
+  "Files":
+    "Files reviewed, out of files changed. Lockfiles, docs and non-Python files are skipped, and a very large diff can be truncated to stay within budget.",
+  "Dismissed":
+    "Things a scanner flagged that an LLM judged to be false alarms in context. Recorded so you can see what was checked, not just what was reported.",
+  "Cost":
+    "What this review spent on LLM calls. A re-review of an unchanged file reuses cached results, so repeat reviews of the same pull request cost far less.",
+} %}
+
+{#
+  A term with its definition attached. tabindex makes it reachable
+  without a mouse; base.html turns data-tip into the bubble.
+#}
+{% macro term(name, label=None) -%}
+  <span class="hint" tabindex="0" data-term="{{ name }}"
+        data-tip="{{ GLOSSARY[name] }}">{{ label or name }}</span>
+{%- endmacro %}
+
+{#
+  The legend sits in the MIX column header, so it names the bar directly
+  beneath it instead of floating in the panel header describing nothing
+  in particular.
+
+  Labels are shortened to keep the column from widening the table past
+  its container — "Verdict-confirmed" as a legend label forced a
+  horizontal scrollbar and wrapped the repository names. Each swatch is
+  itself a term, so the full name and definition are one hover away and
+  nothing is lost to the abbreviation.
+#}
+{% macro mix_header() -%}
+  {{ term("Mix", "Mix") }}
+  <div class="mix-legend" aria-label="What each colour in the mix bar means">
+    <span><i style="background: var(--accent)"></i>{{ term("Verdict-confirmed", "Confirmed") }}</span>
+    <span><i style="background: var(--n-400)"></i>{{ term("Deterministic", "Scanner") }}</span>
+    <span><i style="background: color-mix(in srgb, var(--accent) 42%, transparent)"></i>{{ term("Generative", "LLM-only") }}</span>
+    <span><i style="background: color-mix(in srgb, var(--sev-medium) 70%, transparent)"></i>{{ term("Unverified", "Unchecked") }}</span>
+  </div>
+{%- endmacro %}
+
+{% macro chevron() -%}
+  <td class="chev" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+         stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"></path></svg>
+  </td>
 {%- endmacro %}
