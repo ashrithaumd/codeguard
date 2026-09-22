@@ -79,27 +79,45 @@ if ! az acr show --name "$ACR_NAME" --resource-group "$RESOURCE_GROUP" --output 
     az acr create --resource-group "$RESOURCE_GROUP" --name "$ACR_NAME" --sku Basic --output none
 fi
 # Admin user stays OFF — both Container Apps pull via managed identity
-# (see below), never a stored password. `az acr build` (remote build,
-# no local docker needed) was blocked on this subscription
-# ("ACR Tasks requests ... are not permitted") — build locally and push
-# instead. The push itself hit repeated transient TLS/connection resets
-# through a local proxy on the first deployment (the ~380MB pip-install
-# layer specifically, being the largest); retry, don't assume one
-# failure means the registry or credentials are broken.
-az acr login --name "$ACR_NAME"
-docker build -t "$ACR_NAME.azurecr.io/codeguard:latest" .
-push_ok=false
-for attempt in $(seq 1 15); do
-    if docker push "$ACR_NAME.azurecr.io/codeguard:latest" 2>&1 | tee /tmp/acr_push.log | grep -q "^latest: digest"; then
-        push_ok=true
-        break
+# (see below), never a stored password. `az acr build` (remote build, no
+# local docker needed) is blocked on this subscription; re-confirmed
+# 2026-09-19 from Cloud Shell, so it is NOT a stale note and not a SKU
+# limitation — it is subscription-level on the free tier:
+#   (TasksOperationsNotAllowed) ACR Tasks requests for the registry
+#   codeguardacr and 29ca79a0-... are not permitted.
+# That leaves building locally and pushing, below. The push hit repeated
+# transient TLS/connection resets through a local proxy on the first
+# deployment (the ~380MB pip-install layer specifically, being the
+# largest); retry, don't assume one failure means the registry or
+# credentials are broken.
+#
+# SKIP_BUILD=1 skips this entirely and deploys whatever is already in the
+# registry, for when the local Docker can't reach ACR at all — Docker
+# Desktop 4.46.0 persists a proxy bypass (OverrideProxyExclude) in its
+# settings but never passes it to the daemon, so *.azurecr.io can't be
+# excluded from the proxy and the push cannot be made to work locally.
+# .github/workflows/build-push.yml does the build on GitHub's runners
+# instead. Nothing below trusts CI blindly: the digest assertion further
+# down proves the registry's :latest is actually this commit's image
+# before anything is deployed.
+if [ "${SKIP_BUILD:-}" = "1" ]; then
+    echo "SKIP_BUILD=1: not building locally — deploying the image already in $ACR_NAME."
+else
+    az acr login --name "$ACR_NAME"
+    docker build -t "$ACR_NAME.azurecr.io/codeguard:latest" .
+    push_ok=false
+    for attempt in $(seq 1 15); do
+        if docker push "$ACR_NAME.azurecr.io/codeguard:latest" 2>&1 | tee /tmp/acr_push.log | grep -q "^latest: digest"; then
+            push_ok=true
+            break
+        fi
+        echo "push attempt $attempt failed, retrying..." >&2
+        sleep 3
+    done
+    if [ "$push_ok" != true ]; then
+        echo "ERROR: image push never succeeded after 15 attempts — see /tmp/acr_push.log" >&2
+        exit 1
     fi
-    echo "push attempt $attempt failed, retrying..." >&2
-    sleep 3
-done
-if [ "$push_ok" != true ]; then
-    echo "ERROR: image push never succeeded after 15 attempts — see /tmp/acr_push.log" >&2
-    exit 1
 fi
 
 # ---- postgres flexible server ---------------------------------------------
@@ -265,6 +283,50 @@ fi
 API_REVISION_SUFFIX="$(git rev-parse --short HEAD)"
 API_REVISION_NAME="${API_APP_NAME}--${API_REVISION_SUFFIX}"
 LATEST_DIGEST="$(az acr repository show --name "$ACR_NAME" --image codeguard:latest --query digest -o tsv)"
+
+# Provenance check, only meaningful when CI did the build. When this
+# script builds (the else branch above), :latest came from this very
+# working tree seconds ago and provenance holds by construction. When CI
+# built it, it does not: :latest is a floating tag recording nothing
+# about which commit produced it, and HEAD here can easily be behind (or
+# ahead of) whatever CI last pushed. Deploying that under a revision
+# named for THIS commit would stamp the wrong provenance onto the
+# revision — the same class of untracked mismatch the drift guard below
+# refuses, arriving from a different direction.
+#
+# CI also pushes an immutable :sha-<7> tag. If this commit's tag and
+# :latest don't resolve to the same digest, :latest belongs to some other
+# commit: stop rather than deploy it under this one's name.
+#
+# 7 chars sliced from the full SHA, not `git rev-parse --short`: git's
+# abbreviation length depends on the repo's object count and CI checks
+# out shallow, so --short can disagree across the two clones. The slice
+# is identical on both sides by construction. (API_REVISION_SUFFIX above
+# keeps using --short — it names revisions that already exist, and is
+# independent of this tag.)
+if [ "${SKIP_BUILD:-}" = "1" ]; then
+    COMMIT_TAG="sha-$(git rev-parse HEAD | cut -c1-7)"
+    COMMIT_DIGEST="$(az acr repository show --name "$ACR_NAME" --image "codeguard:$COMMIT_TAG" --query digest -o tsv 2>/dev/null || true)"
+    if [ -z "$COMMIT_DIGEST" ]; then
+        echo "==============================================================" >&2
+        echo "ERROR: no $COMMIT_TAG tag in $ACR_NAME — CI has not built this commit." >&2
+        echo "  Push it to main, or run the build-push workflow against it, and wait" >&2
+        echo "  for that run to finish before deploying." >&2
+        echo "==============================================================" >&2
+        exit 1
+    fi
+    if [ "$COMMIT_DIGEST" != "$LATEST_DIGEST" ]; then
+        echo "==============================================================" >&2
+        echo "ERROR: :latest in $ACR_NAME is not this commit's image." >&2
+        echo "  HEAD ($COMMIT_TAG): $COMMIT_DIGEST" >&2
+        echo "  :latest:            $LATEST_DIGEST" >&2
+        echo "  A later commit's build has moved :latest, or this checkout is stale." >&2
+        echo "  Check out the commit you mean to deploy, or re-run CI on this one." >&2
+        echo "==============================================================" >&2
+        exit 1
+    fi
+    echo "Provenance OK: :latest and $COMMIT_TAG are the same digest ($LATEST_DIGEST)."
+fi
 
 if az containerapp revision show --name "$API_APP_NAME" --resource-group "$RESOURCE_GROUP" --revision "$API_REVISION_NAME" --output none 2>/dev/null; then
     EXISTING_IMAGE="$(az containerapp revision show --name "$API_APP_NAME" --resource-group "$RESOURCE_GROUP" --revision "$API_REVISION_NAME" --query "properties.template.containers[0].image" -o tsv)"

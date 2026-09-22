@@ -34,3 +34,7 @@ Thumbs.db
 .idea/
 *.swp
 *.swo
+
+# Local deploy transcripts (deploy/azure.sh output) — build logs, not
+# artifacts, and they pick up whatever az/docker print.
+deploy_output.log
