@@ -169,3 +169,40 @@ def test_propose_fix_pins_temperature_to_zero():
         propose_fix({"owner": "o", "repo": "r", "path": "a.py", "content": "x\n", "findings": [finding]})
 
     assert mock_call.call_args.kwargs["temperature"] == 0
+
+
+def test_route_after_fanin_does_not_dispatch_for_a_generative_only_file():
+    """A file whose only qualifying findings came from a generative
+    agent costs no fix-agent call: their line numbers are model-chosen,
+    so no suggestion would survive propose_fix anyway. See
+    _is_model_located.
+    """
+    quality = make_finding(file="a.py", severity=Severity.CRITICAL, tool="quality-agent")
+    test = make_finding(file="a.py", severity=Severity.CRITICAL, tool="test-agent")
+    state = {
+        "findings": [quality, test], "repo_level_findings": [],
+        "repo_config": RepoConfig(fix_threshold=Severity.HIGH),
+        "files": {"a.py": "x"}, "patches": {}, "owner": "o", "repo": "r",
+        "suppressed_fingerprints": frozenset(),
+    }
+
+    assert route_after_fanin(state) == "summarize"
+
+
+def test_route_after_fanin_sends_only_the_grounded_findings_of_a_mixed_file():
+    """A file with both kinds still fans out — for its grounded findings
+    only. The generative ones are still reported; they just aren't given
+    to the fix agent.
+    """
+    grounded = make_finding(file="a.py", severity=Severity.HIGH, tool="security", rule_id="B608")
+    generative = make_finding(file="a.py", severity=Severity.HIGH, tool="quality-agent", rule_id="quality.x")
+    state = {
+        "findings": [grounded, generative], "repo_level_findings": [],
+        "repo_config": RepoConfig(fix_threshold=Severity.HIGH),
+        "files": {"a.py": "x"}, "patches": {}, "owner": "o", "repo": "r",
+        "suppressed_fingerprints": frozenset(),
+    }
+
+    [send] = route_after_fanin(state)
+
+    assert [f.fingerprint for f in send.arg["findings"]] == [grounded.fingerprint]

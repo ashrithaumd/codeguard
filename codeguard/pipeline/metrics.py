@@ -64,6 +64,10 @@ fix_suggestions_dropped_total = Counter(
     "echo of the code it was replacing did not match the finding's own lines in the file — i.e. the "
     "suggestion was about different code than the line it would have replaced, which is one click "
     "from corrupting the file. Should be rare; a sustained non-zero rate means the agents upstream "
-    "are mislocating findings.",
+    "are mislocating findings. reason='model_located_finding' means the finding's line came from a "
+    "generative agent rather than a scanner, so no suggestion is anchored to it at all — expected to "
+    "be zero in practice, since route_after_fanin already filters those before the fix agent is "
+    "called; a non-zero rate means something is routing generative findings into propose_fix. "
+    "reason='parse_break' means the file parses today and would not after the replacement.",
     ["reason"],
 )

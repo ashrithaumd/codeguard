@@ -53,8 +53,10 @@ from codeguard.pipeline.llm_call import AgentCallResult
 from codeguard.pipeline.models import FixSuggestion
 from codeguard.pipeline.nodes import (
     _apply_fold,
+    _breaks_a_file_that_parsed,
     _echoes_the_findings_own_lines,
     _fold_cross_agent_duplicates,
+    _is_model_located,
     _parse_direct_findings,
     propose_fix,
 )
@@ -123,6 +125,14 @@ def test_the_live_case_a_division_fix_generated_for_the_sql_line_is_dropped():
     """The exact production input: a quality finding placed on line 2 by
     the model itself, whose message describes a division, and a fix agent
     that wrote division code for it.
+
+    Now stopped twice over: _is_model_located drops it before the echo
+    check is ever consulted, and _breaks_a_file_that_parsed would have
+    caught the same replacement independently (8-space-indented division
+    code spliced in as the first statement of a 4-space body does not
+    parse). The echo check's own coverage of this shape lives in
+    test_a_grounded_findings_mismatched_echo_is_still_dropped, which uses
+    a grounded finding so the earlier drop doesn't mask it.
     """
     mislocated = finding(
         line=SQL_LINE, severity=Severity.MEDIUM, tool="quality-agent",
@@ -309,3 +319,191 @@ def test_the_real_pr5_hunk_leaves_every_relevant_line_untouched():
     )
 
     assert [f.start_line for f in results] == [SQL_LINE, MULTIPLY_LINE, DIVISION_LINE]
+
+
+# --- the gap: a correct echo with an unrelated replacement --------------
+
+
+def test_a_correct_echo_does_not_make_an_unrelated_replacement_safe():
+    """The variant the echo check does NOT cover by construction.
+
+    Here the fix agent echoes line 2's SQL text correctly — so `original`
+    genuinely matches the finding's own line — but the replacement it
+    returns is division code. The suggestion would still replace the SQL
+    statement with `if b == 0: ... return a / b`.
+
+    _echoes_the_findings_own_lines answers "are you replacing the line
+    you say you are?". It cannot answer "is what you are putting there
+    related to that line at all?", because it never looks at
+    `replacement`.
+
+    Was xfail(strict=True) while the fix was undecided. Closed by
+    _is_model_located: this finding is a quality-agent one, so no
+    suggestion is generated for it at all. Kept as a regression — it is
+    the exact shape the gap had, and it is worth failing loudly if a
+    generative finding ever reaches propose_fix again. Note the echo
+    check itself is NOT what makes it pass now; see
+    test_a_grounded_findings_mismatched_echo_is_still_dropped for that
+    path's own coverage.
+    """
+    mislocated = finding(
+        line=SQL_LINE, severity=Severity.MEDIUM, tool="quality-agent",
+        rule_id="quality.error-handling",
+        message="The division operation on line 13 lacks protection against division by zero.",
+    )
+
+    out = run_propose_fix([mislocated], [{
+        "fingerprint": mislocated.fingerprint,
+        "original": SQL_ORIGINAL,              # correct echo of line 2
+        "replacement": DIVISION_REPLACEMENT,   # but unrelated code
+    }])
+
+    assert out["fix_suggestions"] == []
+
+
+# --- C: a model-located finding never gets a suggestion -----------------
+
+
+def test_a_grounded_findings_mismatched_echo_is_still_dropped():
+    """The echo check's own coverage at the propose_fix level, on a
+    grounded finding so _is_model_located doesn't drop it first.
+
+    Without this, every propose_fix-level test of the echo check would
+    pass for the wrong reason once C landed, and the check could rot
+    unnoticed.
+    """
+    sql = finding(
+        line=SQL_LINE, severity=Severity.HIGH, tool="security", rule_id="B608",
+        message="SQL injection vulnerability confirmed.",
+    )
+
+    out = run_propose_fix([sql], [{
+        "fingerprint": sql.fingerprint,
+        "original": "        return a / b",   # not what line 2 says
+        "replacement": SQL_REPLACEMENT,
+    }])
+
+    assert out["fix_suggestions"] == []
+
+
+def test_is_model_located_splits_generative_from_grounded():
+    """Pins the discriminator itself, so a new generative agent added
+    later can't quietly inherit suggestion-generating rights.
+    """
+    for tool in ("quality-agent", "test-agent"):
+        assert _is_model_located(finding(line=1, severity=Severity.LOW, tool=tool, rule_id="r", message="m"))
+    for tool in ("security", "ai_aware", "bandit", "semgrep", "ruff", "osv", "eval-hygiene"):
+        assert not _is_model_located(finding(line=1, severity=Severity.LOW, tool=tool, rule_id="r", message="m"))
+
+
+def test_every_finding_parse_direct_findings_builds_is_model_located():
+    """The invariant _is_model_located actually depends on: findings
+    from the direct-findings contract are marked at construction. Tied
+    to the real constructor rather than to a hardcoded list of agent
+    names, so a third generative agent is covered the day it is added.
+    """
+    for agent in ("quality", "test"):
+        results = _parse_direct_findings(
+            [{"line": 1, "severity": "MEDIUM", "category": "c", "message": "m"}],
+            path=PATH, agent=agent, hunk_start=1, hunk_end=22,
+            max_severity=Severity.MEDIUM, max_findings=10,
+        )
+        assert results and all(_is_model_located(f) for f in results)
+
+
+def test_a_generative_finding_gets_no_suggestion_even_with_a_perfect_echo():
+    """The fix agent can return a flawless, genuinely correct suggestion
+    for a quality finding and it is still withheld — the objection is to
+    the line's provenance, not to the replacement's quality.
+    """
+    mislocated = finding(
+        line=SQL_LINE, severity=Severity.MEDIUM, tool="quality-agent",
+        rule_id="quality.error-handling", message="SQL injection here.",
+    )
+
+    out = run_propose_fix([mislocated], [{
+        "fingerprint": mislocated.fingerprint,
+        "original": SQL_ORIGINAL,
+        "replacement": SQL_REPLACEMENT,
+    }])
+
+    assert out["fix_suggestions"] == []
+
+
+# --- A: the parse backstop ----------------------------------------------
+
+
+def test_a_replacement_that_stops_the_file_parsing_is_dropped():
+    """A grounded finding with a correct echo — so the echo check passes
+    — but a replacement that leaves the file syntactically broken.
+    """
+    sql = finding(line=SQL_LINE, severity=Severity.HIGH, tool="security", rule_id="B608",
+                  message="SQL injection")
+
+    out = run_propose_fix([sql], [{
+        "fingerprint": sql.fingerprint,
+        "original": SQL_ORIGINAL,
+        "replacement": '    query = "SELECT * FROM users WHERE email = %s',  # unterminated string
+    }])
+
+    assert out["fix_suggestions"] == []
+
+
+def test_a_file_that_already_does_not_parse_keeps_its_suggestions():
+    """The case that makes parse-before matter: PR code is allowed to be
+    broken. A file that already fails to parse gives the backstop no
+    signal, so it must not become a reason to drop every suggestion for
+    that file — which would silently disable fix suggestions on exactly
+    the PRs that need review most.
+    """
+    broken = FILE_CONTENT + "\ndef unclosed(\n"
+    sql = finding(line=SQL_LINE, severity=Severity.HIGH, tool="security", rule_id="B608",
+                  message="SQL injection")
+
+    result = AgentCallResult(
+        raw_text=json.dumps([{
+            "fingerprint": sql.fingerprint, "original": SQL_ORIGINAL, "replacement": SQL_REPLACEMENT,
+        }]),
+        tokens_in=1, tokens_out=1, estimated_cost_usd=0.0, latency_s=0.0,
+    )
+    state = {"owner": "o", "repo": "r", "path": PATH, "content": broken, "patch": PATCH, "findings": [sql]}
+    with mock_patch("codeguard.pipeline.nodes.call_agent", return_value=result):
+        out = propose_fix(state)
+
+    [suggestion] = out["fix_suggestions"]
+    assert SQL_REPLACEMENT in suggestion.suggestion_body
+
+
+def test_the_parse_backstop_only_fires_on_the_parses_to_broken_transition():
+    """The helper directly, over all four before/after combinations."""
+    sql = finding(line=SQL_LINE, severity=Severity.HIGH, tool="security", rule_id="B608", message="m")
+    lines = FILE_CONTENT.splitlines()
+    broken_lines = (FILE_CONTENT + "\ndef unclosed(\n").splitlines()
+
+    def check(content, file_lines, replacement, path=PATH):
+        return _breaks_a_file_that_parsed(
+            path=path, content=content, file_lines=file_lines, finding=sql, replacement=replacement,
+        )
+
+    good = SQL_REPLACEMENT
+    bad = '    query = "unterminated'
+
+    assert not check(FILE_CONTENT, lines, good), "parses -> parses"
+    assert check(FILE_CONTENT, lines, bad), "parses -> broken: the only rejection"
+    assert not check(FILE_CONTENT + "\ndef unclosed(\n", broken_lines, good), "broken -> broken"
+    assert not check(FILE_CONTENT + "\ndef unclosed(\n", broken_lines, bad), "broken before: no signal"
+
+
+def test_the_parse_backstop_has_no_opinion_on_a_non_python_file():
+    """No parser means no opinion — never 'reject'. A .go or .ts file's
+    suggestions go through on the echo check alone.
+    """
+    f = Finding.create(
+        file="main.go", start_line=1, end_line=1, severity=Severity.HIGH,
+        source_tool="semgrep", rule_id="g.1", message="m",
+    )
+
+    assert not _breaks_a_file_that_parsed(
+        path="main.go", content="package main\n", file_lines=["package main"],
+        finding=f, replacement="func ( {{{",
+    )

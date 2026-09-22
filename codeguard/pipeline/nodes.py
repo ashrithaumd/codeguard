@@ -24,6 +24,7 @@ interpretation.
 
 from __future__ import annotations
 
+import ast
 import json
 import logging
 import re
@@ -580,6 +581,38 @@ def review_ai_aware(state: FileReviewState) -> dict:
     )
 
 
+# Every finding whose line number the MODEL chose rather than a
+# deterministic tool carries this suffix in source_tool. It is applied
+# in exactly one place — _parse_direct_findings, immediately below, the
+# only constructor for the direct-findings contract — so the marker and
+# the thing it marks cannot drift apart. Verdict-contract findings
+# (security, ai_aware) and raw tool passthrough (bandit, semgrep, ruff,
+# osv, eval-hygiene) all keep their tool's own coordinates and never
+# carry it.
+_GENERATIVE_SOURCE_SUFFIX = "-agent"
+
+
+def _is_model_located(finding: Finding) -> bool:
+    """True when this finding's line number came out of the model's own
+    JSON rather than out of a scanner.
+
+    A fix suggestion is only ever generated for a finding this returns
+    False for. Every corruption seen live so far started here: on
+    codeguard-playground PR #5 the quality agent placed a division
+    finding on line 2 — the SQL line — and because every stage
+    downstream then agreed on line 2, no check comparing coordinates
+    against each other could see it. These agents are good at noticing
+    that something is wrong and unreliable about saying where it is,
+    and a suggestion block is the one output where being wrong about
+    "where" rewrites a reviewer's file on a single click.
+
+    This withholds the suggestion only. The finding itself is still
+    reported in full, inline, with its message intact — the same way
+    every finding below fix_threshold already is.
+    """
+    return finding.source_tool.endswith(_GENERATIVE_SOURCE_SUFFIX)
+
+
 def _parse_direct_findings(
     items: list[dict], path: str, agent: str, hunk_start: int, hunk_end: int,
     max_severity: Severity, max_findings: int,
@@ -647,7 +680,7 @@ def _parse_direct_findings(
             confidence = 1.0
         results.append(Finding.create(
             file=path, start_line=line, end_line=line, severity=severity,
-            source_tool=f"{agent}-agent", rule_id=f"{agent}.{category}", message=message,
+            source_tool=f"{agent}{_GENERATIVE_SOURCE_SUFFIX}", rule_id=f"{agent}.{category}", message=message,
             confidence=confidence,
         ))
 
@@ -775,10 +808,20 @@ def route_after_fanin(state: ReviewState) -> str | list[Send]:
     defaults to HIGH) returns the plain string "summarize" directly,
     same shape route_to_file_reviews-style fan-out already uses when it
     has nothing to dispatch.
+
+    A model-located finding never qualifies, whatever its severity —
+    see _is_model_located. Filtering here rather than only inside
+    propose_fix means a file whose only qualifying findings are
+    generative costs no fix-agent call at all; propose_fix repeats the
+    check anyway, since that is where a suggestion actually becomes
+    postable.
     """
     all_findings = _exclude_suppressed(state["findings"] + state["repo_level_findings"], state["suppressed_fingerprints"])
     threshold = state["repo_config"].fix_threshold
-    qualifying = [f for f in all_findings if f.severity >= threshold and f.file in state["files"]]
+    qualifying = [
+        f for f in all_findings
+        if f.severity >= threshold and f.file in state["files"] and not _is_model_located(f)
+    ]
     if not qualifying:
         return "summarize"
 
@@ -829,6 +872,63 @@ def _echoes_the_findings_own_lines(original: str, file_lines: list[str], finding
     return claimed == actual
 
 
+def _python_parses(source: str) -> bool:
+    # ValueError, not SyntaxError, is what ast.parse raises for source
+    # containing a null byte; RecursionError for pathologically nested
+    # expressions. Any of them means "this did not parse", which is the
+    # only question being asked.
+    try:
+        ast.parse(source)
+    except (SyntaxError, ValueError, RecursionError):
+        return False
+    return True
+
+
+def _breaks_a_file_that_parsed(
+    *, path: str, content: str, file_lines: list[str], finding: Finding, replacement: str,
+) -> bool:
+    """Backstop for the tool-grounded findings that still reach
+    propose_fix: splices the replacement in, in memory, and asks whether
+    the file still parses.
+
+    Deliberately parse-BEFORE compared against parse-AFTER, never
+    parse-after alone. PR code is allowed to be broken — a PR that
+    introduces a syntax error is exactly the kind a reviewer wants
+    suggestions on — so a file that already fails to parse *before* the
+    patch yields no signal here and every suggestion for it is kept.
+    Only the transition from parsing to not-parsing is rejected, because
+    only that transition is attributable to the replacement. Dropping
+    every suggestion on an already-broken file would punish the PR for a
+    defect the fix agent didn't introduce, and would do it silently.
+
+    Non-Python files are left alone: there is no parser for them here,
+    and "no parser" has to mean "no opinion", never "reject".
+
+    This is strictly weaker than _echoes_the_findings_own_lines and does
+    not replace it — plenty of wrong replacements parse perfectly well.
+    It covers the one class the echo check cannot reach by construction:
+    a correct `original` echo paired with a replacement written for
+    entirely different code, which in Python almost always arrives at
+    the wrong indentation and stops the file compiling.
+    """
+    if not path.endswith(".py"):
+        return False
+    if not _python_parses(content):
+        logger.info(
+            "%s does not parse before the patch either, so the parse backstop has no signal for it; "
+            "keeping its suggestion rather than dropping it for a defect the fix agent did not introduce",
+            path,
+        )
+        return False
+
+    start = finding.start_line
+    end = max(finding.end_line, start)
+    if start < 1 or end > len(file_lines):
+        return False  # unspliceable; _echoes_the_findings_own_lines has already rejected it
+    patched = file_lines[:start - 1] + replacement.splitlines() + file_lines[end:]
+    return not _python_parses("\n".join(patched) + "\n")
+
+
 def propose_fix(state: FileReviewState) -> dict:
     """Sonnet tier — for confirmed findings >= fix_threshold in one
     file, proposes a GitHub suggestion-block replacement for each.
@@ -853,6 +953,13 @@ def propose_fix(state: FileReviewState) -> dict:
     rewrite code the PR never touched. Dropping the suggestion here
     never drops the finding itself — it's still reported normally,
     inline or in the summary, just without a one-click fix.
+
+    Two further drops, both added after the live PR #5 corruption:
+    a suggestion for a model-located finding is never emitted at all
+    (_is_model_located — route_after_fanin already filters those out,
+    this is the same check at the point a suggestion becomes postable),
+    and a suggestion that would turn a parsing file into a non-parsing
+    one is rejected (_breaks_a_file_that_parsed).
     """
     settings = get_settings()
     findings = state["findings"]
@@ -889,6 +996,15 @@ def propose_fix(state: FileReviewState) -> dict:
         if finding is None:
             logger.warning("fix agent suggestion for unknown fingerprint %r in %s, ignoring", fingerprint, state["path"])
             continue
+        if _is_model_located(finding):
+            fix_suggestions_dropped_total.labels(reason="model_located_finding").inc()
+            logger.warning(
+                "dropping fix suggestion for %s at %s:%d — %s locates its own findings, so the line "
+                "is not grounded well enough to anchor a suggestion block to. The finding is still "
+                "reported normally.",
+                fingerprint, finding.file, finding.start_line, finding.source_tool,
+            )
+            continue
         if finding.file != state["path"]:
             logger.warning(
                 "fix agent suggestion for %r targets file %s outside this branch's own file %s, ignoring",
@@ -911,6 +1027,18 @@ def propose_fix(state: FileReviewState) -> dict:
                 fingerprint, finding.file, finding.start_line, original.strip()[:120],
                 (file_lines[finding.start_line - 1].strip()[:120]
                  if 1 <= finding.start_line <= len(file_lines) else "<out of range>"),
+            )
+            continue
+
+        if _breaks_a_file_that_parsed(
+            path=state["path"], content=state["content"], file_lines=file_lines,
+            finding=finding, replacement=replacement,
+        ):
+            fix_suggestions_dropped_total.labels(reason="parse_break").inc()
+            logger.error(
+                "dropping fix suggestion for %s at %s:%d — the file parses now and would not after "
+                "this replacement, so committing the suggestion would leave the branch broken.",
+                fingerprint, finding.file, finding.start_line,
             )
             continue
 
