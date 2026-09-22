@@ -46,7 +46,7 @@ from codeguard.pipeline.reviews import record_review
 from codeguard.pipeline.state import ReviewState
 from codeguard.queue.db import bootstrap_schema, create_pool
 from codeguard.queue.models import Job
-from codeguard.queue.queue import ack, claim_batch, extend_lease, nack
+from codeguard.queue.queue import ack, claim_batch, extend_lease, nack, release
 from codeguard.tools.osv_runner import check_dependency_updates
 from codeguard.tools.run_all import run_tools_on_files
 
@@ -61,6 +61,11 @@ JOBS_FAILED = Counter("codeguard_worker_jobs_failed_total", "Jobs that raised du
 JOB_PROCESSING_SECONDS = Histogram(
     "codeguard_worker_job_processing_seconds",
     "Wall time from claim to ack/nack/abandon", ["type"],
+)
+JOBS_RELEASED = Counter(
+    "codeguard_worker_jobs_released_total",
+    "Jobs handed back to the queue because this worker was shutting down. Not failures: "
+    "attempts are untouched and the job is immediately claimable by the replacement replica.",
 )
 HEARTBEATS = Counter("codeguard_worker_heartbeats_total", "Successful lease renewals sent")
 LEASES_LOST = Counter("codeguard_worker_leases_lost_total", "Heartbeats that found the lease already reassigned")
@@ -463,6 +468,7 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
         # Defaults to private when the job predates the webhook capturing
         # it (migrations/007) — unknown visibility is treated as private.
         private=bool(payload.get("private", True)),
+        pr_title=str(payload.get("pr_title") or ""),
         summary_body=final_state["summary"],
         check_conclusion=conclusion,
         gate_threshold=repo_config.gate_threshold.name,
@@ -503,7 +509,7 @@ async def heartbeat_loop(pool, job: Job, abandoned: asyncio.Event, settings: Set
         HEARTBEATS.inc()
 
 
-async def process_job(pool, job: Job, settings: Settings) -> None:
+async def process_job(pool, job: Job, settings: Settings, stopping: asyncio.Event | None = None) -> None:
     logger.info("processing job %s (%s), attempt %d", job.id, job.type, job.attempts)
     abandoned = asyncio.Event()
     hb_task = asyncio.create_task(heartbeat_loop(pool, job, abandoned, settings))
@@ -512,7 +518,40 @@ async def process_job(pool, job: Job, settings: Settings) -> None:
         handler = HANDLERS.get(job.type)
         if handler is None:
             raise ValueError(f"no handler registered for type={job.type!r}")
-        completed = await handler(job, pool, abandoned)
+
+        if stopping is None:
+            completed = await handler(job, pool, abandoned)
+        else:
+            # Race the work against SIGTERM. Container Apps terminates a
+            # superseded replica while it is mid-job — observed live on
+            # 2026-09-22, where a rollout killed the replica 0.2s after
+            # its semgrep subprocess, leaving the review without semgrep
+            # coverage and the job leased until the reaper swept it.
+            #
+            # Cancelling here is safe in both directions: before the
+            # review is posted nothing has been published, and after it
+            # is posted handle_pull_request_review's own
+            # _review_already_posted guard stops a redelivery from
+            # posting twice.
+            work = asyncio.create_task(handler(job, pool, abandoned))
+            stop_wait = asyncio.create_task(stopping.wait())
+            done, _ = await asyncio.wait({work, stop_wait}, return_when=asyncio.FIRST_COMPLETED)
+            stop_wait.cancel()
+            if work not in done:
+                work.cancel()
+                try:
+                    await work
+                except (asyncio.CancelledError, Exception):  # noqa: B014 - any failure is moot; we are releasing
+                    pass
+                released = await release(pool, job_id=job.id, worker_id=WORKER_ID)
+                JOBS_RELEASED.inc()
+                logger.info(
+                    "job %s released on shutdown (released=%s) — another replica can claim it "
+                    "immediately instead of waiting out the lease",
+                    job.id, released,
+                )
+                return
+            completed = work.result()
     except Exception as exc:
         JOBS_FAILED.inc()
         explicit_delay = exc.retry_after if isinstance(exc, RateLimited) else None
@@ -529,6 +568,16 @@ async def process_job(pool, job: Job, settings: Settings) -> None:
     else:
         if abandoned.is_set() or not completed:
             logger.info("job %s abandoned mid-processing (lease lost) — not acking", job.id)
+        elif stopping is not None and stopping.is_set():
+            # Finished the work, but this container is going away. The
+            # review has already been posted by the handler at this
+            # point, so acking is still correct — releasing here would
+            # cause the replacement replica to post it a second time.
+            # Ack, and let the shutdown proceed.
+            ok = await ack(pool, job_id=job.id, worker_id=WORKER_ID)
+            logger.info("job %s completed during shutdown (acked=%s)", job.id, ok)
+            if ok:
+                JOBS_COMPLETED.inc()
         else:
             ok = await ack(pool, job_id=job.id, worker_id=WORKER_ID)
             if ok:
@@ -588,7 +637,7 @@ async def main() -> None:
                     LEASE_RECOVERY_SECONDS.observe(job.lease_recovery_seconds)
                     logger.info("job %s claimed %.3fs after its lease was recovered by the reaper",
                                 job.id, job.lease_recovery_seconds)
-            await asyncio.gather(*(process_job(pool, job, settings) for job in jobs))
+            await asyncio.gather(*(process_job(pool, job, settings, stop) for job in jobs))
     finally:
         await pool.close()
 

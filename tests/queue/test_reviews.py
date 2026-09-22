@@ -42,7 +42,7 @@ async def _record(pool, job_id, **overrides):
     """
     kwargs = dict(
         job_id=job_id, owner="o", repo="r", pr_number=7, head_sha="abc123",
-        action="opened", private=False, summary_body="body", check_conclusion="success",
+        action="opened", private=False, pr_title="Test PR", summary_body="body", check_conclusion="success",
         gate_threshold="CRITICAL", fix_threshold="HIGH",
         files_seen=3, files_reviewed=2, findings=[], dismissed=[],
         inline_count=0, fix_suggestions=[], budget_exceeded=False,

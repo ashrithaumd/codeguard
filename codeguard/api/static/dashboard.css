@@ -364,9 +364,10 @@ tbody tr.row-link:hover { background: var(--bg-hover); }
   font-family: var(--mono); font-size: 12px; color: var(--text-mute);
   white-space: nowrap;
 }
-/* The message is the column worth the space, so it takes what is left
- * once the fixed-shape columns have theirs. */
-.col-msg { width: 100%; }
+/* The message and the diff share what is left once the fixed-shape
+ * columns have theirs. col-msg used to take width:100%, which starved
+ * the diff column down to about one word per line. */
+.col-msg { width: 45%; }
 
 /* ---------- chart ---------- */
 
@@ -502,3 +503,123 @@ tbody tr.row-link:focus-within { box-shadow: inset 2px 0 0 var(--accent); backgr
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
+
+.btn-sm { padding: 4px 9px; font-size: 12.5px; }
+.btn-sm svg { flex: none; }
+
+/* ---------- fix suggestion diff ---------- */
+
+.diff {
+  font-family: var(--mono); font-size: 12px; line-height: 1.55;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+  overflow: hidden; margin-top: 8px;
+}
+.diff .row { display: flex; gap: 8px; padding: 1px 8px; white-space: pre-wrap; word-break: break-word; }
+.diff .row .sign { flex: none; width: 8px; opacity: 0.85; }
+.diff .del { background: color-mix(in srgb, var(--sev-critical) 12%, transparent); }
+.diff .del .sign { color: var(--sev-critical); }
+.diff .add { background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.diff .add .sign { color: var(--ok); }
+.diff-note { font-size: 11.5px; color: var(--text-mute); padding: 5px 8px; border-top: 1px solid var(--border); }
+
+.fix-cell { min-width: 280px; width: 34%; }
+
+/* ---------- count reconciliation ---------- */
+
+.count-warn {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11.5px; color: var(--warn);
+}
+
+.page-head-actions { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* ---------- filter bar ---------- */
+
+.filters {
+  display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap;
+  padding: 12px 16px; margin-bottom: 18px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg-raised);
+}
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field label {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-mute); font-weight: 550;
+}
+.field select, .field input {
+  appearance: none; font: inherit; font-size: 13px; color: var(--text);
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 5px 8px; min-width: 130px;
+}
+.field select { padding-right: 26px; background-image: none; }
+.field input[type="date"] { min-width: 138px; }
+.field select:focus-visible, .field input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.filters .actions { display: flex; gap: 8px; margin-left: auto; }
+
+.active-filters { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 14px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 6px 3px 9px; border-radius: 20px; font-size: 12px;
+  border: 1px solid var(--accent-brd); background: var(--accent-sub); color: var(--accent);
+}
+.chip a { display: grid; place-items: center; width: 15px; height: 15px; border-radius: 50%; opacity: 0.75; }
+.chip a:hover { opacity: 1; background: color-mix(in srgb, var(--accent) 20%, transparent); color: var(--accent); }
+
+/* ---------- command palette ---------- */
+
+.palette-backdrop {
+  position: fixed; inset: 0; z-index: 200;
+  background: color-mix(in srgb, var(--n-950) 45%, transparent);
+  backdrop-filter: blur(2px);
+  display: grid; align-items: start; justify-items: center;
+  padding: 12vh 16px 16px;
+}
+.palette-backdrop[hidden] { display: none; }
+.palette {
+  width: min(620px, 100%);
+  background: var(--bg-raised); border: 1px solid var(--border-strong);
+  border-radius: 10px; box-shadow: 0 18px 50px rgb(0 0 0 / 0.3);
+  overflow: hidden; display: flex; flex-direction: column; max-height: 62vh;
+}
+.palette-input {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 14px; border-bottom: 1px solid var(--border);
+}
+.palette-input svg { width: 16px; height: 16px; color: var(--text-dim); flex: none; }
+.palette-input input {
+  flex: 1; font: inherit; font-size: 15px; color: var(--text);
+  background: none; border: 0; outline: none;
+}
+.palette-input kbd {
+  font-family: var(--sans); font-size: 10.5px; color: var(--text-mute);
+  border: 1px solid var(--border); border-radius: 4px; padding: 2px 5px;
+}
+.palette-results { overflow-y: auto; padding: 6px; }
+.palette-group {
+  font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-mute); font-weight: 550; padding: 8px 8px 4px;
+}
+.palette-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 8px; border-radius: var(--radius-sm); cursor: pointer;
+}
+.palette-item[aria-selected="true"] { background: var(--accent-sub); }
+.palette-item .label { font-size: 13.5px; color: var(--text); flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palette-item .meta { font-size: 11.5px; color: var(--text-mute); flex: none; }
+.palette-item .kind {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+  color: var(--text-dim); border: 1px solid var(--border);
+  border-radius: 3px; padding: 1px 4px; flex: none;
+}
+.palette-item mark { background: none; color: var(--accent); font-weight: 600; }
+.palette-empty { padding: 26px 12px; text-align: center; color: var(--text-mute); font-size: 13px; }
+
+.palette-trigger {
+  display: flex; align-items: center; gap: 7px;
+  padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg-raised); color: var(--text-mute); font-size: 12.5px; cursor: pointer;
+}
+.palette-trigger:hover { border-color: var(--border-strong); color: var(--text); }
+.palette-trigger svg { width: 13px; height: 13px; }
+@media (max-width: 720px) { .palette-trigger .hint-text { display: none; } }

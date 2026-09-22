@@ -17,7 +17,7 @@ import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from codeguard.queue.queue import ack, claim_batch, compute_backoff, enqueue, nack
+from codeguard.queue.queue import ack, claim_batch, compute_backoff, enqueue, get_job, nack, release
 
 WORKER_A = "worker-a"
 WORKER_B = "worker-b"
@@ -216,3 +216,50 @@ def test_compute_backoff_grows_exponentially_and_respects_cap():
     assert 2.0 <= compute_backoff(2, base=1.0, max_delay=60.0) < 2.4
     capped = compute_backoff(10, base=1.0, max_delay=10.0)
     assert 10.0 <= capped < 12.0
+
+
+# --- release: shutdown is not failure ------------------------------------
+
+
+async def test_release_returns_a_job_to_pending_without_burning_an_attempt(pool):
+    """A worker shutting down has learned nothing about the job. Charging
+    it an attempt would let a job redelivered across a few rollouts
+    dead-letter without ever having failed.
+    """
+    await enqueue(pool, type="t", payload={}, idempotency_key="k1")
+    [claimed] = await claim_batch(pool, worker_id=WORKER_A, batch_size=1, lease_seconds=30)
+
+    assert await release(pool, job_id=claimed.id, worker_id=WORKER_A) is True
+
+    job = await get_job(pool, claimed.id)
+    assert job.status == "pending"
+    assert job.attempts == claimed.attempts, "an attempt was not spent"
+    assert job.leased_by is None
+
+
+async def test_a_released_job_is_immediately_claimable_by_another_worker(pool):
+    """The point of releasing rather than letting the lease lapse: the
+    replacement replica picks the job up now, not after the reaper has
+    swept an expired lease.
+    """
+    await enqueue(pool, type="t", payload={}, idempotency_key="k2")
+    [claimed] = await claim_batch(pool, worker_id=WORKER_A, batch_size=1, lease_seconds=300)
+    await release(pool, job_id=claimed.id, worker_id=WORKER_A)
+
+    [reclaimed] = await claim_batch(pool, worker_id=WORKER_B, batch_size=1, lease_seconds=30)
+
+    assert reclaimed.id == claimed.id
+    assert reclaimed.leased_by == WORKER_B
+
+
+async def test_release_cannot_reach_a_job_another_worker_now_owns(pool):
+    """Same guard as ack(): a worker that already lost its lease must not
+    reset a job someone else is working on.
+    """
+    await enqueue(pool, type="t", payload={}, idempotency_key="k3")
+    [claimed] = await claim_batch(pool, worker_id=WORKER_A, batch_size=1, lease_seconds=300)
+
+    assert await release(pool, job_id=claimed.id, worker_id=WORKER_B) is False
+
+    job = await get_job(pool, claimed.id)
+    assert job.status == "leased" and job.leased_by == WORKER_A

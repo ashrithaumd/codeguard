@@ -93,6 +93,12 @@ async def webhook(request: Request, response: Response):
                     # is treated as private, since the dashboard renders
                     # findings, file paths and source fragments.
                     "private": bool(payload["repository"].get("private", True)),
+                    # Recorded per review so the dashboard can be searched
+                    # by title (migrations/008) — nobody remembers a pull
+                    # request by its number. Attacker-controlled text, and
+                    # length-capped here so a pathological title cannot
+                    # bloat every job payload and review row that follows.
+                    "pr_title": str(payload["pull_request"].get("title") or "")[:300],
                     "pr_number": pr_number,
                     "action": action,
                     "head_sha": payload["pull_request"]["head"]["sha"],

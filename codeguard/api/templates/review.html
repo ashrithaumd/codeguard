@@ -33,6 +33,23 @@
       this pull request, so each push has its own row and its own cost.
     </div>
   </div>
+  <div class="page-head-actions">
+    {% if sibling_count and sibling_count > 1 %}
+      <span class="count">
+        Review {{ position }} of {{ sibling_count }} ·
+        <a href="/dashboard/repos/{{ review.owner }}/{{ review.repo }}/pulls/{{ review.pr_number }}">all for this PR</a>
+      </span>
+    {% endif %}
+    {# "Older" is the previous push, "Newer" the next — labelled by time
+       rather than by arrow direction, which reads backwards half the
+       time in a newest-first list. #}
+    {% if older %}
+      <a class="btn btn-sm" href="/dashboard/reviews/{{ older.job_id }}">← Older</a>
+    {% endif %}
+    {% if newer %}
+      <a class="btn btn-sm" href="/dashboard/reviews/{{ newer.job_id }}">Newer →</a>
+    {% endif %}
+  </div>
 </div>
 
 {% if review.budget_exceeded %}
@@ -55,7 +72,7 @@
   <div>
     <div class="title">{{ failures|length }} verdict call(s) did not complete</div>
     <div class="body">
-      {% for f in failures %}{{ f.path }} ({{ f.agent }}): {{ f.reason }}{% if not loop.last %} · {% endif %}{% endfor %}
+      {% for f in failures %}{{ f.path }} ({{ f.agent }}): {{ f.reason|redact }}{% if not loop.last %} · {% endif %}{% endfor %}
     </div>
   </div>
 </div>
@@ -66,7 +83,19 @@
     <div class="panel">
       <div class="panel-head">
         <h2>Findings</h2>
-        <span class="count">{{ findings|length }}</span>
+        {#
+          The stored total is the authoritative number, and the same one
+          the Composition panel breaks down — showing findings|length
+          here let the two disagree silently whenever the detail list is
+          shorter than the count. When they do differ, say so rather than
+          quietly showing the smaller number.
+        #}
+        <span class="count">{{ review.findings_total }}</span>
+        {% if findings|length != review.findings_total %}
+          <span class="count-warn" title="The stored detail for this review lists fewer findings than it recorded.">
+            showing {{ findings|length }}
+          </span>
+        {% endif %}
         <span class="spacer"></span>
         <span class="count">Each one was posted on the pull request, inline or in the summary</span>
       </div>
@@ -82,7 +111,7 @@
               <th>Location</th>
               <th>Rule</th>
               <th class="col-msg">Message</th>
-              <th class="num">Fix</th>
+              <th>{{ m.term("Fixes", "Suggested fix") }}</th>
             </tr>
           </thead>
           <tbody>
@@ -96,12 +125,13 @@
                 <div class="finding-rule">{{ f.rule_id }}</div>
                 <div class="dim" style="font-size:11.5px">{{ f.source_tool }}</div>
               </td>
-              <td class="finding-msg">{{ f.message }}</td>
-              <td class="num">
-                {% if fix_by_fp.get(f.fingerprint) %}
-                  <span class="pill ok"><span class="dot"></span>Yes</span>
+              <td class="finding-msg">{{ f.message|redact }}</td>
+              <td class="fix-cell">
+                {% set fix = fix_by_fp.get(f.fingerprint) %}
+                {% if fix %}
+                  {{ m.fix_diff(fix) }}
                 {% else %}
-                  <span class="dim">—</span>
+                  <span class="dim">No suggestion</span>
                 {% endif %}
               </td>
             </tr>
@@ -126,7 +156,7 @@
             <tr>
               <td class="loc">{{ d.file }}{% if d.start_line %}:{{ d.start_line }}{% endif %}</td>
               <td class="finding-rule">{{ d.rule_id }}</td>
-              <td class="finding-msg dim">{{ d.reason }}</td>
+              <td class="finding-msg dim">{{ d.reason|redact }}</td>
             </tr>
             {% endfor %}
           </tbody>
@@ -139,7 +169,7 @@
       <div class="panel-head"><h2>Summary posted to GitHub</h2></div>
       {# Rendered as TEXT. This is Markdown that GitHub rendered inside
          its own sandbox with its own sanitiser; we do not inherit that. #}
-      <div class="prose">{{ review.summary_body }}</div>
+      <div class="prose">{{ review.summary_body|redact }}</div>
     </div>
 
     {% if filtered %}

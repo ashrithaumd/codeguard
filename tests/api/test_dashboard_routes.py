@@ -111,11 +111,18 @@ async def test_a_missing_review_is_indistinguishable_from_a_forbidden_one(pool, 
     (repo, PR) pairs are being reviewed.
     """
     private_id = await _insert(pool, private=True)
-    missing = client.get(f"/dashboard/reviews/{uuid.uuid4()}")
+    missing_id = uuid.uuid4()
+    missing = client.get(f"/dashboard/reviews/{missing_id}")
     forbidden = client.get(f"/dashboard/reviews/{private_id}")
 
     assert missing.status_code == forbidden.status_code == 404
-    assert missing.text == forbidden.text
+
+    # Compared with each response's own id removed. The sign-in button
+    # carries the requested path in post_login_redirect_uri, so the two
+    # bodies differ by the URL the caller themselves supplied — which
+    # tells them nothing. The property under test is that nothing ELSE
+    # differs, i.e. the response never reveals whether the review exists.
+    assert missing.text.replace(str(missing_id), "ID") == forbidden.text.replace(str(private_id), "ID")
 
 
 @pytest.mark.asyncio

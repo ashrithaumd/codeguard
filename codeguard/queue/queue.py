@@ -267,3 +267,34 @@ async def list_jobs(pool: AsyncConnectionPool, *, status: str | None = None, lim
                 )
             rows = await cur.fetchall()
             return [Job.from_record(r) for r in rows]
+
+
+async def release(pool: AsyncConnectionPool, *, job_id: UUID, worker_id: str) -> bool:
+    """Hand a leased job straight back to the queue, unchanged.
+
+    Not a nack. A nack means "this job failed": it burns an attempt,
+    applies backoff, and after enough of them dead-letters the job. A
+    worker shutting down has learned nothing about the job — it simply
+    is not going to be the one to finish it. Charging an attempt for a
+    deploy would let a job that is redelivered across a few rollouts
+    dead-letter without ever having failed.
+
+    So: status back to 'pending', lease cleared, attempts untouched,
+    run_after left alone so it is immediately claimable by the replica
+    that is replacing this one. Guarded by leased_by for the same reason
+    ack() is — a worker that has already lost its lease must not reach
+    in and reset a job another worker now owns.
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE jobs
+                SET status = 'pending', leased_by = NULL, leased_until = NULL,
+                    run_after = now(), updated_at = now()
+                WHERE id = %s AND leased_by = %s AND status = 'leased'
+                RETURNING id
+                """,
+                (job_id, worker_id),
+            )
+            return await cur.fetchone() is not None

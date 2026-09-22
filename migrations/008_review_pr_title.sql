@@ -1,0 +1,25 @@
+-- The pull request's title, recorded per review.
+--
+-- Added for the dashboard's quick-jump: "PR #214" is not how anyone
+-- remembers a pull request, and a palette that can only match numbers
+-- makes you look up the number somewhere else first, which is the thing
+-- it exists to avoid.
+--
+-- Recorded rather than fetched, for the same reason 007 records
+-- visibility and 006 records the resolved thresholds: the row has to
+-- stay readable without a live GitHub call, and a title can change
+-- after the fact — the one stored here is the one that was reviewed.
+--
+-- ============================ SECURITY =====================================
+-- A PR title is attacker-controlled text: anyone who can open a pull
+-- request chooses it. It falls under 006's rule for this table — escape
+-- on output, always. It is rendered through Jinja autoescape and the
+-- search endpoint returns it as JSON, never as markup.
+-- ==========================================================================
+--
+-- DEFAULT '' rather than NULL so every consumer can treat it as a
+-- string. Rows written before this migration have no title, and the
+-- dashboard shows the PR number alone for them rather than an empty
+-- quotation.
+ALTER TABLE reviews
+    ADD COLUMN IF NOT EXISTS pr_title TEXT NOT NULL DEFAULT '';

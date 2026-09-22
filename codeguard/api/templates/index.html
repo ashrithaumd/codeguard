@@ -3,13 +3,6 @@
 {% block title %}Reviews · CodeGuard{% endblock %}
 
 {% block content %}
-{% set totals = namespace(cost=0, findings=0, fixes=0) %}
-{% for r in reviews %}
-  {% set totals.cost = totals.cost + (r.estimated_cost_usd or 0) %}
-  {% set totals.findings = totals.findings + (r.findings_total or 0) %}
-  {% set totals.fixes = totals.fixes + (r.fix_suggestion_count or 0) %}
-{% endfor %}
-
 <div class="page-head">
   <div>
     <h1>Reviews</h1>
@@ -20,26 +13,108 @@
   </div>
 </div>
 
+{#
+  A plain GET form, so every filter lands in the query string and the
+  resulting view is a URL you can bookmark, share or reload. No
+  JavaScript involved: the browser's own form submission produces
+  exactly the link a reader could have typed.
+#}
+<form class="filters" method="get" action="/dashboard">
+  <div class="field">
+    <label for="f-repo">Repository</label>
+    <select id="f-repo" name="repo">
+      <option value="">All repositories</option>
+      {% for rp in all_repos %}
+        {% set full = rp.owner ~ "/" ~ rp.repo %}
+        <option value="{{ full }}" {% if filters.repo == full %}selected{% endif %}>{{ full }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="field">
+    <label for="f-sev">Severity</label>
+    <select id="f-sev" name="severity">
+      <option value="">Any severity</option>
+      {% for s in severities %}
+        <option value="{{ s }}" {% if filters.severity == s %}selected{% endif %}>{{ s|title }} or present</option>
+      {% endfor %}
+    </select>
+  </div>
+  <div class="field">
+    <label for="f-gate">Gate</label>
+    <select id="f-gate" name="gate">
+      <option value="">Any result</option>
+      <option value="passed" {% if filters.gate == "passed" %}selected{% endif %}>Passed</option>
+      <option value="blocked" {% if filters.gate == "blocked" %}selected{% endif %}>Blocked</option>
+      <option value="none" {% if filters.gate == "none" %}selected{% endif %}>No check</option>
+    </select>
+  </div>
+  <div class="field">
+    <label for="f-from">Reviewed after</label>
+    <input id="f-from" type="date" name="from" value="{{ filters.date_from.isoformat() if filters.date_from else '' }}">
+  </div>
+  <div class="field">
+    <label for="f-to">Reviewed before</label>
+    <input id="f-to" type="date" name="to" value="{{ filters.date_to.isoformat() if filters.date_to else '' }}">
+  </div>
+  <div class="actions">
+    <button class="btn primary" type="submit">Apply</button>
+    {% if filters.active %}<a class="btn" href="/dashboard">Clear</a>{% endif %}
+  </div>
+</form>
+
+{% if filters.active %}
+{# Each chip's link drops just that one filter, keeping the rest. #}
+<div class="active-filters">
+  <span class="count">Showing {{ totals.reviews }} of all reviews</span>
+  {% for label, value, key in [
+      ("Repository", filters.repo, "repo"),
+      ("Severity", filters.severity|title, "severity"),
+      ("Gate", filters.gate|title, "gate"),
+      ("After", filters.date_from, "from"),
+      ("Before", filters.date_to, "to")] %}
+    {% if value %}
+      <span class="chip">{{ label }}: {{ value }}
+        <a href="/dashboard?{{ filters.query_string(**{key: ''}) }}" aria-label="Remove the {{ label }} filter">
+          <svg viewBox="0 0 24 24" width="9" height="9" fill="none" stroke="currentColor"
+               stroke-width="3" stroke-linecap="round" aria-hidden="true">
+            <path d="M6 6l12 12M18 6L6 18"></path>
+          </svg>
+        </a>
+      </span>
+    {% endif %}
+  {% endfor %}
+</div>
+{% endif %}
+
+{#
+  Totals over every review this visitor can see, not the current page.
+  Summing the page meant paginating changed the headline figures and
+  "Cost" answered no question anyone actually has.
+#}
 {% if reviews %}
 <div class="stats">
   <div class="stat">
     <div class="k">Reviews</div>
-    <div class="v">{{ total }}</div>
+    <div class="v">{{ totals.reviews }}</div>
   </div>
   <div class="stat">
     <div class="k">Repositories</div>
-    <div class="v">{{ repos|length }}</div>
+    <div class="v">{{ totals.repos }}</div>
   </div>
   <div class="stat">
-    <div class="k">{{ m.term("Findings") }} <small>this page</small></div>
+    <div class="k">{{ m.term("Findings") }}</div>
     <div class="v">{{ totals.findings }}</div>
   </div>
   <div class="stat">
-    <div class="k">{{ m.term("Fixes", "Fix suggestions") }} <small>this page</small></div>
+    <div class="k">{{ m.term("Gate", "Blocked") }}</div>
+    <div class="v">{{ totals.blocked }}<small> of {{ totals.reviews }}</small></div>
+  </div>
+  <div class="stat">
+    <div class="k">{{ m.term("Fixes", "Fix suggestions") }}</div>
     <div class="v">{{ totals.fixes }}</div>
   </div>
   <div class="stat">
-    <div class="k">{{ m.term("Cost") }} <small>this page</small></div>
+    <div class="k">{{ m.term("Cost") }}</div>
     <div class="v">{{ m.cost(totals.cost) }}</div>
   </div>
 </div>

@@ -132,3 +132,36 @@
          stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"></path></svg>
   </td>
 {%- endmacro %}
+
+
+{#
+  A fix suggestion as a before/after diff.
+
+  The "after" is parsed out of suggestion_body, which is the GitHub
+  suggestion block verbatim (```suggestion … ```). The "before" comes
+  from FixSuggestion.original_text, recorded at generation time.
+
+  A record written before original_text existed shows the replacement
+  alone and says so, rather than presenting an empty "before" that reads
+  as "this replaces nothing".
+
+  Both halves are stored strings, so both go through |redact — a fix for
+  a hardcoded-credential finding is, by construction, a diff whose
+  "before" line is the credential.
+#}
+{% macro fix_diff(fix) -%}
+  {% set body = fix.suggestion_body or "" %}
+  {% set after = body.split("```suggestion")[-1].rsplit("```", 1)[0].strip("\n") if "```suggestion" in body else "" %}
+  {% set before = fix.original_text or "" %}
+  <div class="diff">
+    {% for line in before.split("\n") if before %}
+      <div class="row del"><span class="sign">-</span><span>{{ line|redact }}</span></div>
+    {% endfor %}
+    {% for line in after.split("\n") if after %}
+      <div class="row add"><span class="sign">+</span><span>{{ line|redact }}</span></div>
+    {% endfor %}
+    {% if not before %}
+      <div class="diff-note">Recorded before the replaced lines were stored, so only the replacement is shown.</div>
+    {% endif %}
+  </div>
+{%- endmacro %}

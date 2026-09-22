@@ -1,11 +1,13 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m %}
-{% block title %}{{ owner }}/{{ repo }} · CodeGuard{% endblock %}
+{% block title %}{{ owner }}/{{ repo }} #{{ pr_number }} · CodeGuard{% endblock %}
 
 {% block crumbs %}
   <a href="/dashboard">Reviews</a>
   <span class="sep">/</span>
-  <strong>{{ owner }}/{{ repo }}</strong>
+  <a href="/dashboard/repos/{{ owner }}/{{ repo }}">{{ owner }}/{{ repo }}</a>
+  <span class="sep">/</span>
+  <strong>#{{ pr_number }}</strong>
 {% endblock %}
 
 {% block content %}
@@ -15,75 +17,70 @@
   {% set agg.findings = agg.findings + (r.findings_total or 0) %}
   {% set agg.tokens = agg.tokens + (r.tokens_in or 0) %}
 {% endfor %}
-{#
-  No cost chart here. A repo-wide series mixes pull requests, so two
-  adjacent bars can be a 2-file PR and a 40-file PR and the difference
-  between them says nothing about either. The chart lives on a pull
-  request's own page, where every point is the same PR.
-#}
+{# Oldest first, so the chart reads left to right the way time does. #}
+{% set series = reviews|reverse|list %}
+{% set costs = series|map(attribute="estimated_cost_usd")|select|list %}
+{% set max_cost = costs|max if costs else 0 %}
 
 <div class="page-head">
   <div>
-    <h1>{{ owner }}/{{ repo }}</h1>
-    <div class="sub">{{ reviews|length }} review{{ "" if reviews|length == 1 else "s" }} recorded{% if reviews and reviews[0].private %} · private repository{% endif %}</div>
+    <h1>{{ owner }}/{{ repo }} <span class="dim">#{{ pr_number }}</span></h1>
+    <div class="sub">
+      {{ reviews|length }} review{{ "" if reviews|length == 1 else "s" }} of this pull request — one per push.
+    </div>
   </div>
 </div>
 
 <div class="stats">
   <div class="stat"><div class="k">Reviews</div><div class="v">{{ reviews|length }}</div></div>
-  <div class="stat"><div class="k">{{ m.term("Findings") }}</div><div class="v">{{ agg.findings }}</div></div>
+  <div class="stat"><div class="k">Latest {{ m.term("Findings", "findings") }}</div><div class="v">{{ reviews[0].findings_total }}</div></div>
   <div class="stat"><div class="k">Tokens in</div><div class="v">{{ "{:,}".format(agg.tokens) }}</div></div>
   <div class="stat"><div class="k">Total {{ m.term("Cost", "cost") }}</div><div class="v">{{ m.cost(agg.cost) }}</div></div>
 </div>
 
-{% if pulls %}
+{#
+  Three points is the floor for a chart. Two bars are a comparison, not
+  a trend, and a chart of two invites a reader to see a direction that
+  is not in the data — the table below already says which was dearer.
+#}
+{% if reviews|length >= 3 and max_cost > 0 %}
 <div class="panel">
   <div class="panel-head">
-    <h2>Pull requests</h2>
-    <span class="count">{{ pulls|length }}</span>
+    <h2>Cost per review</h2>
+    <span class="count">oldest → newest</span>
   </div>
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th>Pull request</th>
-          <th class="num">Reviews</th>
-          <th>Latest {{ m.term("Gate", "gate") }}</th>
-          <th class="num">Latest {{ m.term("Findings", "findings") }}</th>
-          <th class="num">Total {{ m.term("Cost", "cost") }}</th>
-          <th class="num">Last reviewed</th>
-          <th class="chev"><span class="visually-hidden">Open</span></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for p in pulls %}
-        <tr class="row-link" data-href="/dashboard/repos/{{ owner }}/{{ repo }}/pulls/{{ p.pr_number }}">
-          <td><a class="pr" href="/dashboard/repos/{{ owner }}/{{ repo }}/pulls/{{ p.pr_number }}">#{{ p.pr_number }}</a></td>
-          <td class="num">{{ p.review_count }}</td>
-          <td>{{ m.gate_pill(p.latest_conclusion) }}</td>
-          <td class="num">{{ p.latest_findings }}</td>
-          <td class="num">{{ m.cost(p.total_cost) }}</td>
-          <td class="num dim nowrap">{{ m.when(p.last_reviewed) }}</td>
-          {{ m.chevron() }}
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  <div class="chart">
+    <div class="bars" role="img"
+         aria-label="Cost of each review of this pull request, oldest to newest. Peak {{ m.cost(max_cost) }}.">
+      {% for r in series %}
+      <div class="bar-col" title="{{ r.head_sha[:7] }} · {{ m.cost(r.estimated_cost_usd) }} · {{ "{:,}".format(r.tokens_in or 0) }} tokens in">
+        <div class="bar-fill" style="height: {{ [((r.estimated_cost_usd or 0) / max_cost * 100), 2]|max|round(2) }}%"></div>
+      </div>
+      {% endfor %}
+    </div>
+    {#
+      States the axis and nothing else. The caption used to assert that
+      a repeat review costs a fraction of the first, which the bars may
+      simply not show — a push that changes every file re-reviews every
+      file, and the cache saves nothing.
+    #}
+    <div class="chart-foot">
+      <span>Peak {{ m.cost(max_cost) }}</span>
+      <span class="dim">Each bar is one review of this pull request.</span>
+    </div>
   </div>
 </div>
 {% endif %}
 
 <div class="panel">
   <div class="panel-head">
-    <h2>All reviews</h2>
+    <h2>Reviews</h2>
     <span class="count">{{ reviews|length }}</span>
-    <span class="spacer"></span>
   </div>
   <div class="table-wrap">
     <table>
       <thead>
         <tr>
-          <th>PR</th>
           <th>Commit</th>
           <th>Trigger</th>
           <th>{{ m.term("Gate") }}</th>
@@ -99,7 +96,6 @@
       <tbody>
         {% for r in reviews %}
         <tr class="row-link" data-href="/dashboard/reviews/{{ r.job_id }}">
-          <td><a class="pr" href="/dashboard/repos/{{ owner }}/{{ repo }}/pulls/{{ r.pr_number }}">#{{ r.pr_number }}</a></td>
           <td class="sha">{{ r.head_sha[:7] }}</td>
           <td class="dim">{{ r.action }}</td>
           <td>{{ m.gate_pill(r.check_conclusion) }}</td>

@@ -1261,6 +1261,12 @@ def propose_fix(state: FileReviewState) -> dict:
             target_file=finding.file,
             target_line=finding.start_line,
             target_end_line=end_line,
+            # The file's own lines, not the model's echo of them. They
+            # are equal here — _matched_replacement_range just verified
+            # that — and taking the file's copy means a future loosening
+            # of the echo check cannot quietly turn this into "whatever
+            # the model claimed was there".
+            original_text="\n".join(file_lines[finding.start_line - 1:end_line]),
         ))
 
     return {

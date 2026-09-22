@@ -37,10 +37,31 @@
     <a class="brand" href="/dashboard"><span class="brand-mark">C</span>CodeGuard</a>
     <nav class="crumbs">{% block crumbs %}{% endblock %}</nav>
     <div class="topbar-right">
+      <button class="palette-trigger" id="palette-open" type="button" aria-haspopup="dialog">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path>
+        </svg>
+        <span class="hint-text">Jump to…</span>
+        <kbd>{{ "⌘K" }}</kbd>
+      </button>
+      {#
+        EasyAuth's own endpoints. They are served by the platform in
+        front of this app, not by any route here, which is why they are
+        absolute paths with no url_for. post_login_redirect_uri brings
+        the visitor back to the page they were on rather than dumping
+        them on the index.
+      #}
       {% if principal %}
         <span class="who"><span class="dot"></span>{{ principal }}</span>
+        <a class="btn btn-sm" href="/.auth/logout?post_logout_redirect_uri={{ request.url.path | urlencode }}">Sign out</a>
       {% else %}
-        <span class="who anon"><span class="dot"></span>Signed out</span>
+        <a class="btn btn-sm primary" href="/.auth/login/github?post_login_redirect_uri={{ request.url.path | urlencode }}">
+          <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true">
+            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"></path>
+          </svg>
+          Sign in with GitHub
+        </a>
       {% endif %}
       <button class="icon-btn" id="theme-toggle" type="button"
               aria-label="Toggle colour theme" title="Toggle colour theme">
@@ -57,6 +78,28 @@
     </div>
   </div>
 </header>
+
+{#
+  Quick-jump. Markup lives here so every page has it; the index it
+  matches against is fetched once, on first open, from /dashboard/search
+  — already visibility-filtered server-side, so the palette cannot
+  surface a repo or PR title the visitor could not open anyway.
+#}
+<div class="palette-backdrop" id="palette" hidden>
+  <div class="palette" role="dialog" aria-modal="true" aria-label="Jump to a repository, pull request or file">
+    <div class="palette-input">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" aria-hidden="true">
+        <circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path>
+      </svg>
+      <input id="palette-query" type="text" autocomplete="off" spellcheck="false"
+             placeholder="Jump to a repository, pull request or file…"
+             aria-controls="palette-results" aria-autocomplete="list">
+      <kbd>Esc</kbd>
+    </div>
+    <div class="palette-results" id="palette-results" role="listbox"></div>
+  </div>
+</div>
 
 <main class="shell">
   {% block content %}{% endblock %}
@@ -146,6 +189,154 @@
     });
     document.addEventListener("keydown", function (e) { if (e.key === "Escape") hide(); });
     window.addEventListener("scroll", hide, true);
+  })();
+
+  // Quick-jump palette.
+  (function () {
+    var box = document.getElementById("palette");
+    var input = document.getElementById("palette-query");
+    var results = document.getElementById("palette-results");
+    var trigger = document.getElementById("palette-open");
+    if (!box || !input || !results) return;
+
+    var index = null;      // fetched once, on first open
+    var items = [];        // current matches, in render order
+    var cursor = 0;
+
+    function esc(s) {
+      var d = document.createElement("div");
+      d.textContent = s == null ? "" : String(s);
+      return d.innerHTML;
+    }
+
+    // Subsequence match, the way every palette works: "chsv" finds
+    // "checkout-service". Returns the matched positions so they can be
+    // highlighted, or null when it does not match at all.
+    function fuzzy(text, query) {
+      if (!query) return [];
+      var hay = text.toLowerCase(), i = 0, hits = [];
+      for (var c = 0; c < query.length; c++) {
+        i = hay.indexOf(query[c], i);
+        if (i === -1) return null;
+        hits.push(i);
+        i++;
+      }
+      return hits;
+    }
+
+    function mark(text, hits) {
+      if (!hits || !hits.length) return esc(text);
+      var out = "", last = 0;
+      hits.forEach(function (i) {
+        out += esc(text.slice(last, i)) + "<mark>" + esc(text[i]) + "</mark>";
+        last = i + 1;
+      });
+      return out + esc(text.slice(last));
+    }
+
+    function candidates() {
+      if (!index) return [];
+      var out = [];
+      index.repos.forEach(function (r) {
+        out.push({ kind: "Repo", label: r.owner + "/" + r.repo, meta: "", url: r.url });
+      });
+      index.pulls.forEach(function (p) {
+        out.push({
+          kind: "PR",
+          // Both the number and the title are searchable, because
+          // people remember a pull request by either.
+          label: "#" + p.number + (p.title ? "  " + p.title : ""),
+          meta: p.owner + "/" + p.repo, url: p.url,
+        });
+      });
+      index.files.forEach(function (f) {
+        out.push({ kind: "File", label: f.path, meta: f.repo, url: f.url });
+      });
+      return out;
+    }
+
+    function render(query) {
+      var q = query.trim().toLowerCase();
+      var all = candidates();
+      items = [];
+      all.forEach(function (c) {
+        var hits = fuzzy(c.label, q);
+        if (hits === null) return;
+        // Earlier matches rank higher, and a shorter label beats a
+        // longer one that happens to contain the same letters.
+        c.score = (hits.length ? hits[0] : 0) * 10 + c.label.length;
+        c.hits = hits;
+        items.push(c);
+      });
+      items.sort(function (a, b) { return a.score - b.score; });
+      items = items.slice(0, 40);
+      cursor = 0;
+
+      if (!index) { results.innerHTML = '<div class="palette-empty">Loading…</div>'; return; }
+      if (!items.length) {
+        results.innerHTML = '<div class="palette-empty">Nothing matches “' + esc(query) + '”.</div>';
+        return;
+      }
+      var html = "", group = null;
+      items.forEach(function (c, i) {
+        if (c.kind !== group) { group = c.kind; html += '<div class="palette-group">' + esc(group) + "</div>"; }
+        html += '<div class="palette-item" role="option" data-i="' + i + '"' +
+                (i === 0 ? ' aria-selected="true"' : "") + ">" +
+                '<span class="kind">' + esc(c.kind) + "</span>" +
+                '<span class="label">' + mark(c.label, c.hits) + "</span>" +
+                '<span class="meta">' + esc(c.meta) + "</span></div>";
+      });
+      results.innerHTML = html;
+    }
+
+    function move(delta) {
+      if (!items.length) return;
+      var nodes = results.querySelectorAll(".palette-item");
+      nodes[cursor] && nodes[cursor].removeAttribute("aria-selected");
+      cursor = (cursor + delta + items.length) % items.length;
+      var next = nodes[cursor];
+      if (next) { next.setAttribute("aria-selected", "true"); next.scrollIntoView({ block: "nearest" }); }
+    }
+
+    function go() { if (items[cursor]) window.location = items[cursor].url; }
+
+    function open() {
+      box.hidden = false;
+      input.value = "";
+      render("");
+      input.focus();
+      if (index === null) {
+        fetch("/dashboard/search", { headers: { Accept: "application/json" } })
+          .then(function (r) { return r.ok ? r.json() : { repos: [], pulls: [], files: [] }; })
+          .then(function (data) { index = data; render(input.value); })
+          .catch(function () { index = { repos: [], pulls: [], files: [] }; render(input.value); });
+      }
+    }
+
+    function close() { box.hidden = true; }
+
+    document.addEventListener("keydown", function (e) {
+      // metaKey for macOS, ctrlKey elsewhere — both, so the same
+      // muscle memory works on either.
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        box.hidden ? open() : close();
+        return;
+      }
+      if (box.hidden) return;
+      if (e.key === "Escape") { e.preventDefault(); close(); }
+      else if (e.key === "ArrowDown") { e.preventDefault(); move(1); }
+      else if (e.key === "ArrowUp") { e.preventDefault(); move(-1); }
+      else if (e.key === "Enter") { e.preventDefault(); go(); }
+    });
+
+    if (trigger) trigger.addEventListener("click", open);
+    input.addEventListener("input", function () { render(input.value); });
+    box.addEventListener("click", function (e) { if (e.target === box) close(); });
+    results.addEventListener("click", function (e) {
+      var item = e.target.closest(".palette-item");
+      if (item) { cursor = Number(item.getAttribute("data-i")); go(); }
+    });
   })();
 </script>
 </body>

@@ -380,12 +380,22 @@ fi
 
 # worker: DOES need a command override (python -m codeguard.worker.main,
 # not the image's default). Same --args bug applies here, so this goes
-# through --yaml instead of CLI flags, in one call that also sets the
-# KEDA scale rule — a custom scale rule embedded directly in a create
-# call was observed to hang ("Operation expired") the first few times;
-# applying it as a separate update to an already-healthy app worked
-# reliably, which is the order this script follows (image/command first
-# as its own update, scale rule as a second update below).
+# through --yaml instead of CLI flags.
+#
+# ONE update, not two. This used to switch the image first and apply the
+# KEDA scale rule second, because a scale rule in the original CREATE
+# call had hung ("Operation expired") during the first deployment. But
+# two updates mint two revisions, and the first of them is a live,
+# auto-numbered replica that polls the queue and can claim a job moments
+# before the second update deactivates it. That is not hypothetical: on
+# 2026-09-22 revision --0000012 claimed a review and was terminated
+# 0.23s after its semgrep subprocess died, producing a review with no
+# semgrep coverage at all. Collapsing to a single update removes the
+# transient revision, so no replica exists purely to be superseded.
+#
+# The hang that motivated the split was on a CREATE, not an update, and
+# the app always exists by this point (_bootstrap_and_wire_identity ran
+# above), so the case it guarded against cannot arise here.
 #
 # Deployed by DIGEST under a commit-named revision, exactly as the api is
 # above and for the same reasons. It used to deploy the floating :latest
@@ -413,6 +423,7 @@ WORKER_UPDATE_YAML=$(mktemp)
 cat > "$WORKER_UPDATE_YAML" << YAML_EOF
 properties:
   template:
+    revisionSuffix: $API_REVISION_SUFFIX
     containers:
       - image: $WORKER_IMAGE
         name: $WORKER_APP_NAME
@@ -433,31 +444,6 @@ properties:
           - name: DB_SSLMODE
             value: require
     scale:
-      minReplicas: 1
-      maxReplicas: 1
-YAML_EOF
-az containerapp update --name "$WORKER_APP_NAME" --resource-group "$RESOURCE_GROUP" --yaml "$WORKER_UPDATE_YAML" --output none
-rm -f "$WORKER_UPDATE_YAML"
-
-# Scale-to-zero, applied once the worker is confirmed healthy on fixed
-# scaling above — bundling this into the same update as the image/command
-# switch was the specific combination that hung during the first
-# deployment; kept as a separate step here even though it may not be
-# strictly required every time.
-#
-# revisionSuffix goes on THIS update, not the one above, because scale is
-# part of a revision's spec too: both updates mint a revision, and the
-# same suffix on both would be a name collision. This is the one that
-# ends up active, so this is the one that carries the commit's name. The
-# intermediate revision the update above creates is auto-numbered and
-# immediately superseded — single-revision mode deactivates it — which is
-# the price of keeping the two-step order that comment describes.
-WORKER_SCALE_YAML=$(mktemp)
-cat > "$WORKER_SCALE_YAML" << YAML_EOF
-properties:
-  template:
-    revisionSuffix: $API_REVISION_SUFFIX
-    scale:
       minReplicas: 0
       maxReplicas: 3
       rules:
@@ -470,8 +456,9 @@ properties:
               activationTargetQueryValue: "0"
               connectionFromEnv: DATABASE_URL
 YAML_EOF
-az containerapp update --name "$WORKER_APP_NAME" --resource-group "$RESOURCE_GROUP" --yaml "$WORKER_SCALE_YAML" --output none
-rm -f "$WORKER_SCALE_YAML"
+az containerapp update --name "$WORKER_APP_NAME" --resource-group "$RESOURCE_GROUP" --yaml "$WORKER_UPDATE_YAML" --output none
+rm -f "$WORKER_UPDATE_YAML"
+
 fi
 
 # ACR admin user should stay disabled — both apps pull via managed

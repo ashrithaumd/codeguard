@@ -89,6 +89,7 @@ async def record_review(
     head_sha: str,
     action: str,
     private: bool,
+    pr_title: str,
     summary_body: str,
     check_conclusion: str | None,
     gate_threshold: str,
@@ -123,7 +124,7 @@ async def record_review(
             await conn.execute(
                 """
                 INSERT INTO reviews (
-                    job_id, owner, repo, pr_number, head_sha, action, private,
+                    job_id, owner, repo, pr_number, head_sha, action, private, pr_title,
                     summary_body, check_conclusion, gate_threshold, fix_threshold,
                     files_seen, files_reviewed, findings_total,
                     findings_verdict_confirmed, findings_generative,
@@ -136,7 +137,7 @@ async def record_review(
                     verdict_call_failures_json
                 )
                 VALUES (
-                    %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s, %s, %s, %s, %s, %s,
                     %s, %s, %s, %s,
                     %s, %s, %s,
                     %s, %s,
@@ -151,7 +152,7 @@ async def record_review(
                 ON CONFLICT (job_id) DO NOTHING
                 """,
                 (
-                    job_id, owner, repo, pr_number, head_sha, action, private,
+                    job_id, owner, repo, pr_number, head_sha, action, private, pr_title,
                     summary_body, check_conclusion, gate_threshold, fix_threshold,
                     files_seen, files_reviewed, len(findings),
                     counts["verdict_confirmed"], counts["generative"],

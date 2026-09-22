@@ -84,6 +84,17 @@ class FixSuggestion(BaseModel):
     # older rows/records deserialize unchanged.
     target_end_line: int = -1
 
+    # The lines being replaced, verbatim, as they stood in the file when
+    # the suggestion was written. propose_fix has already verified this
+    # against the file (_matched_replacement_range), so recording it
+    # costs nothing and is the only way anything downstream can show a
+    # before/after: the dashboard renders a red/green diff from it, and
+    # without it a reader sees the replacement with nothing to compare
+    # against. Empty for records written before this field existed, and
+    # the dashboard then shows the replacement alone rather than
+    # inventing a "before" it does not have.
+    original_text: str = ""
+
 
 class CacheWriteRecord(BaseModel):
     """One agent's fresh (non-cache-hit) result for one piece of
