@@ -34,7 +34,7 @@ from codeguard.config import get_settings
 from codeguard.diff.parse import build_hunks, hash_content, parse_hunk_ranges
 from codeguard.pipeline.eval_hygiene import review_eval_hygiene
 from codeguard.pipeline.llm_call import call_agent
-from codeguard.pipeline.metrics import hunk_cache_total, verdict_flip_total
+from codeguard.pipeline.metrics import fix_suggestions_dropped_total, hunk_cache_total, verdict_flip_total
 from codeguard.pipeline.models import (
     CachedAgentResult,
     CacheKey,
@@ -162,7 +162,10 @@ For each finding, propose the exact code that should replace file_content's line
 
 Respond with ONLY a JSON array (no prose, no markdown code fences), one object per finding you can confidently fix, each with exactly these keys:
 "fingerprint" (string, must exactly match one of the input findings' fingerprint),
+"original" (string — the CURRENT text of file_content's lines start_line..end_line for that finding, copied verbatim, including indentation. Copy it from file_content; do not retype it from memory and do not normalise it),
 "replacement" (string — the exact replacement code for that finding's line range; no markdown fences inside it).
+
+"original" is checked against the real file before your suggestion is used. If the lines you are replacing are not the finding's own lines, say so by omitting the finding rather than guessing which lines you meant — a suggestion attached to the wrong line is worse than no suggestion, because a reviewer can apply it in one click.
 
 If a finding can't be fixed with a small, safe, self-contained change, omit it from the array rather than guessing.
 """
@@ -606,8 +609,33 @@ def _parse_direct_findings(
             severity = Severity[str(item["severity"]).upper()]
             severity = min(severity, max_severity)
             line = int(item["line"])
-            if hunk_end > 0:
-                line = min(max(line, hunk_start), hunk_end)
+            if hunk_end > 0 and not (hunk_start <= line <= hunk_end):
+                # Was min(max(line, hunk_start), hunk_end) -- a CLAMP,
+                # which silently relocated the finding to the nearest
+                # edge of this hunk while its message went on describing
+                # the line the model actually meant. Seen live: a
+                # quality finding reading "The division operation on
+                # line 13..." pinned to line 2, the SQL line, because
+                # that was this hunk's last line. propose_fix then
+                # generated a division-guard suggestion for it and its
+                # own is_line_in_diff guard passed -- line 2 IS in the
+                # diff -- so "Commit suggestion" would have replaced the
+                # SQL statement with division code.
+                #
+                # A line outside this hunk is a line this branch cannot
+                # place, so it is not placed. 0 means "no specific
+                # line": _inlineable already routes those to the summary
+                # body instead of an inline comment, and no suggestion
+                # can attach to one (is_line_in_diff rejects 0). The
+                # finding itself is still reported in full -- the
+                # observation is usually real, only its coordinates are
+                # not.
+                logger.warning(
+                    "%s agent reported line %d for %s outside its own hunk (%d-%d); "
+                    "demoting to the summary body rather than relocating it",
+                    agent, line, path, hunk_start, hunk_end,
+                )
+                line = 0
             category = str(item.get("category", agent))
             message = str(item["message"])
         except (KeyError, ValueError, TypeError):
@@ -768,6 +796,39 @@ def route_after_fanin(state: ReviewState) -> str | list[Send]:
     ]
 
 
+def _echoes_the_findings_own_lines(original: str, file_lines: list[str], finding: Finding) -> bool:
+    """True when the text the fix agent says it is replacing really is
+    what stands at the finding's own line range in the file.
+
+    This is the check that catches the PR #5 corruption, which nothing
+    else could. There, the quality agent returned line 2 (the SQL line)
+    for a finding whose message described a division operation. Every
+    coordinate in the pipeline was then self-consistent -- the finding
+    said line 2, the suggestion was generated for line 2, and it was
+    posted on line 2 -- so no amount of comparing line numbers to each
+    other could detect it. The only disagreement was between the
+    suggestion's CONTENT and the code actually at that line, and that is
+    what this compares.
+
+    Trailing whitespace is normalised away; indentation is not, since a
+    replacement that gets indentation wrong is a broken edit in Python
+    regardless of intent.
+
+    A missing or empty `original` fails closed. Losing a suggestion
+    costs a reviewer one click of convenience; applying a wrong one
+    corrupts the file.
+    """
+    if not original.strip():
+        return False
+    start = finding.start_line
+    end = max(finding.end_line, start)
+    if start < 1 or end > len(file_lines):
+        return False
+    actual = [line.rstrip() for line in file_lines[start - 1:end]]
+    claimed = [line.rstrip() for line in original.splitlines()]
+    return claimed == actual
+
+
 def propose_fix(state: FileReviewState) -> dict:
     """Sonnet tier — for confirmed findings >= fix_threshold in one
     file, proposes a GitHub suggestion-block replacement for each.
@@ -812,12 +873,14 @@ def propose_fix(state: FileReviewState) -> dict:
 
     items = _parse_json_array(result.raw_text, state["path"], "fix")
     findings_by_fingerprint = {f.fingerprint: f for f in findings}
+    file_lines = state["content"].splitlines()
     changed_ranges = parse_hunk_ranges(state.get("patch", ""))
     suggestions: list[FixSuggestion] = []
     for item in items:
         try:
             fingerprint = str(item["fingerprint"])
             replacement = str(item["replacement"])
+            original = str(item.get("original", ""))
         except (KeyError, TypeError):
             logger.warning("skipping malformed fix suggestion for %s: %r", state["path"], item)
             continue
@@ -839,7 +902,24 @@ def propose_fix(state: FileReviewState) -> dict:
             )
             continue
 
-        suggestions.append(FixSuggestion(fingerprint=fingerprint, suggestion_body=f"```suggestion\n{replacement}\n```"))
+        if not _echoes_the_findings_own_lines(original, file_lines, finding):
+            fix_suggestions_dropped_total.labels(reason="original_mismatch").inc()
+            logger.error(
+                "dropping fix suggestion for %s at %s:%d — the fix agent says it is replacing %r, "
+                "but that line actually reads %r. The suggestion is about different code than the "
+                "line it would replace.",
+                fingerprint, finding.file, finding.start_line, original.strip()[:120],
+                (file_lines[finding.start_line - 1].strip()[:120]
+                 if 1 <= finding.start_line <= len(file_lines) else "<out of range>"),
+            )
+            continue
+
+        suggestions.append(FixSuggestion(
+            fingerprint=fingerprint,
+            suggestion_body=f"```suggestion\n{replacement}\n```",
+            target_file=finding.file,
+            target_line=finding.start_line,
+        ))
 
     return {
         "should_fix": True,
@@ -1036,11 +1116,18 @@ def _apply_fold(primary: Finding, folded: list[Finding]) -> Finding:
         lines.append(f"- [{f.source_tool}] {f.message}")
     lines.append("")
     lines.append("</details>")
-    return Finding.create(
-        file=primary.file, start_line=primary.start_line, end_line=primary.end_line,
-        severity=primary.severity, source_tool=primary.source_tool, rule_id=primary.rule_id,
-        message="\n".join(lines), confidence=primary.confidence,
-    )
+    # model_copy, NOT Finding.create: create() re-derives the
+    # fingerprint from the message, and folding rewrites the message.
+    # That minted a NEW identity for what is still the same defect,
+    # which silently orphaned the finding's fix suggestion --
+    # propose_fix runs BEFORE summarize (graph.py) and keys
+    # suggestions by the pre-fold fingerprint -- and just as quietly
+    # broke the feedback loop, since posted_finding_comments and
+    # suppressed_fingerprints key on the same value, so a folded
+    # finding marked false-positive recorded an id that could never
+    # recur. A fold changes how a finding is RENDERED, never which
+    # finding it is.
+    return primary.model_copy(update={"message": "\n".join(lines)})
 
 
 def _fold_cross_agent_duplicates(findings: list[Finding]) -> list[Finding]:

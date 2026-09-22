@@ -58,3 +58,12 @@ verdict_flip_total = Counter(
     "nodes.py's _apply_verdicts. Labeled by agent only; rule_id cardinality is unbounded.",
     ["agent"],
 )
+fix_suggestions_dropped_total = Counter(
+    "codeguard_fix_suggestions_dropped_total",
+    "Fix suggestions withheld at generation time. reason='original_mismatch' means the fix agent's "
+    "echo of the code it was replacing did not match the finding's own lines in the file — i.e. the "
+    "suggestion was about different code than the line it would have replaced, which is one click "
+    "from corrupting the file. Should be rare; a sustained non-zero rate means the agents upstream "
+    "are mislocating findings.",
+    ["reason"],
+)

@@ -2,6 +2,11 @@
 role (plain "summarize" string vs a list[Send] fan-out to propose_fix,
 from the same router — confirmed to actually work in LangGraph via a
 standalone smoke test, not just assumed).
+
+Every suggestion here carries an `original` echo, because propose_fix
+now verifies that the text the fix agent says it is replacing really is
+what stands at the finding's own line. See
+tests/pipeline/test_fix_suggestion_targeting.py for why.
 """
 
 from __future__ import annotations
@@ -52,11 +57,18 @@ def test_route_after_fanin_dispatches_one_send_per_qualifying_file():
 
 def test_propose_fix_correlates_suggestion_by_fingerprint():
     finding = make_finding(file="a.py", rule_id="B105", line=3, message="hardcoded secret")
-    items = [{"fingerprint": finding.fingerprint, "replacement": 'PASSWORD = os.environ["PASSWORD"]'}]
+    # `original` must be the real text at the finding's line — propose_fix
+    # now verifies the fix agent is replacing the code it claims to be.
+    content = "import os\n\nPASSWORD = 'hunter2'\n"
+    items = [{
+        "fingerprint": finding.fingerprint,
+        "original": "PASSWORD = 'hunter2'",
+        "replacement": 'PASSWORD = os.environ["PASSWORD"]',
+    }]
 
     with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)):
         result = propose_fix({
-            "owner": "o", "repo": "r", "path": "a.py", "content": "PASSWORD = 'hunter2'\n",
+            "owner": "o", "repo": "r", "path": "a.py", "content": content,
             "findings": [finding],
         })
 
@@ -120,7 +132,7 @@ def test_propose_fix_drops_a_suggestion_for_a_line_outside_the_diff():
 
 def test_propose_fix_keeps_a_suggestion_for_a_line_inside_the_diff():
     finding = make_finding(file="a.py", rule_id="B105", line=3, message="hardcoded secret")
-    items = [{"fingerprint": finding.fingerprint, "replacement": "x = 1"}]
+    items = [{"fingerprint": finding.fingerprint, "original": "x", "replacement": "x = 1"}]
     patch_text = "@@ -1,5 +1,5 @@\n context"
 
     with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)):

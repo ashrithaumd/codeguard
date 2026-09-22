@@ -76,13 +76,25 @@ def test_review_quality_parses_findings_from_model_output():
     assert len(result["cache_writes"]) == 1
 
 
-def test_review_quality_clamps_a_line_number_outside_the_hunk_range():
+def test_review_quality_demotes_a_line_number_outside_the_hunk_range():
+    """This used to assert the opposite -- that the line was CLAMPED to
+    the nearest hunk edge (15 here). That is what shipped, and it
+    corrupted a live review: a quality finding about line 13 was pinned
+    to line 2 because line 2 ended its hunk, then collected a fix
+    suggestion whose replacement was written for line 13. See
+    tests/pipeline/test_fix_suggestion_targeting.py for the full case.
+
+    A line this branch cannot place is not placed. 0 routes the finding
+    to the summary body, where it is still reported in full.
+    """
     items = [{"line": 999, "severity": "low", "category": "naming", "message": "out of range"}]
 
     with patch("codeguard.pipeline.nodes.call_agent", return_value=_fake_result(items)):
         result = review_quality(_hunk_state(start_line=10, end_line=15))
 
-    assert result["findings"][0].start_line == 15
+    f = result["findings"][0]
+    assert f.start_line == 0
+    assert f.message == "out of range"   # kept, not dropped
 
 
 def test_review_quality_empty_array_means_no_findings_no_fallback():

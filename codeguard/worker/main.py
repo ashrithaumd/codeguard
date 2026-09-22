@@ -74,6 +74,13 @@ CHECK_RUNS_COMPLETED = Counter(
     "codeguard_worker_check_runs_completed_total",
     "Check Runs successfully completed, by conclusion.", ["conclusion"],
 )
+FIX_SUGGESTIONS_DROPPED = Counter(
+    "codeguard_worker_fix_suggestions_dropped_total",
+    "Fix suggestions withheld at post time because the finding they matched was not at the line "
+    "the suggestion was written against. Should be zero; a non-zero value means something is "
+    "changing finding identity between propose_fix and posting.",
+)
+
 CHECK_RUNS_FAILED = Counter(
     "codeguard_worker_check_runs_failed_total",
     "Check Run start/complete calls that raised (most commonly: App missing the checks:write permission).",
@@ -178,6 +185,16 @@ def _log_findings(pr_number: int, findings) -> None:
                      f.file, f.start_line, f.end_line, f.source_tool, f.severity.name, f.rule_id, f.message)
 
 
+def _suggestion_targets_finding(suggestion, finding) -> bool:
+    """A suggestion generated before target_file/target_line existed
+    (target_line == -1) is unverifiable, not wrong — kept, since the
+    only such records are ones this field was added after.
+    """
+    if suggestion.target_line < 0:
+        return True
+    return suggestion.target_file == finding.file and suggestion.target_line == finding.start_line
+
+
 def _findings_to_review_comments(findings, fix_suggestions) -> list[dict]:
     """A finding with a matching FixSuggestion (by fingerprint) gets its
     suggestion-block appended under the finding's own comment body — one
@@ -188,12 +205,32 @@ def _findings_to_review_comments(findings, fix_suggestions) -> list[dict]:
     in GitHub's rendered markdown, recovered after posting (see
     _record_posted_finding_comments) so a later threaded reply can be
     traced back to the specific finding it's feedback about.
+
+    A suggestion is dropped if the finding it is about to be attached to
+    is not at the line the suggestion was written against. Matching is
+    by fingerprint, so this should be unreachable — but it was reachable
+    once already (summarize's cross-agent fold re-derived the
+    fingerprint from the rewritten message, minting a new identity for
+    the same defect), and the failure mode is a suggestion block
+    anchored to an unrelated line that a reviewer can commit in one
+    click. A missing suggestion costs convenience; a wrong one corrupts
+    the file. This is the check that makes that trade explicit rather
+    than relying on every future caller preserving identity correctly.
     """
     suggestions_by_fingerprint = {s.fingerprint: s for s in fix_suggestions}
     comments = []
     for f in findings:
         body = f"**[{f.source_tool} / {f.severity.name}] {f.rule_id}**\n\n{f.message}"
         suggestion = suggestions_by_fingerprint.get(f.fingerprint)
+        if suggestion is not None and not _suggestion_targets_finding(suggestion, f):
+            FIX_SUGGESTIONS_DROPPED.inc()
+            logger.error(
+                "dropping fix suggestion for %s: written against %s:%d but the finding it matched "
+                "is at %s:%d — a suggestion block anchored to the wrong line is one click from "
+                "corrupting the file",
+                f.fingerprint, suggestion.target_file, suggestion.target_line, f.file, f.start_line,
+            )
+            suggestion = None
         if suggestion is not None:
             body = f"{body}\n\n{suggestion.suggestion_body}"
         body = f"{body}\n\n{fingerprint_marker(f.fingerprint)}"

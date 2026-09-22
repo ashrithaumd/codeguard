@@ -59,6 +59,19 @@ class FixSuggestion(BaseModel):
     fingerprint: str
     suggestion_body: str  # a ```suggestion\n...\n``` block, ready to append to a review comment
 
+    # The file and line this replacement was actually written against,
+    # captured from the Finding at generation time. A GitHub suggestion
+    # block replaces the line its comment is anchored to, so if the
+    # finding this is attached to has moved by the time it is posted,
+    # the block rewrites the WRONG line -- which is not a cosmetic
+    # failure: the reviewer clicks "Commit suggestion" and the file is
+    # corrupted. worker/main.py re-checks these against the finding it
+    # is about to post and drops the suggestion on any mismatch.
+    # Defaulted so older rows/records deserialize, and treated as
+    # "unverifiable, keep" in that case rather than silently dropped.
+    target_file: str = ""
+    target_line: int = -1
+
 
 class CacheWriteRecord(BaseModel):
     """One agent's fresh (non-cache-hit) result for one piece of
