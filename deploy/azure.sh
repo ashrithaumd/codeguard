@@ -386,12 +386,35 @@ fi
 # applying it as a separate update to an already-healthy app worked
 # reliably, which is the order this script follows (image/command first
 # as its own update, scale rule as a second update below).
+#
+# Deployed by DIGEST under a commit-named revision, exactly as the api is
+# above and for the same reasons. It used to deploy the floating :latest
+# tag under an auto-numbered revision, which meant the provenance check
+# further up guarded only half the deployment: "which commit is the
+# worker running?" had no answer on the worker side, and a :latest that
+# had since moved would have been picked up silently on the next
+# unrelated update. The worker is the half that actually runs reviews.
+WORKER_IMAGE="$ACR_NAME.azurecr.io/codeguard@$LATEST_DIGEST"
+WORKER_REVISION_NAME="${WORKER_APP_NAME}--${API_REVISION_SUFFIX}"
+WORKER_EXISTING_IMAGE="$(az containerapp revision show --name "$WORKER_APP_NAME" --resource-group "$RESOURCE_GROUP" \
+    --revision "$WORKER_REVISION_NAME" --query "properties.template.containers[0].image" -o tsv 2>/dev/null || true)"
+
+# Reuses API_REVISION_SUFFIX rather than re-deriving it, so both apps
+# always carry the same revision name for one deploy — including in the
+# ALLOW_DIGEST_DRIFT case, where that suffix has already been extended
+# with the digest prefix. That's also what makes the else branch safe:
+# a drifted digest can only arrive here under a suffix that has already
+# been made distinct, so this never tries to recreate an existing
+# revision name with different contents.
+if [ "$WORKER_EXISTING_IMAGE" = "$WORKER_IMAGE" ]; then
+    echo "Revision $WORKER_REVISION_NAME already exists and runs the current image digest ($LATEST_DIGEST) — skipping."
+else
 WORKER_UPDATE_YAML=$(mktemp)
 cat > "$WORKER_UPDATE_YAML" << YAML_EOF
 properties:
   template:
     containers:
-      - image: $ACR_NAME.azurecr.io/codeguard:latest
+      - image: $WORKER_IMAGE
         name: $WORKER_APP_NAME
         command: ["python"]
         args: ["-m", "codeguard.worker.main"]
@@ -421,10 +444,19 @@ rm -f "$WORKER_UPDATE_YAML"
 # switch was the specific combination that hung during the first
 # deployment; kept as a separate step here even though it may not be
 # strictly required every time.
+#
+# revisionSuffix goes on THIS update, not the one above, because scale is
+# part of a revision's spec too: both updates mint a revision, and the
+# same suffix on both would be a name collision. This is the one that
+# ends up active, so this is the one that carries the commit's name. The
+# intermediate revision the update above creates is auto-numbered and
+# immediately superseded — single-revision mode deactivates it — which is
+# the price of keeping the two-step order that comment describes.
 WORKER_SCALE_YAML=$(mktemp)
-cat > "$WORKER_SCALE_YAML" << 'YAML_EOF'
+cat > "$WORKER_SCALE_YAML" << YAML_EOF
 properties:
   template:
+    revisionSuffix: $API_REVISION_SUFFIX
     scale:
       minReplicas: 0
       maxReplicas: 3
@@ -440,6 +472,7 @@ properties:
 YAML_EOF
 az containerapp update --name "$WORKER_APP_NAME" --resource-group "$RESOURCE_GROUP" --yaml "$WORKER_SCALE_YAML" --output none
 rm -f "$WORKER_SCALE_YAML"
+fi
 
 # ACR admin user should stay disabled — both apps pull via managed
 # identity only. If this ever errors saying admin is already disabled,
