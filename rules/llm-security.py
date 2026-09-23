@@ -232,14 +232,14 @@ resp_oi = oai.responses.create(model="gpt-4o", input="hi", instructions=SYSTEM, 
 # ok: llm-output-to-sql
 cursor.execute("SELECT 1")
 
-# KNOWN FALSE POSITIVE, recorded rather than hidden. Passing model output
-# as a BOUND PARAMETER is the correct, safe way to use it in SQL, but the
-# rule's sink is `$CURSOR.execute(...)`, which cannot tell the query text
-# from the parameter tuple — so it fires here too. Pre-existing and
-# vendor-independent: the identical Anthropic call flags the same way.
-# Surfaced only once this test file started exercising parameterization;
-# the old `ok` case passed no model output at all, so it never probed it.
-# todook: llm-output-to-sql
+# WAS a known false positive, now fixed. Passing model output as a BOUND
+# PARAMETER is the correct, safe way to use it in SQL, but the rule's
+# sink used to be `$CURSOR.execute(...)` — the whole call — so it could
+# not tell the query text from the parameter tuple and fired here too.
+# The sink now focuses the QUERY argument (focus-metavariable), so this
+# is a real `ok` rather than a `todook`: the safe pattern no longer
+# produces a finding a reviewer has to dismiss by hand.
+# ok: llm-output-to-sql
 cursor.execute("SELECT 1 WHERE x = ?", (resp_oi.output_text,))
 
 
@@ -373,3 +373,224 @@ model = "gpt-4o"
 
 # ok: llm-unpinned-model-alias
 model = "gpt-4o-2024-08-06"
+
+
+# =======================================================================
+# LangChain / LlamaIndex and the wider OWASP coverage.
+#
+# Same convention as above: each block includes whatever OTHER rules
+# would otherwise fire on the same line (max_tokens, request_timeout,
+# max_iterations), so every case isolates the one rule it is testing.
+# The library symbols are never imported or called for real — semgrep
+# parses this file, it does not run it.
+# =======================================================================
+
+import torch  # noqa: E402
+
+fetched_url = "https://example.com"
+SECRET_KEY_NAME = "ANTHROPIC_API_KEY"
+
+
+# --- llm-langchain-prompt-from-fstring ----------------------------------
+
+# ruleid: llm-langchain-prompt-from-fstring
+tmpl_bad = PromptTemplate.from_template(f"Answer this: {user_input}")
+
+# ruleid: llm-langchain-prompt-from-fstring
+tmpl_bad2 = ChatPromptTemplate.from_template(f"Summarise: {user_input}")
+
+# The near-miss: a real template with a slot, which is the whole point —
+# the value arrives at invoke time and stays a parameter.
+# ok: llm-langchain-prompt-from-fstring
+tmpl_ok = PromptTemplate.from_template("Answer this: {question}")
+
+
+# --- llm-fetched-content-into-prompt (taint) ----------------------------
+
+page = requests.get(fetched_url).text
+# ruleid: llm-fetched-content-into-prompt
+client.messages.create(model="x", messages=[{"role": "user", "content": page}], max_tokens=100, system=SYSTEM, timeout=5)
+
+# Near-miss: fetched content that never reaches a prompt.
+page_ok = requests.get(fetched_url).text
+# ok: llm-fetched-content-into-prompt
+length_only = len(page_ok)
+
+
+# --- llm-secret-into-prompt (taint) -------------------------------------
+
+api_key_value = os.environ["SOME_SECRET"]
+# ruleid: llm-secret-into-prompt
+client.messages.create(model="x", messages=[{"role": "user", "content": api_key_value}], max_tokens=100, system=SYSTEM, timeout=5)
+
+# Near-miss: an env var read for configuration, used as configuration.
+model_name = os.environ["MODEL_NAME"]
+# ok: llm-secret-into-prompt
+client.messages.create(model=model_name, messages=[{"role": "user", "content": "hi"}], max_tokens=100, system=SYSTEM, timeout=5)
+
+
+# --- llm-langchain-verbose-enabled --------------------------------------
+
+# ruleid: llm-langchain-verbose-enabled
+chain_verbose = LLMChain(llm=None, prompt=None, verbose=True)
+
+# ok: llm-langchain-verbose-enabled
+chain_quiet = LLMChain(llm=None, prompt=None, verbose=False)
+
+
+# --- llm-langchain-hardcoded-api-key ------------------------------------
+# (max_tokens/request_timeout present so the missing-cap rules stay out
+# of this block)
+
+# ruleid: llm-langchain-hardcoded-api-key
+llm_bad_key = ChatOpenAI(model="gpt-4o", openai_api_key="sk-" + "notarealkeyatall1234", max_tokens=100, request_timeout=5)
+
+# ok: llm-langchain-hardcoded-api-key
+llm_env_key = ChatOpenAI(model="gpt-4o", openai_api_key=os.environ["OPENAI_API_KEY"], max_tokens=100, request_timeout=5)
+
+
+# --- llm-trust-remote-code ----------------------------------------------
+
+# ruleid: llm-trust-remote-code
+model_remote = AutoModel.from_pretrained("some/model", trust_remote_code=True)
+
+# ok: llm-trust-remote-code
+model_plain = AutoModel.from_pretrained("some/model")
+
+
+# --- llm-llamaindex-download-loader -------------------------------------
+
+# ruleid: llm-llamaindex-download-loader
+Loader = download_loader("GithubRepositoryReader")
+
+# ok: llm-llamaindex-download-loader
+reader_ok = SimpleDirectoryReader("./data")
+
+
+# --- llm-unsafe-model-deserialization -----------------------------------
+
+# ruleid: llm-unsafe-model-deserialization
+weights_bad = torch.load("checkpoint.pt")
+
+# ok: llm-unsafe-model-deserialization
+weights_ok = torch.load("checkpoint.pt", weights_only=True)
+
+
+# --- llm-output-to-html (taint) -----------------------------------------
+
+resp_html = client.messages.create(model="x", messages=[{"role": "user", "content": "hi"}], max_tokens=10, system=SYSTEM, timeout=5)
+# ruleid: llm-output-to-html
+page_out = HTMLResponse(resp_html.content[0].text)
+
+# Near-miss: the same value returned as text, which is the fix.
+resp_text = client.messages.create(model="x", messages=[{"role": "user", "content": "hi"}], max_tokens=10, system=SYSTEM, timeout=5)
+# ok: llm-output-to-html
+plain_out = PlainTextResponse(resp_text.content[0].text)
+
+
+# --- llm-llamaindex-pandas-query-engine ---------------------------------
+
+# ruleid: llm-llamaindex-pandas-query-engine
+pandas_engine = PandasQueryEngine(df=None)
+
+# ok: llm-llamaindex-pandas-query-engine
+vector_engine = VectorStoreIndex([]).as_query_engine()
+
+
+# --- llm-langchain-python-repl-tool -------------------------------------
+
+# ruleid: llm-langchain-python-repl-tool
+repl_tool = PythonREPLTool()
+
+# ok: llm-langchain-python-repl-tool
+search_tool = DuckDuckGoSearchRun()
+
+
+# --- llm-langchain-shell-tool -------------------------------------------
+
+# ruleid: llm-langchain-shell-tool
+shell_tool = ShellTool()
+
+# ok: llm-langchain-shell-tool
+calc_tool = Calculator()
+
+
+# --- llm-nl-to-sql-engine -----------------------------------------------
+
+# ruleid: llm-nl-to-sql-engine
+sql_engine = NLSQLTableQueryEngine(sql_database=None)
+
+# ok: llm-nl-to-sql-engine
+sql_handwritten = cursor.execute("SELECT 1")
+
+
+# --- llm-agent-allow-dangerous ------------------------------------------
+
+# ruleid: llm-agent-allow-dangerous
+df_agent = create_pandas_dataframe_agent(None, None, allow_dangerous_code=True)
+
+# ok: llm-agent-allow-dangerous
+df_agent_safe = create_pandas_dataframe_agent(None, None, allow_dangerous_code=False)
+
+
+# --- llm-agent-missing-max-iterations -----------------------------------
+# (verbose left at its default so this block doesn't also trip
+# llm-langchain-verbose-enabled)
+
+# ruleid: llm-agent-missing-max-iterations
+agent_unbounded = AgentExecutor(agent=None, tools=[])
+
+# ok: llm-agent-missing-max-iterations
+agent_bounded = AgentExecutor(agent=None, tools=[], max_iterations=5)
+
+
+# --- llm-langchain-missing-max-tokens -----------------------------------
+# (request_timeout present in both so llm-langchain-missing-timeout
+# stays out of this block)
+
+# ruleid: llm-langchain-missing-max-tokens
+llm_no_cap = ChatAnthropic(model="claude-sonnet-4-5-20250929", request_timeout=5)
+
+# ok: llm-langchain-missing-max-tokens
+llm_capped = ChatAnthropic(model="claude-sonnet-4-5-20250929", max_tokens=1000, request_timeout=5)
+
+
+# --- llm-langchain-missing-timeout --------------------------------------
+# (max_tokens present in both so llm-langchain-missing-max-tokens stays
+# out of this block)
+
+# ruleid: llm-langchain-missing-timeout
+llm_no_timeout = ChatAnthropic(model="claude-sonnet-4-5-20250929", max_tokens=1000)
+
+# ok: llm-langchain-missing-timeout
+llm_with_timeout = ChatAnthropic(model="claude-sonnet-4-5-20250929", max_tokens=1000, request_timeout=5)
+
+
+# --- kwargs-splat calls are not evidence of a missing cap ---------------
+# Regression cases for the false positives found by scanning this repo's
+# own codeguard/pipeline/llm_call.py, which sets max_tokens and timeout
+# in a dict and passes **create_kwargs. Semgrep cannot see inside the
+# dict, so the rules must stay quiet rather than assert a defect they
+# cannot verify.
+
+splat_kwargs = dict(
+    model="x",
+    system=SYSTEM,
+    messages=[{"role": "user", "content": "hi"}],
+    max_tokens=100,
+    timeout=5,
+)
+
+# ok: llm-call-missing-max-tokens
+client.messages.create(**splat_kwargs)
+
+# ok: llm-call-missing-timeout
+client.messages.create(**splat_kwargs)
+
+lc_kwargs = dict(model="claude-sonnet-4-5-20250929", max_tokens=1000, request_timeout=5)
+
+# ok: llm-langchain-missing-max-tokens
+ChatAnthropic(**lc_kwargs)
+
+# ok: llm-langchain-missing-timeout
+ChatAnthropic(**lc_kwargs)

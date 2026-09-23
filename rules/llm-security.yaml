@@ -2,6 +2,8 @@ rules:
   - id: llm-prompt-injection-concatenation
     languages: [python]
     severity: ERROR
+    metadata:
+      owasp: "LLM01:2025 Prompt Injection"
     message: >
       Untrusted input concatenated directly into an LLM prompt's content
       with no delimiting — string concatenation or an f-string embedding
@@ -26,6 +28,8 @@ rules:
   - id: llm-missing-system-user-separation
     languages: [python]
     severity: WARNING
+    metadata:
+      owasp: "LLM01:2025 Prompt Injection"
     message: >
       An LLM call with no system/developer instruction separate from the
       user turn — every instruction ends up folded into user content,
@@ -55,6 +59,8 @@ rules:
   - id: llm-output-to-dangerous-sink
     languages: [python]
     severity: ERROR
+    metadata:
+      owasp: "LLM05:2025 Improper Output Handling"
     message: >
       LLM response content flows into eval(), exec(), subprocess, or
       os.system() with no validation in between — the model's output is
@@ -80,6 +86,8 @@ rules:
   - id: llm-output-to-sql
     languages: [python]
     severity: ERROR
+    metadata:
+      owasp: "LLM05:2025 Improper Output Handling"
     message: >
       LLM response content flows into a raw SQL execute() call — the
       model's output is treated as trusted SQL. Same class of bug as
@@ -92,34 +100,56 @@ rules:
       - pattern: '$RESP.choices[0].message.content'
       - pattern: '$CHUNK.choices[0].delta.content'
       - pattern: '$RESP.output_text'
+    # focus-metavariable pins the sink to the QUERY argument, not the
+    # whole call. Without it, passing model output as a BOUND PARAMETER
+    # — `cursor.execute("... WHERE x = ?", (text,))`, which is the
+    # correct, safe way to use it — fired this rule, because the sink
+    # could not tell the query text from the parameter tuple. That was
+    # tracked as a `todook` in llm-security.py and is now a real `ok`.
     pattern-sinks:
-      - pattern: '$CURSOR.execute(...)'
+      - patterns:
+          - pattern: $CURSOR.execute($QUERY, ...)
+          - focus-metavariable: $QUERY
 
   - id: llm-call-missing-max-tokens
     languages: [python]
     severity: WARNING
+    metadata:
+      owasp: "LLM10:2025 Unbounded Consumption"
     message: >
       An LLM call with no explicit output-length cap — an unbounded
       response size is an unbounded cost and latency tail per call. Set
       the cap explicitly on every call: max_tokens (Anthropic, and
       OpenAI Chat Completions), max_completion_tokens (OpenAI's newer
       reasoning models), or max_output_tokens (OpenAI Responses API).
+    # A call whose arguments arrive as a dict splat is NOT evidence of a
+    # missing cap: the cap may well be in the dict, and semgrep cannot
+    # see inside it. Found by scanning this repo's own llm_call.py,
+    # which sets both max_tokens and timeout and then passes
+    # **create_kwargs — two findings, both wrong. A rule that asserts a
+    # defect it cannot verify is precisely the cry-wolf failure, so it
+    # stays quiet on the splat form instead.
     patterns:
       - pattern-either:
           - patterns:
               - pattern: '$CLIENT.messages.create(...)'
+              - pattern-not: $CLIENT.messages.create(**$KW)
               - pattern-not: '$CLIENT.messages.create(..., max_tokens=$N, ...)'
           - patterns:
               - pattern: '$CLIENT.chat.completions.create(...)'
+              - pattern-not: $CLIENT.chat.completions.create(**$KW)
               - pattern-not: '$CLIENT.chat.completions.create(..., max_tokens=$N, ...)'
               - pattern-not: '$CLIENT.chat.completions.create(..., max_completion_tokens=$N, ...)'
           - patterns:
               - pattern: '$CLIENT.responses.create(...)'
+              - pattern-not: $CLIENT.responses.create(**$KW)
               - pattern-not: '$CLIENT.responses.create(..., max_output_tokens=$N, ...)'
 
   - id: llm-unpinned-model-alias
     languages: [python]
     severity: WARNING
+    metadata:
+      owasp: "LLM03:2025 Supply Chain"
     message: >
       A floating model alias ("-latest") instead of a pinned version.
       The model backing a "-latest" alias can change without warning,
@@ -138,6 +168,8 @@ rules:
   - id: llm-hardcoded-api-key
     languages: [python]
     severity: ERROR
+    metadata:
+      owasp: "LLM02:2025 Sensitive Information Disclosure"
     message: >
       An API key passed as a literal string instead of read from the
       environment/secret store. Hardcoded credentials end up in git
@@ -153,6 +185,8 @@ rules:
   - id: llm-logging-full-prompt-or-response
     languages: [python]
     severity: WARNING
+    metadata:
+      owasp: "LLM02:2025 Sensitive Information Disclosure"
     message: >
       Logging or printing the full prompt or model response text. Both
       routinely contain PII, secrets echoed back from context, or
@@ -177,6 +211,8 @@ rules:
   - id: llm-call-missing-timeout
     languages: [python]
     severity: WARNING
+    metadata:
+      owasp: "LLM10:2025 Unbounded Consumption"
     message: >
       An LLM call with no explicit timeout — a hung upstream connection
       blocks this call indefinitely instead of failing fast, which is an
@@ -188,17 +224,22 @@ rules:
       - pattern-either:
           - patterns:
               - pattern: '$CLIENT.messages.create(...)'
+              - pattern-not: $CLIENT.messages.create(**$KW)
               - pattern-not: '$CLIENT.messages.create(..., timeout=$T, ...)'
           - patterns:
               - pattern: '$CLIENT.chat.completions.create(...)'
+              - pattern-not: $CLIENT.chat.completions.create(**$KW)
               - pattern-not: '$CLIENT.chat.completions.create(..., timeout=$T, ...)'
           - patterns:
               - pattern: '$CLIENT.responses.create(...)'
+              - pattern-not: $CLIENT.responses.create(**$KW)
               - pattern-not: '$CLIENT.responses.create(..., timeout=$T, ...)'
 
   - id: llm-sync-call-in-async-handler
     languages: [python]
     severity: ERROR
+    metadata:
+      owasp: "LLM10:2025 Unbounded Consumption"
     message: >
       A blocking LLM call made directly inside an `async def` function
       with no `await`/`to_thread` around it. The Anthropic and OpenAI
@@ -250,3 +291,364 @@ rules:
                   async def $FUNC(...):
                     ...
                     asyncio.to_thread($CLIENT.responses.create, ...)
+
+  # ===================================================================
+  # LangChain / LlamaIndex call shapes, and the OWASP categories the
+  # raw-SDK rules above do not reach.
+  #
+  # Severity discipline: ERROR only where there is a concrete exploit
+  # path (code execution, a credential in source, injected content
+  # reaching an interpreter). WARNING for hygiene. fix_threshold
+  # defaults to HIGH, so ERROR is what actually gets a fix suggestion
+  # attached to it - the line between the two is not cosmetic.
+  #
+  # NOT COVERED, deliberately: LLM04 (Data and Model Poisoning), LLM07
+  # (System Prompt Leakage), LLM08 (Vector and Embedding Weaknesses) and
+  # LLM09 (Misinformation). Poisoning is a property of where data came
+  # from and misinformation a property of whether output is true;
+  # neither is visible in a call shape. Rules for them would be keyword
+  # matches dressed as security checks, and a noisy rule is expensive to
+  # walk back once it is posting on real pull requests.
+  # ===================================================================
+
+  - id: llm-langchain-prompt-from-fstring
+    languages: [python]
+    severity: ERROR
+    metadata:
+      owasp: "LLM01:2025 Prompt Injection"
+    message: >
+      A LangChain prompt template built from an f-string. The f-string
+      interpolates its variables at construction time, so whatever they
+      held is spliced into the template text itself - the templating
+      that was supposed to keep untrusted values in labelled slots never
+      happens, and a user-controlled value becomes indistinguishable
+      from the instructions around it. Pass the values at invoke time
+      instead, so they stay parameters.
+    patterns:
+      - pattern-either:
+          - pattern: PromptTemplate.from_template(f"...", ...)
+          - pattern: ChatPromptTemplate.from_template(f"...", ...)
+          - pattern: SystemMessagePromptTemplate.from_template(f"...", ...)
+          - pattern: HumanMessagePromptTemplate.from_template(f"...", ...)
+
+  - id: llm-fetched-content-into-prompt
+    languages: [python]
+    severity: ERROR
+    metadata:
+      owasp: "LLM01:2025 Prompt Injection"
+    message: >
+      Content fetched over HTTP flows into an LLM prompt with nothing in
+      between. This is indirect prompt injection: the instructions come
+      from the fetched page rather than from your user, so an attacker
+      who controls any page you scrape controls part of your prompt.
+      Delimit fetched content explicitly as data, and treat anything it
+      says that looks like an instruction as hostile.
+    mode: taint
+    pattern-sources:
+      - pattern: requests.get(...).text
+      - pattern: requests.post(...).text
+      - pattern: httpx.get(...).text
+    pattern-sinks:
+      - pattern: $CLIENT.messages.create(...)
+      - pattern: $CLIENT.chat.completions.create(...)
+      - pattern: $CLIENT.responses.create(...)
+
+  - id: llm-secret-into-prompt
+    languages: [python]
+    severity: ERROR
+    metadata:
+      owasp: "LLM02:2025 Sensitive Information Disclosure"
+    message: >
+      An environment secret flows into an LLM prompt. Whatever is in the
+      prompt is available to the model and can be coaxed back out of it,
+      logged by the provider, or echoed into a response - a key in the
+      prompt should be assumed disclosed. Pass an identifier the model
+      can reason about instead of the credential itself, and make the
+      privileged call from your own code.
+    mode: taint
+    pattern-sources:
+      - pattern: os.environ[...]
+      - pattern: os.environ.get(...)
+      - pattern: os.getenv(...)
+    # focus-metavariable, so the sink is the PROMPT argument rather than
+    # the whole call. Without it, a secret reaching any other argument
+    # fires a rule about prompt content — `model=os.environ["MODEL"]` is
+    # the obvious case, and it is ordinary correct code.
+    pattern-sinks:
+      - patterns:
+          - pattern: $CLIENT.messages.create(..., messages=$MSGS, ...)
+          - focus-metavariable: $MSGS
+      - patterns:
+          - pattern: $CLIENT.messages.create(..., system=$S, ...)
+          - focus-metavariable: $S
+      - patterns:
+          - pattern: $CLIENT.chat.completions.create(..., messages=$MSGS, ...)
+          - focus-metavariable: $MSGS
+      - patterns:
+          - pattern: $CLIENT.responses.create(..., input=$INPUT, ...)
+          - focus-metavariable: $INPUT
+
+  - id: llm-langchain-verbose-enabled
+    languages: [python]
+    severity: WARNING
+    metadata:
+      owasp: "LLM02:2025 Sensitive Information Disclosure"
+    message: >
+      A LangChain chain or agent constructed with verbose=True. Verbose
+      mode prints the fully-rendered prompt and the raw model response
+      to stdout on every call - in a deployed service that is a durable,
+      often broadly-readable sink for whatever the prompt contained,
+      including retrieved documents and anything a user pasted. Use a
+      callback handler that logs what you actually want instead.
+    patterns:
+      - pattern-either:
+          - pattern: LLMChain(..., verbose=True, ...)
+          - pattern: AgentExecutor(..., verbose=True, ...)
+          - pattern: AgentExecutor.from_agent_and_tools(..., verbose=True, ...)
+          - pattern: initialize_agent(..., verbose=True, ...)
+          - pattern: RetrievalQA.from_chain_type(..., verbose=True, ...)
+          - pattern: ConversationChain(..., verbose=True, ...)
+
+  - id: llm-langchain-hardcoded-api-key
+    languages: [python]
+    severity: ERROR
+    metadata:
+      owasp: "LLM02:2025 Sensitive Information Disclosure"
+    message: >
+      An API key passed as a literal string to a LangChain or
+      LlamaIndex model constructor. Same defect as
+      llm-hardcoded-api-key, for the wrapper libraries: the credential
+      ends up in git history and in every log that prints the object.
+      Read it from the environment or a secret store.
+    patterns:
+      - pattern-either:
+          - pattern: ChatOpenAI(..., openai_api_key="...", ...)
+          - pattern: ChatOpenAI(..., api_key="...", ...)
+          - pattern: ChatAnthropic(..., anthropic_api_key="...", ...)
+          - pattern: ChatAnthropic(..., api_key="...", ...)
+          - pattern: OpenAIEmbeddings(..., openai_api_key="...", ...)
+
+  - id: llm-trust-remote-code
+    languages: [python]
+    severity: ERROR
+    metadata:
+      owasp: "LLM03:2025 Supply Chain"
+    message: >
+      trust_remote_code=True executes Python that ships with the model
+      repository, at load time, with this process's privileges. A model
+      is a supply-chain dependency like any other, and this flag opts
+      out of the boundary that normally stops a downloaded artifact
+      running code. Pin to a model that needs no custom code, or vendor
+      and review that code yourself.
+    patterns:
+      - pattern-either:
+          - pattern: $M.from_pretrained(..., trust_remote_code=True, ...)
+          - pattern: pipeline(..., trust_remote_code=True, ...)
+
+  - id: llm-llamaindex-download-loader
+    languages: [python]
+    severity: ERROR
+    metadata:
+      owasp: "LLM03:2025 Supply Chain"
+    message: >
+      download_loader() fetches loader code from LlamaHub at runtime and
+      executes it. What runs is whatever the hub serves at the moment of
+      the call - unpinned, unreviewed, and outside your dependency
+      lockfile. Install the loader as a normal pinned dependency.
+    patterns:
+      - pattern-either:
+          - pattern: download_loader(...)
+
+  - id: llm-unsafe-model-deserialization
+    languages: [python]
+    severity: WARNING
+    metadata:
+      owasp: "LLM03:2025 Supply Chain"
+    message: >
+      A model checkpoint loaded without restricting deserialization.
+      torch.load() unpickles by default, and unpickling runs arbitrary
+      code in the loading process - a downloaded checkpoint is untrusted
+      input. Pass weights_only=True, or use a format that cannot execute
+      (safetensors).
+    patterns:
+      - patterns:
+          - pattern: torch.load(...)
+          - pattern-not: torch.load(..., weights_only=True, ...)
+
+  - id: llm-output-to-html
+    languages: [python]
+    severity: ERROR
+    metadata:
+      owasp: "LLM05:2025 Improper Output Handling"
+    message: >
+      LLM response content is rendered as HTML rather than as text. The
+      model's output is attacker-influenceable - through the prompt,
+      through retrieved documents, through anything it was shown - so
+      rendering it unescaped is stored XSS with an extra step. Render it
+      as text, or sanitise with an allowlist before it becomes markup.
+    mode: taint
+    pattern-sources:
+      - pattern: $RESP.content[0].text
+      - pattern: $RESP.choices[0].message.content
+      - pattern: $CHUNK.choices[0].delta.content
+      - pattern: $RESP.output_text
+    pattern-sinks:
+      - pattern: render_template_string(...)
+      - pattern: Markup(...)
+      - pattern: HTMLResponse(...)
+      - pattern: mark_safe(...)
+
+  - id: llm-llamaindex-pandas-query-engine
+    languages: [python]
+    severity: ERROR
+    metadata:
+      owasp: "LLM05:2025 Improper Output Handling"
+    message: >
+      PandasQueryEngine executes Python the model wrote, against your
+      dataframe, via eval. Its own documentation warns it is not safe
+      against a hostile prompt: anything reaching the query text reaches
+      the interpreter. Do not expose it to untrusted input; if you need
+      natural-language querying, constrain it to an allowlist of
+      operations you implement yourself.
+    patterns:
+      - pattern-either:
+          - pattern: PandasQueryEngine(...)
+          - pattern: PandasQueryEngine.from_defaults(...)
+
+  - id: llm-langchain-python-repl-tool
+    languages: [python]
+    severity: ERROR
+    metadata:
+      owasp: "LLM06:2025 Excessive Agency"
+    message: >
+      A Python REPL tool handed to an agent. The agent decides what code
+      to run, so the model's output reaches exec() with this process's
+      privileges - prompt injection becomes remote code execution in one
+      step. If an agent genuinely needs to compute, give it a tool that
+      performs the specific operation rather than one that runs
+      arbitrary Python.
+    patterns:
+      - pattern-either:
+          - pattern: PythonREPLTool(...)
+          - pattern: PythonAstREPLTool(...)
+          - pattern: PythonREPL(...)
+
+  - id: llm-langchain-shell-tool
+    languages: [python]
+    severity: ERROR
+    metadata:
+      owasp: "LLM06:2025 Excessive Agency"
+    message: >
+      A shell tool handed to an agent. The model chooses the command, so
+      anything that can steer the model can run shell commands as this
+      process. There is no prompt that makes this safe against
+      injection - replace it with narrowly-scoped tools that each do one
+      thing.
+    patterns:
+      - pattern-either:
+          - pattern: ShellTool(...)
+
+  - id: llm-nl-to-sql-engine
+    languages: [python]
+    severity: WARNING
+    metadata:
+      owasp: "LLM05:2025 Improper Output Handling"
+    message: >
+      A natural-language-to-SQL component executes queries the model
+      wrote against your database. That is the component's whole
+      purpose, so it is not automatically a defect - but it means prompt
+      content reaches the database, and the protection that matters sits
+      outside this call: connect with a read-only, least-privilege role
+      scoped to the tables involved, rather than relying on the model
+      not to write a destructive statement.
+    patterns:
+      - pattern-either:
+          - pattern: NLSQLTableQueryEngine(...)
+          - pattern: SQLDatabaseChain(...)
+          - pattern: SQLDatabaseChain.from_llm(...)
+          - pattern: create_sql_agent(...)
+
+  - id: llm-agent-allow-dangerous
+    languages: [python]
+    severity: ERROR
+    metadata:
+      owasp: "LLM06:2025 Excessive Agency"
+    message: >
+      An explicit opt-in to a LangChain component's dangerous mode.
+      These flags exist because the component can execute
+      model-generated code, deserialize untrusted data, or issue
+      model-chosen HTTP requests, and the library refuses unless you say
+      so in writing. Setting one to True is a decision to let model
+      output act; make sure it is deliberate, scoped, and not reachable
+      from untrusted input.
+    patterns:
+      - pattern-either:
+          - pattern: $F(..., allow_dangerous_code=True, ...)
+          - pattern: $F(..., allow_dangerous_requests=True, ...)
+          - pattern: $F(..., allow_dangerous_deserialization=True, ...)
+
+  - id: llm-agent-missing-max-iterations
+    languages: [python]
+    severity: WARNING
+    metadata:
+      owasp: "LLM06:2025 Excessive Agency"
+    message: >
+      An agent executor with no iteration cap. An agent that cannot
+      reach its goal keeps calling tools and re-prompting until
+      something else stops it - an unbounded number of model calls, each
+      with a cost, and an unbounded number of tool side effects. Set
+      max_iterations (and max_execution_time) explicitly.
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern: AgentExecutor(...)
+              - pattern-not: AgentExecutor(**$KW)
+              - pattern-not: AgentExecutor(..., max_iterations=$N, ...)
+          - patterns:
+              - pattern: initialize_agent(...)
+              - pattern-not: initialize_agent(**$KW)
+              - pattern-not: initialize_agent(..., max_iterations=$N, ...)
+
+  - id: llm-langchain-missing-max-tokens
+    languages: [python]
+    severity: WARNING
+    metadata:
+      owasp: "LLM10:2025 Unbounded Consumption"
+    message: >
+      A LangChain chat model constructed with no output-length cap.
+      Same defect as llm-call-missing-max-tokens, for the wrapper
+      libraries: an unbounded response is an unbounded cost and latency
+      tail on every call made through this model.
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern: ChatOpenAI(...)
+              - pattern-not: ChatOpenAI(**$KW)
+              - pattern-not: ChatOpenAI(..., max_tokens=$N, ...)
+          - patterns:
+              - pattern: ChatAnthropic(...)
+              - pattern-not: ChatAnthropic(**$KW)
+              - pattern-not: ChatAnthropic(..., max_tokens=$N, ...)
+
+  - id: llm-langchain-missing-timeout
+    languages: [python]
+    severity: WARNING
+    metadata:
+      owasp: "LLM10:2025 Unbounded Consumption"
+    message: >
+      A LangChain chat model constructed with no request timeout. A hung
+      upstream connection blocks whatever is waiting on this model
+      indefinitely rather than failing fast. Pass request_timeout (or
+      timeout) explicitly rather than relying on the library default.
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern: ChatOpenAI(...)
+              - pattern-not: ChatOpenAI(**$KW)
+              - pattern-not: ChatOpenAI(..., request_timeout=$T, ...)
+              - pattern-not: ChatOpenAI(..., timeout=$T, ...)
+          - patterns:
+              - pattern: ChatAnthropic(...)
+              - pattern-not: ChatAnthropic(**$KW)
+              - pattern-not: ChatAnthropic(..., request_timeout=$T, ...)
+              - pattern-not: ChatAnthropic(..., timeout=$T, ...)
