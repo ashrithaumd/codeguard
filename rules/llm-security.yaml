@@ -85,8 +85,15 @@ rules:
               - pattern: '$CLIENT.messages.create(..., model=$M, messages=$MSGS, ...)'
               - pattern-not: '$CLIENT.messages.create(..., system=$S, ...)'
               - pattern-not: $CLIENT.messages.create(..., **$KW)
+          # Only fires when the messages list is written INLINE. A bare
+          # `messages=messages` was built somewhere this rule cannot
+          # see, so concluding "there is no system turn" from it is a
+          # guess. Found against langflow, where the list is assembled
+          # one line above the call; the conclusion happened to be right
+          # there, which is exactly why it is worth narrowing before it
+          # is wrong somewhere else.
           - patterns:
-              - pattern: '$CLIENT.chat.completions.create(..., model=$M, messages=$MSGS, ...)'
+              - pattern: '$CLIENT.chat.completions.create(..., model=$M, messages=[...], ...)'
               - pattern-not: '$CLIENT.chat.completions.create(..., messages=[..., {"role": "system", "content": $S}, ...], ...)'
               - pattern-not: '$CLIENT.chat.completions.create(..., messages=[..., {"role": "developer", "content": $S}, ...], ...)'
               - pattern-not: $CLIENT.chat.completions.create(..., **$KW)
@@ -219,6 +226,14 @@ rules:
           - pattern: 'anthropic.AsyncAnthropic(api_key="...")'
           - pattern: 'openai.OpenAI(api_key="...")'
           - pattern: 'openai.AsyncOpenAI(api_key="...")'
+          # FALSE NEGATIVE found against langflow: `from openai import
+          # OpenAI` then `OpenAI(api_key="...")` matched nothing,
+          # because every pattern above required the module prefix. The
+          # bare-name import is the more common style of the two.
+          - pattern: 'OpenAI(api_key="...")'
+          - pattern: 'AsyncOpenAI(api_key="...")'
+          - pattern: 'Anthropic(api_key="...")'
+          - pattern: 'AsyncAnthropic(api_key="...")'
           - pattern-regex: '(?i)(anthropic|openai)_api_key\s*=\s*["''][A-Za-z0-9\-_]{16,}["'']'
 
   - id: llm-logging-full-prompt-or-response

@@ -620,3 +620,22 @@ oai.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content"
 
 # ok: llm-missing-system-user-separation
 oai.responses.create(model="gpt-4o", input="hi", **oai_mixed)
+
+
+# --- shapes found against langflow --------------------------------------
+
+# A messages list built one line above the call. The rule cannot see
+# inside the variable, so it must not conclude there is no system turn.
+lf_messages = [{"role": "user", "content": "test"}]
+# ok: llm-missing-system-user-separation
+oai.chat.completions.create(model="gpt-4o", messages=lf_messages, max_tokens=1, timeout=5)
+
+# The bare-name import style, which the hardcoded-key rule used to miss
+# entirely because every pattern required the `openai.` prefix.
+from openai import OpenAI  # noqa: E402
+
+# ruleid: llm-hardcoded-api-key
+bare_client = OpenAI(api_key="sk-" + "notarealkeyatallxxxx")
+
+# ok: llm-hardcoded-api-key
+bare_client_ok = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
