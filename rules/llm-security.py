@@ -549,10 +549,10 @@ agent_bounded = AgentExecutor(agent=None, tools=[], max_iterations=5)
 # stays out of this block)
 
 # ruleid: llm-langchain-missing-max-tokens
-llm_no_cap = ChatAnthropic(model="claude-sonnet-4-5-20250929", request_timeout=5)
+llm_no_cap = ChatAnthropic(model="claude-sonnet-4-5-20250929", timeout=5)
 
 # ok: llm-langchain-missing-max-tokens
-llm_capped = ChatAnthropic(model="claude-sonnet-4-5-20250929", max_tokens=1000, request_timeout=5)
+llm_capped = ChatAnthropic(model="claude-sonnet-4-5-20250929", max_tokens=1000, timeout=5)
 
 
 # --- llm-langchain-missing-timeout --------------------------------------
@@ -563,7 +563,7 @@ llm_capped = ChatAnthropic(model="claude-sonnet-4-5-20250929", max_tokens=1000, 
 llm_no_timeout = ChatAnthropic(model="claude-sonnet-4-5-20250929", max_tokens=1000)
 
 # ok: llm-langchain-missing-timeout
-llm_with_timeout = ChatAnthropic(model="claude-sonnet-4-5-20250929", max_tokens=1000, request_timeout=5)
+llm_with_timeout = ChatAnthropic(model="claude-sonnet-4-5-20250929", max_tokens=1000, default_request_timeout=5)
 
 
 # --- kwargs-splat calls are not evidence of a missing cap ---------------
@@ -587,10 +587,36 @@ client.messages.create(**splat_kwargs)
 # ok: llm-call-missing-timeout
 client.messages.create(**splat_kwargs)
 
-lc_kwargs = dict(model="claude-sonnet-4-5-20250929", max_tokens=1000, request_timeout=5)
+lc_kwargs = dict(model="claude-sonnet-4-5-20250929", max_tokens=1000, timeout=5)
 
 # ok: llm-langchain-missing-max-tokens
 ChatAnthropic(**lc_kwargs)
 
 # ok: llm-langchain-missing-timeout
 ChatAnthropic(**lc_kwargs)
+
+
+# --- a splat MIXED with named args is still opaque ----------------------
+# The shape that produced all 24 false positives against simonw/llm:
+# named arguments AND **kwargs on the same call. The earlier exclusion
+# only covered a bare `create(**kwargs)`, which is not what real code
+# looks like — the caps and the system prompt arrive inside the dict.
+
+mixed_kwargs = dict(max_tokens=100, timeout=5, system=SYSTEM)
+
+# ok: llm-call-missing-max-tokens
+client.messages.create(model="x", messages=[{"role": "user", "content": "hi"}], **mixed_kwargs)
+
+# ok: llm-call-missing-timeout
+client.messages.create(model="x", messages=[{"role": "user", "content": "hi"}], **mixed_kwargs)
+
+# ok: llm-missing-system-user-separation
+client.messages.create(model="x", messages=[{"role": "user", "content": "hi"}], **mixed_kwargs)
+
+oai_mixed = dict(max_tokens=100, timeout=5)
+
+# ok: llm-missing-system-user-separation
+oai.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": "hi"}], **oai_mixed)
+
+# ok: llm-missing-system-user-separation
+oai.responses.create(model="gpt-4o", input="hi", **oai_mixed)

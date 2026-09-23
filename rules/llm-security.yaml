@@ -1,3 +1,32 @@
+# CodeGuard's custom LLM-security ruleset, mapped to the OWASP Top 10 for
+# LLM Applications (2025). Every rule carries `metadata.owasp`, and every
+# rule that depends on a third-party library symbol carries
+# `metadata.verified` recording what was actually checked, against which
+# version, on what date — because a renamed kwarg makes a rule match
+# nothing, and a rule that matches nothing looks exactly like a clean
+# scan.
+#
+# VALIDATION, 2026-09-23
+#
+# Symbols: introspected against langchain 1.4.2, langchain-community
+# 0.4.2, langchain-experimental 0.4.2, langchain-openai 1.6.4,
+# langchain-anthropic 1.7.2, llama-index-core 0.14.25, transformers, and
+# fastapi/flask/markupsafe, installed into a throwaway container. Not
+# project dependencies. Results are in each rule's `verified` field,
+# including the ones that could NOT be confirmed.
+#
+# External corpus: simonw/llm @ 0.36 (54 Python files, ~37k lines), an
+# OpenAI-first codebase nobody here wrote. First scan produced 24
+# findings and ALL 24 WERE WRONG — every one traceable to a single blind
+# spot, a `**kwargs` splat mixed with named arguments, where the caps and
+# the system prompt arrive inside the dict semgrep cannot see into. That
+# is now excluded, with regression cases, and the same scan produces 0.
+# codeguard/, tests/ and scripts/ also scan clean.
+#
+# Worth keeping in mind when adding a rule: `semgrep --test` passing
+# proves a pattern matches the examples someone already thought of. It
+# says nothing about the shapes real code uses, and every false positive
+# found so far was found by scanning real code, never by the test file.
 rules:
   - id: llm-prompt-injection-concatenation
     languages: [python]
@@ -43,18 +72,28 @@ rules:
       for Anthropic — putting instructions in the first user turn is a
       common, sometimes deliberate pattern — so weigh the surrounding
       code before treating it as a real defect.
+    # Same splat exclusion as the missing-cap rules, and for the same
+    # reason. Found against simonw/llm, where every call is
+    # `create(model=..., messages=..., **kwargs)` and the system prompt
+    # arrives inside kwargs (_finalize_responses_kwargs sets
+    # instructions=). Eight wrong findings from one blind spot: an
+    # instructions= or a system turn that arrives by splat is not
+    # evidence that no system prompt exists.
     patterns:
       - pattern-either:
           - patterns:
               - pattern: '$CLIENT.messages.create(..., model=$M, messages=$MSGS, ...)'
               - pattern-not: '$CLIENT.messages.create(..., system=$S, ...)'
+              - pattern-not: $CLIENT.messages.create(..., **$KW)
           - patterns:
               - pattern: '$CLIENT.chat.completions.create(..., model=$M, messages=$MSGS, ...)'
               - pattern-not: '$CLIENT.chat.completions.create(..., messages=[..., {"role": "system", "content": $S}, ...], ...)'
               - pattern-not: '$CLIENT.chat.completions.create(..., messages=[..., {"role": "developer", "content": $S}, ...], ...)'
+              - pattern-not: $CLIENT.chat.completions.create(..., **$KW)
           - patterns:
               - pattern: '$CLIENT.responses.create(..., model=$M, input=$INPUT, ...)'
               - pattern-not: '$CLIENT.responses.create(..., instructions=$S, ...)'
+              - pattern-not: $CLIENT.responses.create(..., **$KW)
 
   - id: llm-output-to-dangerous-sink
     languages: [python]
@@ -133,16 +172,16 @@ rules:
       - pattern-either:
           - patterns:
               - pattern: '$CLIENT.messages.create(...)'
-              - pattern-not: $CLIENT.messages.create(**$KW)
+              - pattern-not: $CLIENT.messages.create(..., **$KW)
               - pattern-not: '$CLIENT.messages.create(..., max_tokens=$N, ...)'
           - patterns:
               - pattern: '$CLIENT.chat.completions.create(...)'
-              - pattern-not: $CLIENT.chat.completions.create(**$KW)
+              - pattern-not: $CLIENT.chat.completions.create(..., **$KW)
               - pattern-not: '$CLIENT.chat.completions.create(..., max_tokens=$N, ...)'
               - pattern-not: '$CLIENT.chat.completions.create(..., max_completion_tokens=$N, ...)'
           - patterns:
               - pattern: '$CLIENT.responses.create(...)'
-              - pattern-not: $CLIENT.responses.create(**$KW)
+              - pattern-not: $CLIENT.responses.create(..., **$KW)
               - pattern-not: '$CLIENT.responses.create(..., max_output_tokens=$N, ...)'
 
   - id: llm-unpinned-model-alias
@@ -224,15 +263,15 @@ rules:
       - pattern-either:
           - patterns:
               - pattern: '$CLIENT.messages.create(...)'
-              - pattern-not: $CLIENT.messages.create(**$KW)
+              - pattern-not: $CLIENT.messages.create(..., **$KW)
               - pattern-not: '$CLIENT.messages.create(..., timeout=$T, ...)'
           - patterns:
               - pattern: '$CLIENT.chat.completions.create(...)'
-              - pattern-not: $CLIENT.chat.completions.create(**$KW)
+              - pattern-not: $CLIENT.chat.completions.create(..., **$KW)
               - pattern-not: '$CLIENT.chat.completions.create(..., timeout=$T, ...)'
           - patterns:
               - pattern: '$CLIENT.responses.create(...)'
-              - pattern-not: $CLIENT.responses.create(**$KW)
+              - pattern-not: $CLIENT.responses.create(..., **$KW)
               - pattern-not: '$CLIENT.responses.create(..., timeout=$T, ...)'
 
   - id: llm-sync-call-in-async-handler
@@ -316,6 +355,9 @@ rules:
     severity: ERROR
     metadata:
       owasp: "LLM01:2025 Prompt Injection"
+      verified: >
+        2026-09-23: symbols present in langchain 1.4.2 / langchain-community
+        0.4.2 / langchain-experimental 0.4.2 / llama-index-core 0.14.25
     message: >
       A LangChain prompt template built from an f-string. The f-string
       interpolates its variables at construction time, so whatever they
@@ -336,6 +378,8 @@ rules:
     severity: ERROR
     metadata:
       owasp: "LLM01:2025 Prompt Injection"
+      verified: >
+        2026-09-23: requests/httpx shapes only, no wrapper library involved
     message: >
       Content fetched over HTTP flows into an LLM prompt with nothing in
       between. This is indirect prompt injection: the instructions come
@@ -358,6 +402,8 @@ rules:
     severity: ERROR
     metadata:
       owasp: "LLM02:2025 Sensitive Information Disclosure"
+      verified: >
+        2026-09-23: stdlib os.environ and raw SDK shapes only
     message: >
       An environment secret flows into an LLM prompt. Whatever is in the
       prompt is available to the model and can be coaxed back out of it,
@@ -393,6 +439,12 @@ rules:
     severity: WARNING
     metadata:
       owasp: "LLM02:2025 Sensitive Information Disclosure"
+      verified: >
+        2026-09-23:
+        LLMChain/AgentExecutor/initialize_agent/RetrievalQA/ConversationChain
+        moved to langchain-classic in LangChain 1.x; names unchanged, so
+        these patterns still match both 0.x and 1.x code. verbose= confirmed
+        on AgentExecutor
     message: >
       A LangChain chain or agent constructed with verbose=True. Verbose
       mode prints the fully-rendered prompt and the raw model response
@@ -414,6 +466,10 @@ rules:
     severity: ERROR
     metadata:
       owasp: "LLM02:2025 Sensitive Information Disclosure"
+      verified: >
+        2026-09-23: ChatOpenAI accepts openai_api_key and api_key;
+        ChatAnthropic accepts anthropic_api_key and api_key;
+        OpenAIEmbeddings accepts both. All confirmed
     message: >
       An API key passed as a literal string to a LangChain or
       LlamaIndex model constructor. Same defect as
@@ -433,6 +489,9 @@ rules:
     severity: ERROR
     metadata:
       owasp: "LLM03:2025 Supply Chain"
+      verified: >
+        2026-09-23: trust_remote_code confirmed in transformers — in
+        pipeline()'s signature, and in Auto*.from_pretrained via **kwargs
     message: >
       trust_remote_code=True executes Python that ships with the model
       repository, at load time, with this process's privileges. A model
@@ -450,6 +509,13 @@ rules:
     severity: ERROR
     metadata:
       owasp: "LLM03:2025 Supply Chain"
+      verified: >
+        2026-09-23: download_loader is ABSENT from llama-index-core 0.14.25
+        and could not be found in any installed llama-index package. This
+        rule targets llama-index <=0.10 only and will match nothing on
+        current versions. Kept because 0.10-era code is still widespread,
+        but do not read a clean scan as evidence the ruleset checked
+        anything here
     message: >
       download_loader() fetches loader code from LlamaHub at runtime and
       executes it. What runs is whatever the hub serves at the moment of
@@ -464,6 +530,14 @@ rules:
     severity: WARNING
     metadata:
       owasp: "LLM03:2025 Supply Chain"
+      verified: >
+        UNVERIFIED — torch is not installed and was not pulled in for this
+        check (~800MB for one signature). Two specific risks, both
+        unconfirmed: torch.load's weights_only default is believed to have
+        flipped to True in torch 2.6, which would make this rule fire on
+        code that is already safe; and the kwarg name itself is unverified.
+        Treat findings from this rule as advisory until someone checks it
+        against the torch version in use
     message: >
       A model checkpoint loaded without restricting deserialization.
       torch.load() unpickles by default, and unpickling runs arbitrary
@@ -480,6 +554,10 @@ rules:
     severity: ERROR
     metadata:
       owasp: "LLM05:2025 Improper Output Handling"
+      verified: >
+        2026-09-23: HTMLResponse (fastapi), Markup (markupsafe) and
+        render_template_string (flask) all confirmed. mark_safe UNVERIFIED —
+        django not installed
     message: >
       LLM response content is rendered as HTML rather than as text. The
       model's output is attacker-influenceable - through the prompt,
@@ -503,6 +581,11 @@ rules:
     severity: ERROR
     metadata:
       owasp: "LLM05:2025 Improper Output Handling"
+      verified: >
+        2026-09-23: present, though it has MOVED to
+        llama_index.core.query_engine from llama_index.experimental.
+        Harmless here: these patterns match the call shape, not the import
+        path
     message: >
       PandasQueryEngine executes Python the model wrote, against your
       dataframe, via eval. Its own documentation warns it is not safe
@@ -520,6 +603,9 @@ rules:
     severity: ERROR
     metadata:
       owasp: "LLM06:2025 Excessive Agency"
+      verified: >
+        2026-09-23: PythonREPLTool, PythonAstREPLTool and PythonREPL all
+        present in langchain-experimental 0.4.2
     message: >
       A Python REPL tool handed to an agent. The agent decides what code
       to run, so the model's output reaches exec() with this process's
@@ -538,6 +624,8 @@ rules:
     severity: ERROR
     metadata:
       owasp: "LLM06:2025 Excessive Agency"
+      verified: >
+        2026-09-23: ShellTool present in langchain-community 0.4.2
     message: >
       A shell tool handed to an agent. The model chooses the command, so
       anything that can steer the model can run shell commands as this
@@ -553,6 +641,10 @@ rules:
     severity: WARNING
     metadata:
       owasp: "LLM05:2025 Improper Output Handling"
+      verified: >
+        2026-09-23: SQLDatabaseChain (langchain-experimental),
+        create_sql_agent (langchain-community) and NLSQLTableQueryEngine
+        (llama-index-core) all present
     message: >
       A natural-language-to-SQL component executes queries the model
       wrote against your database. That is the component's whole
@@ -573,6 +665,10 @@ rules:
     severity: ERROR
     metadata:
       owasp: "LLM06:2025 Excessive Agency"
+      verified: >
+        2026-09-23: allow_dangerous_code confirmed on
+        create_pandas_dataframe_agent, allow_dangerous_requests on
+        RequestsToolkit, allow_dangerous_deserialization on FAISS.load_local
     message: >
       An explicit opt-in to a LangChain component's dangerous mode.
       These flags exist because the component can execute
@@ -592,6 +688,13 @@ rules:
     severity: WARNING
     metadata:
       owasp: "LLM06:2025 Excessive Agency"
+      verified: >
+        2026-09-23: AgentExecutor and initialize_agent moved to
+        langchain-classic in LangChain 1.x; names unchanged so the patterns
+        still match. SCOPE LIMIT: LangChain 1.x's new agent API is
+        create_agent(), which has NO max_iterations parameter at all —
+        iteration limits moved to middleware. This rule therefore says
+        nothing about agents built the 1.x way
     message: >
       An agent executor with no iteration cap. An agent that cannot
       reach its goal keeps calling tools and re-prompting until
@@ -602,11 +705,11 @@ rules:
       - pattern-either:
           - patterns:
               - pattern: AgentExecutor(...)
-              - pattern-not: AgentExecutor(**$KW)
+              - pattern-not: AgentExecutor(..., **$KW)
               - pattern-not: AgentExecutor(..., max_iterations=$N, ...)
           - patterns:
               - pattern: initialize_agent(...)
-              - pattern-not: initialize_agent(**$KW)
+              - pattern-not: initialize_agent(..., **$KW)
               - pattern-not: initialize_agent(..., max_iterations=$N, ...)
 
   - id: llm-langchain-missing-max-tokens
@@ -614,6 +717,9 @@ rules:
     severity: WARNING
     metadata:
       owasp: "LLM10:2025 Unbounded Consumption"
+      verified: >
+        2026-09-23: max_tokens confirmed on both ChatOpenAI and
+        ChatAnthropic
     message: >
       A LangChain chat model constructed with no output-length cap.
       Same defect as llm-call-missing-max-tokens, for the wrapper
@@ -623,11 +729,11 @@ rules:
       - pattern-either:
           - patterns:
               - pattern: ChatOpenAI(...)
-              - pattern-not: ChatOpenAI(**$KW)
+              - pattern-not: ChatOpenAI(..., **$KW)
               - pattern-not: ChatOpenAI(..., max_tokens=$N, ...)
           - patterns:
               - pattern: ChatAnthropic(...)
-              - pattern-not: ChatAnthropic(**$KW)
+              - pattern-not: ChatAnthropic(..., **$KW)
               - pattern-not: ChatAnthropic(..., max_tokens=$N, ...)
 
   - id: llm-langchain-missing-timeout
@@ -635,6 +741,11 @@ rules:
     severity: WARNING
     metadata:
       owasp: "LLM10:2025 Unbounded Consumption"
+      verified: >
+        2026-09-23: ChatOpenAI accepts request_timeout and timeout.
+        ChatAnthropic accepts timeout and default_request_timeout but NOT
+        request_timeout — an earlier version of this rule omitted
+        default_request_timeout and wrongly flagged code that set it
     message: >
       A LangChain chat model constructed with no request timeout. A hung
       upstream connection blocks whatever is waiting on this model
@@ -644,11 +755,16 @@ rules:
       - pattern-either:
           - patterns:
               - pattern: ChatOpenAI(...)
-              - pattern-not: ChatOpenAI(**$KW)
+              - pattern-not: ChatOpenAI(..., **$KW)
               - pattern-not: ChatOpenAI(..., request_timeout=$T, ...)
               - pattern-not: ChatOpenAI(..., timeout=$T, ...)
           - patterns:
               - pattern: ChatAnthropic(...)
-              - pattern-not: ChatAnthropic(**$KW)
-              - pattern-not: ChatAnthropic(..., request_timeout=$T, ...)
+              - pattern-not: ChatAnthropic(..., **$KW)
+              # ChatAnthropic does NOT accept request_timeout — verified
+              # against langchain-anthropic 1.7.2, where its fields are
+              # `timeout` and `default_request_timeout`. Without the
+              # latter listed here, code that correctly sets
+              # default_request_timeout was flagged as having no timeout.
               - pattern-not: ChatAnthropic(..., timeout=$T, ...)
+              - pattern-not: ChatAnthropic(..., default_request_timeout=$T, ...)
