@@ -678,3 +678,60 @@ footnote, or the new fix-threshold wording; all absent. The before/after above w
 reason. Once this merges to `main` and the Azure app is redeployed, PR #3's own bot review should
 show the same shape — a separate, deliberate infrastructure step, not something a code PR does on
 its own.
+
+---
+
+## Staleness audit — 2026-09-23
+
+Written while splitting the README into linked docs. Nothing in this section is a new measurement:
+it records which existing numbers can still be cited as current, which cannot, and why. No eval
+harness run was possible on this date — see "Why nothing was re-run" below.
+
+### Numbers that are still current
+
+| Number | Why it holds |
+|---|---|
+| Security precision 1.00 / recall 1.00 / dismissal accuracy 1.00 (Phase 9.1, 3 runs) | Driven by Bandit, which none of the Phase 11.2+ changes touched. The fixtures, the ground truth and the verdict contract for Security are unchanged. |
+| Per-agent token and latency shapes | Unchanged model tiers and prompts for Security. |
+
+### Numbers that are now STALE — do not cite as current
+
+| Number | What invalidated it |
+|---|---|
+| **AI-aware precision ~0.98 / recall 1.00** | Two things. (a) `rules/llm-security.yaml` went from 10 rules to 27, so the AI-aware agent's *inputs* changed. (b) The ground truth for two of the sixteen fixtures was corrected today (below) and the metric was never recomputed against it. |
+| **AI-aware dismissal accuracy 1.00** | It rested partly on `near_miss_01_max_tokens_via_kwargs.py`, whose whole purpose was to be dismissed. Semgrep no longer raises anything on that fixture, so there is nothing left to dismiss there. |
+| **Quality precision 0.75 / Test precision 1.00** | Both agents now operate under a changed contract: every generative finding must carry a `code` echo of the line it refers to, verified against the hunk (`_verified_line`). That changes which findings survive and where they land. Not re-measured. |
+| **Per-PR-equivalent ~$0.157 / ~150-165s** | That figure is one full harness pass over 30 fixtures, not a real pull request, and the pipeline has changed since. Real per-PR cost from live runs is roughly an order of magnitude smaller — see the live figures cited in the README. |
+
+### Two ground-truth corrections made today
+
+Both found by running Semgrep (no LLM calls, $0) over the fixture set with the current ruleset and
+diffing against `ground_truth.json`.
+
+1. **`fixture_10_dogfood_missing_timeout.py` — ground truth was incomplete, and always had been.**
+   Its docstring claimed it "isolates `llm-call-missing-timeout` as the only expected confirmed
+   rule_id". It never did: `complete_text()` has no `system=`, so
+   `llm-missing-system-user-separation` fires on it too. Verified this is **not** a side effect of
+   the ruleset expansion by re-running the pre-expansion 10-rule set from git against the same
+   fixture — identical output. The missing rule_id quietly inflated AI-aware precision for as long
+   as the fixture has existed. Ground truth and docstring both corrected.
+
+2. **`near_miss_01_max_tokens_via_kwargs.py` — now handled at the rule layer instead of by the
+   model.** The fixture exists to prove the agent will dismiss a `max_tokens`/`timeout` finding
+   whose values arrive through `**kwargs`. The rule now excludes that shape outright, so Semgrep
+   raises nothing and the agent is never asked. That is a strict improvement — a pattern rules it
+   out for free where an LLM call used to be spent — but it makes the fixture's ground truth
+   obsolete. Set to `{"confirmed": [], "dismissed": []}`.
+
+### Why nothing was re-run
+
+The `ANTHROPIC_API_KEY` in local `.env` is dead: well-formed (`sk-ant-`, 108 chars) and rejected
+with `401 authentication_error` by both a direct SDK call and a real `codeguard audit` run. The
+hosted Azure deployment is unaffected — it holds a different key as a Container Apps secret, and
+posted a real review on codeguard-playground#5 on 2026-09-22 — so this is a local-credential
+problem, not a broken pipeline.
+
+Consequence: the stale numbers above could not be refreshed on this date. They are marked stale
+rather than quietly re-cited, and the README cites live-run and Semgrep-only figures instead, which
+need no Anthropic credit. Refreshing them is one `evals/run_full_harness.py --runs 3` (~$0.16/run
+at the last measured rate) once a working key is in `.env`.
