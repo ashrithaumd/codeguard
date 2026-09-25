@@ -91,6 +91,11 @@ Every figure below is from a real run. Labelled by what produced it.
 review above — **$0.004567**, 1,053 in / 138 out tokens, 13.47s, 3 inline comments, 1 fix
 suggestion.
 
+The 13.47s is `reviews.duration_s`: the review handler's own wall clock, from installation token to
+posted review. The same review measured from the queue row — enqueue to ack, which also covers
+claim latency and the stats write — is 14.16s. Both are in the logs; they are not the same
+measurement.
+
 **Real repositories, Semgrep only** ($0, no LLM calls):
 
 | Repo | Size | Findings | Triage |
@@ -122,11 +127,12 @@ nothing was re-measured.
   Recognised patterns are stripped and replaced with a marker before the call is built, and the
   review continues on what is left. Obfuscated or encoded payloads pass the regex layer untouched —
   the remaining defence there is framing all PR content as data, which is not a proof.
-- **The LangChain and LlamaIndex rules are symbol-verified, not behaviour-verified.** Symbols were
-  introspected against real installs; the patterns have no real-code hit yet. `download_loader` is
-  **gone** from current llama-index and matches nothing; `torch.load`'s `weights_only` and Django's
-  `mark_safe` are **unverified** — neither package was installed. Each rule records its own status
-  in a `verified` metadata field.
+- **The LangChain rules have real-code hits; the LlamaIndex rules have none.** Symbols for both were
+  introspected against real installs, but only LangChain has been matched against a real application
+  (langflow, 11 true positives). No LlamaIndex rule has ever fired on code nobody here wrote.
+  `download_loader` is **gone** from current llama-index and matches nothing; `torch.load`'s
+  `weights_only` and Django's `mark_safe` are **unverified** — neither package was installed. Each
+  rule records its own status in a `verified` metadata field.
 - **Hunk-scoped review can misjudge whole-function facts**, and dismissals are Bandit/Semgrep-only,
   never Ruff. Detail in [ARCHITECTURE.md](ARCHITECTURE.md#limitations).
 
@@ -137,8 +143,9 @@ nothing was re-measured.
 - **[docs/github-app.md](docs/github-app.md)** — creating, permissioning and installing the App.
 - **[docs/self-host.md](docs/self-host.md)** — local compose, tests, `.codeguard.yml`, environment
   variables, Azure.
-- **[evals/RESULTS.md](evals/RESULTS.md)** — every measurement, including a wrong finding CodeGuard
-  produced about its own code.
+- **[evals/RESULTS.md](evals/RESULTS.md)** — every measurement, including the per-finding triage
+  behind the langflow and simonw/llm numbers above, and a wrong finding CodeGuard produced about its
+  own code.
 
 ## Author
 

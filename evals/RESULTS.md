@@ -735,3 +735,134 @@ Consequence: the stale numbers above could not be refreshed on this date. They a
 rather than quietly re-cited, and the README cites live-run and Semgrep-only figures instead, which
 need no Anthropic credit. Refreshing them is one `evals/run_full_harness.py --runs 3` (~$0.16/run
 at the last measured rate) once a working key is in `.env`.
+
+## External validation — two codebases we did not write (2026-09-23)
+
+Every number in this section is Semgrep-only: `rules/llm-security.yaml` against a checked-out
+third-party repository, **no LLM calls, $0**. It measures the ruleset, not the agents.
+
+This is the section the README's numbers table points at. It exists because of a distinction that
+took two scans to learn: `semgrep --test` passing proves a pattern matches the examples someone
+already thought of. **Every false positive and the one false negative recorded below were found by
+scanning real code, and none of them by the test file.** The lesson is repeated at the top of the
+YAML so it is read by whoever edits a rule next.
+
+### Why these two repositories
+
+| Repo | Version | Size | Chosen because |
+|---|---|---|---|
+| [simonw/llm](https://github.com/simonw/llm) | 0.36 | 54 Python files, ~37k lines | OpenAI-first, widely used, written by someone with a reputation for careful code — a hard test for precision. |
+| [langflow-ai/langflow](https://github.com/langflow-ai/langflow) | 1.12.3 | 4,104 Python files, ~847k lines, 93 referencing agents or tools | The most popular LangChain-native application on GitHub, and one that *instantiates* components rather than defining them — the shape the LangChain rules actually claim to match. |
+
+The second scan happened because the first did not close the gap. After the symbol-verification
+pass, 17 of the 27 rules were verified only in the sense that their symbols existed in the installed
+packages. That is not evidence that the patterns match how anyone writes the calls.
+
+### Run 1 — simonw/llm @ 0.36: 24 findings, every one wrong
+
+**24 findings, 24 false positives.** All 24 traced to a single blind spot.
+
+Real OpenAI client code is written `create(model=..., messages=..., **kwargs)`, and `max_tokens`,
+`max_output_tokens` and `instructions` all arrive inside that splatted dict. The rules could not see
+into `**kwargs`, so they concluded the arguments were absent.
+
+The exclusions that were supposed to handle this only covered a **bare** `create(**kwargs)` — a
+shape almost nobody writes — rather than a splat **mixed with** named arguments, which is the
+common one. `llm-missing-system-user-separation` had no splat exclusion at all and produced 8 of
+the 24 by itself.
+
+**Fix:** widen every affected exclusion from `create(**$KW)` to `create(..., **$KW)`, and add
+regression cases for the mixed form to `rules/llm-security.py`. After the fix the same scan produces
+**0 findings**, and `codeguard/`, `tests/` and `scripts/` stay clean.
+
+**Two caveats on that 0, both of which must travel with it:**
+
+1. **0 findings is not 0 false negatives.** This scan measured precision. It says nothing about what
+   the ruleset failed to see — and run 2 then found something it had been failing to see all along.
+2. **It is a carefully written codebase.** Timeouts and token limits are set. Part of the 0 is a
+   fact about Simon's code, not only about the rules.
+
+### Run 2 — langflow @ 1.12.3: 33 findings, 0 scan errors, 12 seconds
+
+Triaged one at a time, by reading the constructor or call site each finding pointed at.
+
+**True positives — 11, all in reviewable code**
+
+| n | Rule | What decided it |
+|---|---|---|
+| 5 | `llm-langchain-missing-timeout` | `ChatOpenAI`/`ChatAnthropic` constructed in the novita, cometapi, empiriolabs and anthropic bundles, plus a credential-validation call in `credentials.py` doing `llm.invoke()` with no timeout at all. Each constructor read directly — no timeout kwarg present in any form. |
+| 2 | `llm-call-missing-timeout` | `groq_model_discovery` probes models in a loop; neither the call nor `groq.Groq()` sets a timeout. A loop makes the missing timeout worse, not incidental. |
+| 2 | `llm-langchain-python-repl-tool` | langflow ships `PythonREPL` as an agent-callable component. Intentional on their part, and exactly the LLM06 risk the rule is for. True, and the kind of true a maintainer would close as "by design". |
+| 1 | `llm-langchain-missing-max-tokens` | Constructor read; no token ceiling set. |
+| 1 | `llm-nl-to-sql-engine` | `create_sql_agent`. Severity WARNING, and the rule's own message already says this is the component's purpose. |
+
+**Discrimination worth recording:** `novita.py` sets `max_tokens` but not `timeout`, and exactly one
+of the two applicable rules fired. The rules are distinguishing between adjacent conditions on the
+same call, not pattern-matching the general area.
+
+**False positives fixed — 2 findings, one rule, one narrowing**
+
+`llm-missing-system-user-separation` fired twice on groq's `messages=messages` — a list assembled
+one line above the call.
+
+The conclusion was *correct* in langflow's case: there genuinely was no system turn. It was narrowed
+anyway, and the reason is the point. The rule cannot see inside a variable, so "there is no system
+turn" was a **guess that happened to land**. The same guess is wrong on any codebase that builds a
+list containing a system message. A rule that is right by luck is a false positive waiting for a
+different repository.
+
+The `chat.completions` branch now requires the list to be written **inline**:
+
+```yaml
+- pattern: '$CLIENT.chat.completions.create(..., model=$M, messages=[...], ...)'
+```
+
+**False negative fixed — 1, and the most valuable result of either run**
+
+`from openai import OpenAI` followed by `OpenAI(api_key="sk-...")` **matched nothing.** Every
+hardcoded-key pattern required the `openai.` module prefix, and the bare-name import is the more
+common of the two styles.
+
+Four bare-constructor patterns were added (`OpenAI`, `AsyncOpenAI`, `Anthropic`, `AsyncAnthropic`).
+
+This is the reason to scan real code even when the count looks good. **A rule that silently matches
+nothing is indistinguishable from a clean scan** — it reports 0, the scan looks healthy, and the
+gap is invisible from the outside. Nothing in `semgrep --test` could have surfaced it, because the
+test file only contained the shape the rule already matched.
+
+**The other 20 findings — true on the literal claim, worthless in practice**
+
+20 of the 33 are in `docs/`: one OpenAI example file and its four versioned copies. CodeGuard's own
+`filter_files` already excludes `*docs/*`, so **none of them would ever reach a review**. They are
+recorded here rather than dropped because they show how a versioned documentation tree multiplies a
+single sample by five — a scan of a docs-heavy repo will overstate its own finding count unless the
+filter is applied first.
+
+**Caveats on the langflow result, which the README repeats:**
+
+1. **9 of the 11 true positives are timeout/max-tokens hygiene.** Real, worth fixing, and the
+   shallowest thing the ruleset checks.
+2. **The sharper LLM01/LLM05 rules got no real-code hit — in either direction.** No true positives
+   and no false positives. They remain unproven against real usage, not validated by silence.
+3. The true-positive count is the least interesting number here. The false negative is the finding.
+
+### Regression state after both runs
+
+| Target | Findings |
+|---|---|
+| langflow, reviewable code | 11, all true positives |
+| langflow, `docs/` | 20, excluded by `filter_files` before review |
+| simonw/llm | 0 |
+| `codeguard/`, `tests/`, `scripts/` | 0 |
+| `semgrep --test` | 27/27 |
+| Unit tests | 509 passing |
+
+### What these two runs do not prove
+
+- **No LLM agent was involved.** This is the Semgrep layer alone. Nothing here speaks to the
+  AI-aware agent's precision or recall, whose fixture-based numbers are marked stale in the
+  staleness audit above.
+- **Two repositories is two repositories.** Both are Python, both are LLM-tooling projects, and one
+  of them is OpenAI-centric. The LlamaIndex rules still have no real-code exposure at all.
+- **Neither run measured recall.** Nobody read 847k lines of langflow looking for what the ruleset
+  missed. The one false negative found was found while triaging something else, not by looking for it.

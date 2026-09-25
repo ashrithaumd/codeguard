@@ -141,5 +141,8 @@ the two resolve to the same digest, and deploys by digest under a commit-named r
   output does not need semantic judgment the way "is this SQL actually injectable" does. Confirmed
   on real data — 89/89 dismissals on one real PR were Bandit rule IDs, zero were Ruff.
 - **Python only.** Everything else is filtered out at ingest.
-- **The LangChain and LlamaIndex rules have no real-code hit yet**, in either direction. See the
-  README's limitations for which are unverified and why.
+- **The LangChain rules have real-code hits; the LlamaIndex rules have none.** A langflow scan
+  produced 11 true positives against LangChain call shapes, 9 of them timeout/max-tokens hygiene —
+  but the sharper LLM01/LLM05 rules got no hit in either direction, and no LlamaIndex rule has ever
+  matched real code. See the README's limitations for which symbols are unverified and why, and
+  [`evals/RESULTS.md`](evals/RESULTS.md) for the per-finding triage.
