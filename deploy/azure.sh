@@ -222,7 +222,17 @@ echo
 echo '  az containerapp secret set --name '"$API_APP_NAME"' --resource-group '"$RESOURCE_GROUP"' \'
 echo '    --secrets anthropic-api-key="$(grep "^ANTHROPIC_API_KEY=" .env | cut -d= -f2- | tr -d "\r\n")" \'
 echo '      database-url="'"$DATABASE_URL_PROMPT"'" \'
-echo '      github-webhook-secret="$(grep "^GITHUB_WEBHOOK_SECRET=" .env | cut -d= -f2- | tr -d "\r\n")"'
+echo '      github-webhook-secret="$(grep "^GITHUB_WEBHOOK_SECRET=" .env | cut -d= -f2- | tr -d "\r\n")" \'
+echo '      metrics-auth-token="$(openssl rand -hex 32)"'
+echo
+echo "  metrics-auth-token gates /metrics, which is excluded from EasyAuth and was"
+echo "  therefore publicly readable until it was set. api/main.py only WARNS when it"
+echo "  is missing (the endpoint fails open so local compose keeps working), so an"
+echo "  unset value is silent from the outside -- the api answers 200 and looks"
+echo "  healthy while serving queue depth and webhook counts to anyone who asks."
+echo "  Generate it here rather than reading .env: nothing else needs a copy."
+echo "  The worker does NOT need it -- its :9000/metrics is prometheus_client, which"
+echo "  this token does not gate, and it has no ingress to be reached through."
 echo
 echo "  For the multi-line private key, use a YAML update (a single CLI --secrets"
 echo "  value containing embedded newlines was observed to get corrupted in transit"
@@ -362,6 +372,7 @@ if az containerapp revision show --name "$API_APP_NAME" --resource-group "$RESOU
                 "GITHUB_PRIVATE_KEY=secretref:github-private-key" \
                 "GITHUB_APP_ID=$GITHUB_APP_ID" \
                 "DB_SSLMODE=require" \
+                "METRICS_AUTH_TOKEN=secretref:metrics-auth-token" \
             --output none
     fi
 else
@@ -375,6 +386,7 @@ else
             "GITHUB_PRIVATE_KEY=secretref:github-private-key" \
             "GITHUB_APP_ID=$GITHUB_APP_ID" \
             "DB_SSLMODE=require" \
+            "METRICS_AUTH_TOKEN=secretref:metrics-auth-token" \
         --output none
 fi
 
