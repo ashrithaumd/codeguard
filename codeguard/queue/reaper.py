@@ -34,6 +34,27 @@ from codeguard.queue.models import DeadLetter, ReapResult
 
 logger = logging.getLogger("codeguard.queue.reaper")
 
+# A tick whose query time or whose gap since the previous tick exceeds this many
+# multiples of the configured interval is logged at INFO even when it swept
+# nothing — see run_forever's docstring. 5x rather than 2x because the loop is not
+# a scheduler: asyncio.sleep(interval) is the gap BETWEEN ticks, so `since_prev`
+# is always interval + the previous tick's own work, and event-loop scheduling
+# jitter under load pushes that around. 2x would cry wolf on a busy but healthy
+# api process; 5x on a 1s interval means a 5-second stall, which is never normal.
+_STALL_FACTOR = 5.0
+
+# Floor under the above, because interval_seconds is a config field and nothing
+# stops it being 0 — a caller wanting the tightest possible loop. A pure multiple
+# would make the threshold 0 there, every tick "slower than zero", and the whole
+# demotion would silently undo itself into INFO-per-tick: exactly the behaviour
+# being removed, in the configuration that can least afford it. Caught by
+# tests/queue/test_reaper_logging.py, which drives the loop at interval 0.
+_MIN_STALL_SECONDS = 1.0
+
+
+def _stall_threshold(interval_seconds: float) -> float:
+    return max(_STALL_FACTOR * interval_seconds, _MIN_STALL_SECONDS)
+
 
 async def reap_expired_leases(pool: AsyncConnectionPool, *, max_attempts: int) -> ReapResult:
     """One reaper pass over every 'leased' job whose lease has expired.
@@ -115,11 +136,29 @@ async def run_forever(
     (that GitHub-specific behavior lives in the caller, not here — this module stays
     domain-agnostic).
 
-    Deliberately logs every tick at INFO — including zero-row sweeps, and including
-    both the wall-clock gap since the previous tick and how long reap_expired_leases()
-    itself took. A long `since_prev` with a short `took` means the *loop* stalled; a
-    long `took` means the *query* stalled — indistinguishable after the fact without
-    this, per the incident this pattern is ported from (see Reliqueue's history).
+    Every tick logs both the wall-clock gap since the previous tick and how long
+    reap_expired_leases() itself took. A long `since_prev` with a short `took` means
+    the *loop* stalled; a long `took` means the *query* stalled — indistinguishable
+    after the fact without this, per the incident this pattern is ported from (see
+    Reliqueue's history).
+
+    The LEVEL is chosen per tick, which is the whole trick. This used to be INFO
+    unconditionally; at the 1s interval that is ~86,000 lines a day, and in
+    production every one of them said "swept 0 row(s)" because an idle queue is the
+    normal state. Real signal — a dead-letter, a requeue — arrived in a haystack it
+    paid to store. So:
+
+      - swept something  -> INFO. This is the event anyone greps for.
+      - stalled          -> INFO. A tick that took, or waited, far longer than the
+                            configured interval is itself the diagnosis the
+                            paragraph above exists to enable, so it must survive at
+                            the level production actually runs at.
+      - quiet and prompt -> DEBUG. The overwhelming majority. Still emitted, still
+                            carrying since_prev and took, just not stored by default.
+
+    Note the interval is deliberately untouched: sweeping every second is correct and
+    cheap (one indexed UPDATE against an empty set). It was never the sweeping that
+    was expensive, only the narrating.
     """
     tick = 0
     prev_tick_at = time.monotonic()
@@ -132,8 +171,15 @@ async def run_forever(
         try:
             result = await reap_expired_leases(pool, max_attempts=max_attempts)
             took = time.monotonic() - start
-            logger.info("reaper tick %d: swept %d row(s) (%d dead-lettered, %d requeued), took %.3fs, %.3fs since previous tick",
-                        tick, result.total, len(result.dead_lettered), result.requeued_count, took, since_prev)
+            # tick 1's since_prev is measured from loop entry, not from a previous
+            # tick, so it is meaninglessly small — excluded rather than special-cased
+            # into a false "stall".
+            stalled = tick > 1 and max(took, since_prev) > _stall_threshold(interval_seconds)
+            level = logging.INFO if (result.total or stalled) else logging.DEBUG
+            logger.log(level,
+                       "reaper tick %d: swept %d row(s) (%d dead-lettered, %d requeued), took %.3fs, %.3fs since previous tick%s",
+                       tick, result.total, len(result.dead_lettered), result.requeued_count, took, since_prev,
+                       " [SLOW]" if stalled else "")
             if on_sweep is not None:
                 maybe_awaitable = on_sweep(result)
                 if maybe_awaitable is not None:
