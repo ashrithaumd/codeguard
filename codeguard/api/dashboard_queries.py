@@ -167,6 +167,28 @@ async def distinct_private_repos(pool: AsyncConnectionPool) -> list[tuple[str, s
             return [(row["owner"], row["repo"]) for row in await cur.fetchall()]
 
 
+async def distinct_repos(pool: AsyncConnectionPool) -> list[tuple[str, str, bool]]:
+    """Every (owner, repo, private) that has a review row.
+
+    The repositories page's fallback when GitHub cannot be asked which
+    repos the App is installed on. Strictly narrower than that list — it
+    can only contain repos that have already been reviewed — so falling
+    back to it can never surface a repository the installed-list would
+    not have, which is what makes it safe to show without a live
+    installation check.
+
+    `private` is the strictest value across the repo's rows, matching
+    repo_detail's rule: one private row gates the whole repo.
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                "SELECT owner, repo, bool_or(private) AS private FROM reviews "
+                "GROUP BY owner, repo"
+            )
+            return [(row["owner"], row["repo"], row["private"]) for row in await cur.fetchall()]
+
+
 async def totals(
     pool: AsyncConnectionPool, *, principal_repos: list[tuple[str, str]],
     filters: "Filters | None" = None,

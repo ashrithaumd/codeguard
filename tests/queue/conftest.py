@@ -72,6 +72,12 @@ async def pool():
     async with p.connection() as conn:
         for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
             await conn.execute(path.read_text())
-        await conn.execute("TRUNCATE jobs, dead_letters")
+        # Alphabetical, matching tests/api/conftest.py's _TRUNCATE. These
+        # two overlap on `audits` and `jobs`, and TRUNCATE locks in the
+        # order written, so an inconsistent order between them is a
+        # lock-ordering deadlock waiting for the wrong interleaving —
+        # observed once, as a DeadlockDetected during fixture setup
+        # reported against an unrelated test.
+        await conn.execute("TRUNCATE audits, dead_letters, jobs")
     yield p
     await p.close()

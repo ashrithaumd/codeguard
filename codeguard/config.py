@@ -67,6 +67,45 @@ class Settings(BaseSettings):
     dashboard_dev_principal: str = ""
     dashboard_trust_dev_principal: bool = False
 
+    # Who may trigger an on-demand audit from the dashboard. Comma
+    # separated GitHub logins; comparison is case-insensitive because
+    # GitHub logins are.
+    #
+    # Defaults to EMPTY, meaning NOBODY, and that is the whole design.
+    # An audit clones a repository, runs every scanner over it and
+    # spends the operator's own Anthropic credit, with a cost that
+    # scales with the size of the target. "Any signed-in user" is
+    # therefore not an acceptable gate: anyone who can complete a GitHub
+    # login could point it at a large repository and bill the operator
+    # for it. An explicit allow-list is the only gate whose blast radius
+    # is known in advance.
+    #
+    # Empty-means-nobody rather than empty-means-everybody follows the
+    # same direction as reviews.private defaulting to TRUE: the unset
+    # case must be the safe one, because unset is what a deployment that
+    # forgot to configure this will have.
+    dashboard_audit_principals: str = ""
+
+    @property
+    def audit_principals(self) -> frozenset[str]:
+        return frozenset(
+            entry.strip().lower()
+            for entry in self.dashboard_audit_principals.split(",")
+            if entry.strip()
+        )
+
+    def may_trigger_audit(self, principal: str | None) -> bool:
+        """Server-side authority for the audit button.
+
+        Called on the POST, not only when deciding whether to render the
+        button — a hidden button is a UI affordance, not an access
+        control, and the route is reachable by curl regardless of what
+        the template drew.
+        """
+        if not principal:
+            return False
+        return principal.strip().lower() in self.audit_principals
+
     # Global hard ceilings — operator-controlled, override-able via env
     # vars, but never per-repo. A repo's RepoConfig can only ask for
     # *less* than these, never more. See effective_budget().

@@ -28,12 +28,15 @@ from pathlib import Path
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
+from codeguard.api import access, audits
 from codeguard.api import dashboard_queries as q
 from codeguard.api.access import can_view, visible_private_repos
 from codeguard.api.auth import client_principal
+from codeguard.config import get_settings
+from codeguard.queue.queue import enqueue
 from codeguard.redact import redact
 
 logger = logging.getLogger(__name__)
@@ -99,9 +102,21 @@ async def index(
     """
     pool = request.app.state.pool
     principal = client_principal(request)
-    allowed = await _visible_repos(pool, principal)
     filters = q.Filters(repo=repo, severity=severity, gate=gate,
                         date_from=date_from, date_to=date_to)
+
+    # Signed-in landing view is the control panel, not the log.
+    #
+    # Conditional on there being NO query string, which is what makes
+    # this safe for existing links: every filtered, paged or shared
+    # dashboard URL carries parameters, so only a bare visit to
+    # /dashboard is redirected. A blanket redirect would silently drop
+    # the filters off a bookmark, which is the whole reason filters were
+    # put in the query string in the first place.
+    if principal and not request.query_params:
+        return RedirectResponse(url="/dashboard/repos", status_code=302)
+
+    allowed = await _visible_repos(pool, principal)
 
     offset = (page - 1) * PAGE_SIZE
     reviews = await q.list_reviews(pool, principal_repos=allowed, limit=PAGE_SIZE,
@@ -234,3 +249,236 @@ async def pr_detail(request: Request, owner: str, repo: str, pr_number: int) -> 
 
     return _page(request, "pr.html", principal,
                  owner=owner, repo=repo, pr_number=pr_number, reviews=reviews)
+
+
+# Audit mode produces no fix suggestions. Stated in the UI rather than
+# left to be discovered: propose_fix runs per-hunk against a diff, and an
+# audit has no diff — it reviews whole files, so there is no
+# before/after pair for a suggestion to be anchored to. Someone who has
+# seen fix suggestions on a pull request will otherwise read their
+# absence here as a failure.
+AUDIT_NO_FIXES_NOTE = (
+    "Audit mode reports findings only — no fix suggestions. "
+    "Fixes are anchored to a pull request's diff, and an audit has no diff."
+)
+
+# Why the button is absent on a private repository. run_audit clones over
+# HTTPS and would need a credential in the URL to reach a private repo;
+# it also prints the target to stderr and puts git's own stderr (URL
+# included) into the error it stores and renders. An installation token
+# passed that way would end up in the worker's logs and on this page.
+PRIVATE_AUDIT_NOTE = (
+    "Private repositories cannot be audited yet: the audit clones over HTTPS, "
+    "and the clone URL appears in logs and error messages."
+)
+
+
+def _audit_target(owner: str, repo: str) -> str:
+    return f"https://github.com/{owner}/{repo}"
+
+
+@router.get("/repos", response_class=HTMLResponse)
+async def repositories(request: Request) -> HTMLResponse:
+    """Every repository CodeGuard is installed on, with its activity.
+
+    Two independent sources, ANDed:
+
+      access.installed_repositories()  -> is CodeGuard active here
+      access.can_view()                -> may this visitor see it
+
+    The first returns PRIVATE repository names, because the App can see
+    them; it says nothing about whether the person looking at this page
+    can. Every row therefore passes through can_view before it reaches
+    the template, exactly as the review listings do. This is the one
+    place in the dashboard where the repo list does not originate in a
+    review row, so it is also the one place that could leak a repo name
+    that has never been reviewed.
+
+    A repo with no reviews still appears, with zeroed stats — "installed
+    but never reviewed" is a real and interesting state (it usually means
+    no pull request has been opened yet), and hiding those rows would
+    make the page disagree with GitHub's own installation settings.
+    """
+    pool = request.app.state.pool
+    principal = client_principal(request)
+    settings = get_settings()
+
+    lookup_failed = False
+    installed: list[dict] = []
+    try:
+        installed = access.installed_repositories()
+    except access.InstallationLookupFailed:
+        # Fail closed on the INSTALLED question, not on the page. We do
+        # not invent repositories we could not confirm; we fall back to
+        # the ones that have review rows, which are visibility-filtered
+        # by the same gate and disclose nothing new. The banner says the
+        # list is partial, because an empty page here would otherwise
+        # read as "you have not installed CodeGuard anywhere".
+        lookup_failed = True
+
+    stats = await audits.repo_stats(pool)
+    latest_audits = await audits.latest_per_repo(pool)
+
+    if lookup_failed:
+        known = await q.distinct_repos(pool)
+        installed = [
+            {"owner": owner, "repo": name, "private": private,
+             "installation_id": None, "html_url": f"https://github.com/{owner}/{name}"}
+            for owner, name, private in known
+        ]
+
+    may_audit = settings.may_trigger_audit(principal)
+    rows = []
+    for entry in installed:
+        owner, name = entry["owner"], entry["repo"]
+        if not can_view(owner=owner, repo=name, private=entry["private"], principal=principal):
+            continue
+        stat = stats.get((owner, name), {})
+        audit = latest_audits.get((owner, name))
+        rows.append({
+            **entry,
+            "active": not lookup_failed,
+            "review_count": stat.get("review_count", 0),
+            "last_reviewed": stat.get("last_reviewed"),
+            "total_cost": float(stat.get("total_cost", 0) or 0),
+            "audit": audit,
+            "audit_in_flight": bool(audit and audit["status"] in ("queued", "running")),
+            # Both conditions, so the template never has to combine them
+            # and get it wrong. The POST re-checks may_trigger_audit
+            # regardless of what this said.
+            "can_audit": may_audit and not entry["private"],
+        })
+
+    rows.sort(key=lambda r: (r["last_reviewed"] is None, -(r["review_count"]), r["repo"]))
+
+    return _page(
+        request, "repositories.html", principal,
+        rows=rows, may_audit=may_audit, lookup_failed=lookup_failed,
+        settings_url=access.installation_settings_url(
+            next((r["installation_id"] for r in rows if r["installation_id"]), None)
+        ),
+        audit_note=AUDIT_NO_FIXES_NOTE, private_note=PRIVATE_AUDIT_NOTE,
+    )
+
+
+@router.post("/repos/{owner}/{repo}/audit")
+async def trigger_audit(request: Request, owner: str, repo: str):
+    """Enqueue an audit. Owner-gated, and the gate is HERE.
+
+    The repositories page hides the button for everyone else, but a
+    hidden button is a UI affordance and this route is reachable by curl.
+    settings.may_trigger_audit is the actual authority, and it defaults
+    to nobody.
+
+    404 rather than 403 for an unauthorised caller, consistent with the
+    rest of this module: a 403 would confirm the route exists and that
+    an audit facility is there to be found.
+    """
+    pool = request.app.state.pool
+    principal = client_principal(request)
+    settings = get_settings()
+
+    if not settings.may_trigger_audit(principal):
+        logger.warning("audit refused for principal=%r on %s/%s", principal, owner, repo)
+        raise HTTPException(status_code=404, detail="not found")
+
+    entry = next(
+        (e for e in _installed_or_empty() if (e["owner"], e["repo"]) == (owner, repo)), None,
+    )
+    private = entry["private"] if entry else True
+    if not can_view(owner=owner, repo=repo, private=private, principal=principal):
+        raise HTTPException(status_code=404, detail="not found")
+    if private:
+        # Not a permission failure — a capability one. See
+        # PRIVATE_AUDIT_NOTE.
+        raise HTTPException(status_code=400, detail=PRIVATE_AUDIT_NOTE)
+
+    try:
+        audit = await audits.request_audit(
+            pool, owner=owner, repo=repo, requested_by=principal, private=private,
+        )
+    except audits.AuditInFlight as inflight:
+        # Not an error. The user asked for an audit of this repo and
+        # there already is one, so they are sent to watch it rather than
+        # told off — and, critically, no second job is enqueued and no
+        # second lot of Anthropic credit is spent.
+        return RedirectResponse(
+            url=f"/dashboard/audits/{inflight.existing['id']}", status_code=303,
+        )
+
+    job, created = await enqueue(
+        pool, type="repo_audit",
+        payload={"audit_id": str(audit["id"]), "owner": owner, "repo": repo,
+                 "target": _audit_target(owner, repo)},
+        # The audit id, so the queue's own idempotency matches the
+        # request's identity. The in-flight index already prevents a
+        # duplicate request; this prevents a duplicate JOB for one
+        # request, e.g. a retried POST that got past the index because
+        # the row was already committed.
+        idempotency_key=f"repo_audit:{audit['id']}",
+    )
+    await audits.attach_job(pool, audit["id"], job.id)
+    logger.info("audit %s enqueued for %s/%s by %s (job=%s, created=%s)",
+                audit["id"], owner, repo, principal, job.id, created)
+
+    return RedirectResponse(url=f"/dashboard/audits/{audit['id']}", status_code=303)
+
+
+def _installed_or_empty() -> list[dict]:
+    try:
+        return access.installed_repositories()
+    except access.InstallationLookupFailed:
+        return []
+
+
+async def _audit_or_404(request: Request, audit_id: UUID) -> dict:
+    """Fetch an audit the visitor is allowed to see, or 404.
+
+    Same visibility rule as a review, from the flag recorded on the audit
+    row at request time — and the same deliberate conflation of "no such
+    audit" with "not yours", so the response cannot be used to discover
+    that a given repo is being audited.
+    """
+    pool = request.app.state.pool
+    principal = client_principal(request)
+    audit = await audits.get_audit(pool, audit_id)
+    if audit is None:
+        raise HTTPException(status_code=404, detail="audit not found")
+    if not can_view(owner=audit["owner"], repo=audit["repo"],
+                    private=audit["private"], principal=principal):
+        raise HTTPException(status_code=404, detail="audit not found")
+    return audit
+
+
+@router.get("/audits/{audit_id}.json")
+async def audit_status(request: Request, audit_id: UUID) -> JSONResponse:
+    """What the page polls.
+
+    Polling rather than SSE or a websocket: the api is pinned to a single
+    replica, an audit is measured in minutes not milliseconds, and a
+    long-lived connection through EasyAuth and the Container Apps ingress
+    is more failure surface than a 2-second GET. The page stops polling
+    on a terminal status, so a finished audit costs nothing.
+
+    Deliberately does NOT include report_markdown. The report can be tens
+    of kilobytes and the poller only needs to know whether to reload;
+    sending it on every tick would make a 2-second poll expensive in
+    exactly the case where the answer has not changed.
+    """
+    audit = await _audit_or_404(request, audit_id)
+    return JSONResponse({
+        "id": str(audit["id"]),
+        "status": audit["status"],
+        "terminal": audit["status"] in audits.TERMINAL,
+        "error": audit["error"],
+        "exit_code": audit["exit_code"],
+        "duration_s": audit["duration_s"],
+    })
+
+
+@router.get("/audits/{audit_id}", response_class=HTMLResponse)
+async def audit_detail(request: Request, audit_id: UUID) -> HTMLResponse:
+    audit = await _audit_or_404(request, audit_id)
+    principal = client_principal(request)
+    return _page(request, "audit.html", principal, audit=audit,
+                 audit_note=AUDIT_NO_FIXES_NOTE)

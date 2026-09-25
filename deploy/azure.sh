@@ -43,6 +43,24 @@ ENVIRONMENT_NAME="codeguard-env"
 API_APP_NAME="codeguard-api"
 WORKER_APP_NAME="codeguard-worker"
 GITHUB_APP_ID="4934663"
+
+# Who may press the dashboard's "Run audit" button. A list of GitHub
+# logins, comma separated — NOT a secret, so a plain value rather than a
+# secretref: there is nothing to leak, and putting it in the secret store
+# would make a list of usernames harder to read than the thing it gates.
+#
+# Declared here and passed on every deploy, rather than set once by hand.
+# METRICS_AUTH_TOKEN taught us the difference: set manually it survived
+# future deploys only because `--set-env-vars` happens to merge, i.e. by
+# accident rather than by intent, and nothing in the script recorded that
+# it was meant to exist. An undeclared env var is one a future deploy can
+# silently drop, and dropping this one turns the button off with no error.
+#
+# Empty is the safe direction and matches the Settings default: nobody
+# may trigger an audit. An audit clones a repository and spends this
+# deployment's own Anthropic credit, so "unset" must mean "no one", never
+# "everyone".
+DASHBOARD_AUDIT_PRINCIPALS="${DASHBOARD_AUDIT_PRINCIPALS:-ashrithaumd}"
 BUILD_BRANCH="main"        # the whole point of this script's existence
                             # per its own commit message: image builds
                             # come from main, not from a feature branch.
@@ -373,6 +391,7 @@ if az containerapp revision show --name "$API_APP_NAME" --resource-group "$RESOU
                 "GITHUB_APP_ID=$GITHUB_APP_ID" \
                 "DB_SSLMODE=require" \
                 "METRICS_AUTH_TOKEN=secretref:metrics-auth-token" \
+                "DASHBOARD_AUDIT_PRINCIPALS=$DASHBOARD_AUDIT_PRINCIPALS" \
             --output none
     fi
 else
@@ -387,6 +406,7 @@ else
             "GITHUB_APP_ID=$GITHUB_APP_ID" \
             "DB_SSLMODE=require" \
             "METRICS_AUTH_TOKEN=secretref:metrics-auth-token" \
+            "DASHBOARD_AUDIT_PRINCIPALS=$DASHBOARD_AUDIT_PRINCIPALS" \
         --output none
 fi
 

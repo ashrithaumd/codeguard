@@ -39,6 +39,28 @@ def _test_database_url() -> str:
 
 os.environ["DATABASE_URL"] = _test_database_url()
 
+# ONE statement, and the table list is alphabetical. Both parts matter.
+#
+# TRUNCATE takes ACCESS EXCLUSIVE and locks the tables in the order they
+# are written, so N separate statements are N separate lock acquisitions
+# that another backend can interleave with. This was three statements
+# (reviews, then audits, then jobs) while tests/queue/conftest.py used a
+# single `TRUNCATE jobs, dead_letters, audits` — opposite order on the
+# two tables they share — and the result was an intermittent
+# DeadlockDetected during fixture setup, surfacing as an ERROR on an
+# unrelated test rather than as a failure anywhere near the cause.
+#
+# One statement makes the acquisition atomic; the shared alphabetical
+# order means any future conftest that truncates an overlapping subset
+# cannot invert it. tests/queue/conftest.py follows the same rule.
+# tests/pipeline/conftest.py truncates a disjoint set, so it cannot
+# participate in this deadlock and is left alone.
+#
+# This is the same failure mode the comment in tests/queue/conftest.py
+# describes against the shared dev database — same lock, different
+# reason for the contention.
+_TRUNCATE = "TRUNCATE audits, jobs, reviews"
+
 # Windows-only: psycopg3's async mode cannot use ProactorEventLoop, and
 # it is the default there. Must run before pytest-asyncio builds its
 # first loop, hence at conftest import time.
@@ -56,7 +78,7 @@ async def pool():
     async with p.connection() as conn:
         for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
             await conn.execute(path.read_text())
-        await conn.execute("TRUNCATE reviews")
+        await conn.execute(_TRUNCATE)
     yield p
     await p.close()
 
@@ -76,7 +98,7 @@ async def client(pool):
     access.reset_caches()
     app.state.pool = pool
     async with pool.connection() as conn:
-        await conn.execute("TRUNCATE reviews")
+        await conn.execute(_TRUNCATE)
     with TestClient(app) as c:
         app.state.pool = pool
         yield c
@@ -96,6 +118,7 @@ async def insert_review(pool, **over):
         vc=0, gen=0, det=0, unv=0,
         dismissed_count=0, inline_count=0, fix_suggestion_count=0,
         budget_exceeded=False, findings=[], fixes=[], pr_title="",
+        estimated_cost_usd=0.0,
     )
     row.update(over)
     async with pool.connection() as conn:
@@ -108,9 +131,10 @@ async def insert_review(pool, **over):
                 findings_verdict_confirmed, findings_generative,
                 findings_deterministic, findings_unverified,
                 dismissed_count, inline_count, fix_suggestion_count,
-                budget_exceeded, findings_json, fix_suggestions_json, pr_title
+                budget_exceeded, findings_json, fix_suggestions_json, pr_title,
+                estimated_cost_usd
             ) VALUES (%s,%s,%s,%s,%s,%s,%s, %s,%s,%s,%s, %s,%s,%s, %s,%s,%s,%s,
-                      %s,%s,%s, %s,%s,%s,%s)
+                      %s,%s,%s, %s,%s,%s,%s,%s)
             """,
             (row["job_id"], row["owner"], row["repo"], row["pr_number"], row["head_sha"],
              row["action"], row["private"], row["summary_body"], row["check_conclusion"],
@@ -118,6 +142,7 @@ async def insert_review(pool, **over):
              row["files_reviewed"], row["findings_total"], row["vc"], row["gen"],
              row["det"], row["unv"], row["dismissed_count"], row["inline_count"],
              row["fix_suggestion_count"], row["budget_exceeded"],
-             Jsonb(row["findings"]), Jsonb(row["fixes"]), row["pr_title"]),
+             Jsonb(row["findings"]), Jsonb(row["fixes"]), row["pr_title"],
+             row["estimated_cost_usd"]),
         )
     return row["job_id"]

@@ -91,6 +91,7 @@ gates a specific feature.
 | `GITHUB_PRIVATE_KEY` | GitHub App path | The PEM contents. Takes precedence over the path; use where secrets are env-vars only. |
 | `GITHUB_TOKEN` | `audit --post-issue` | Never pass a token on the command line. |
 | `METRICS_AUTH_TOKEN` | Public deployments | Bearer token for `/metrics`. Unset means the endpoint is open — fine on a compose network, not on a public ingress. The api warns at startup when it is unset. |
+| `DASHBOARD_AUDIT_PRINCIPALS` | The dashboard's Run audit button | Comma-separated GitHub logins allowed to trigger an on-demand audit. **Unset means nobody**, deliberately: an audit clones a repository and spends your Anthropic credit, so "any signed-in user" is not a safe gate. Case-insensitive. |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | Optional | Traces every real Anthropic call. |
 
 Per-agent model, timeout and budget settings are in `codeguard/config.py`.
@@ -127,9 +128,35 @@ review is safe; the review is redelivered rather than half-finished.
 
 ## Dashboard
 
+`/dashboard/repos` is the control panel and the signed-in landing view: every repository CodeGuard
+is installed on, whether it's active, when it was last reviewed, how many reviews and what they
+cost. Repositories are connected and disconnected on **GitHub's own installation settings page**,
+which the page links to prominently — that page is the on/off switch and is not reimplemented here.
+A repository that's installed but has never been reviewed still appears, with an empty state.
+
 `/dashboard` lists every recorded review: findings by trust bucket, cost, gate result, and a
 before/after diff of each fix suggestion. Filters live in the query string, so a filtered view is a
-URL you can share. `Ctrl`/`Cmd`+`K` jumps to a repo, pull request or file.
+URL you can share. `Ctrl`/`Cmd`+`K` jumps to a repo, pull request or file. A bare visit to
+`/dashboard` while signed in redirects to the repositories page; any URL carrying filters or a page
+number does not, so shared links keep working.
+
+### On-demand audits
+
+An audit scans every reviewable file in a repository rather than one pull request's diff. It runs
+as a `repo_audit` job on the existing queue — never inline in the request — and the page polls
+until it finishes, then renders the report. A failed audit shows the reason it failed.
+
+Two limits worth knowing up front:
+
+- **Audit mode produces no fix suggestions.** Fixes are anchored to a diff, and an audit has none.
+  The UI says so rather than leaving it to be discovered.
+- **Private repositories cannot be audited.** The audit clones over HTTPS, and the clone URL is
+  echoed into logs and into stored error text, so a credentialed URL would leak. Public only, for
+  now.
+
+One audit at a time per repository, enforced by a partial unique index rather than by a check in
+the route: a double-clicked button or two open tabs get redirected to the audit already running
+instead of starting a second one.
 
 Public repositories are visible to anyone; private ones require a signed-in GitHub identity that
 GitHub confirms can access the repository. Visibility is recorded per review when the review runs,

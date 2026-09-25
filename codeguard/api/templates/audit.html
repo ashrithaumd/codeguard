@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Audit · {{ audit.owner }}/{{ audit.repo }} · CodeGuard{% endblock %}
+
+{% block crumbs %}
+  <a href="/dashboard/repos">Repositories</a>
+  <span class="sep">/</span>
+  <a href="/dashboard/repos/{{ audit.owner }}/{{ audit.repo }}">{{ audit.owner }}/{{ audit.repo }}</a>
+  <span class="sep">/</span>
+  <span>Audit</span>
+{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Audit · {{ audit.owner }}/{{ audit.repo }}</h1>
+    <div class="sub">
+      An audit scans every reviewable file in the repository, not just a pull request's changes.
+      Requested by {{ audit.requested_by }}.
+    </div>
+  </div>
+  <span class="pill {{ {'done':'ok','failed':'bad','running':'warn','queued':'muted'}[audit.status] }}"
+        id="audit-status" data-status="{{ audit.status }}">
+    {% if audit.status in ('queued', 'running') %}<span class="spinner" aria-hidden="true"></span>{% endif %}
+    {{ audit.status|capitalize }}
+  </span>
+</div>
+
+<div class="banner" role="note">
+  <strong>No fix suggestions in audit mode.</strong> {{ audit_note }}
+</div>
+
+<div class="stats">
+  <div class="stat"><div class="k">Status</div><div class="v">{{ audit.status|capitalize }}</div></div>
+  <div class="stat"><div class="k">Requested</div><div class="v">{{ m.when(audit.created_at) }}</div></div>
+  <div class="stat"><div class="k">Duration</div>
+    <div class="v">{% if audit.duration_s %}{{ "%.1f"|format(audit.duration_s) }}s{% else %}—{% endif %}</div></div>
+  <div class="stat"><div class="k">Exit code</div>
+    <div class="v">{% if audit.exit_code is not none %}{{ audit.exit_code }}{% else %}—{% endif %}</div></div>
+</div>
+
+{% if audit.status == 'failed' %}
+{#
+  "A failed audit must say why." run_audit returns (exit_code, error)
+  rather than a bare code precisely so this box can hold a real reason —
+  git clone failed, target is not a repository — instead of an empty
+  report with no explanation. Escaped like every other stored string:
+  the text can contain git's own stderr, which echoes a URL and paths.
+#}
+<div class="panel">
+  <div class="panel-head"><h2>Why it failed</h2></div>
+  <div class="panel-body">
+    <pre class="error-text">{{ (audit.error or "No reason was recorded.")|redact }}</pre>
+  </div>
+</div>
+{% endif %}
+
+<div class="panel">
+  <div class="panel-head">
+    <h2>Report</h2>
+    {% if audit.report_markdown %}<span class="count">{{ audit.report_markdown|length }} chars</span>{% endif %}
+  </div>
+  {% if audit.report_markdown %}
+    {#
+      Rendered as escaped text inside <pre>, NOT parsed as Markdown.
+      Same rule as review.html and migrations/006's SECURITY block: this
+      string contains scanner messages, which echo fragments of the
+      scanned source, i.e. text the repository's authors control. There
+      is no sanitiser in this app and none is being added for a report.
+    #}
+    <pre class="report">{{ audit.report_markdown|redact }}</pre>
+  {% elif audit.status in ('queued', 'running') %}
+    {{ m.empty_state(
+        "Running",
+        "This page updates itself — the report appears here as soon as the audit finishes. You can close the tab; the audit keeps running on the worker.",
+        "search") }}
+  {% else %}
+    {{ m.empty_state("No report", "The audit produced no report.", "inbox") }}
+  {% endif %}
+</div>
+
+{% if audit.status in ('queued', 'running') %}
+{#
+  Polling, not SSE. The api is single-replica, an audit takes minutes
+  rather than milliseconds, and a long-lived connection through EasyAuth
+  and the Container Apps ingress is more failure surface than a 2s GET.
+  The poll stops the moment the status is terminal, so a finished audit
+  costs nothing, and it backs off if the endpoint starts failing rather
+  than hammering a struggling api.
+#}
+<script>
+(function () {
+  var url = "/dashboard/audits/{{ audit.id }}.json";
+  var delay = 2000;
+  function tick() {
+    fetch(url, { headers: { "Accept": "application/json" } })
+      .then(function (r) {
+        if (!r.ok) throw new Error(r.status);
+        return r.json();
+      })
+      .then(function (data) {
+        if (data.terminal) { window.location.reload(); return; }
+        var el = document.getElementById("audit-status");
+        if (el && el.dataset.status !== data.status) { window.location.reload(); return; }
+        delay = 2000;
+        setTimeout(tick, delay);
+      })
+      .catch(function () {
+        // Back off rather than stop: a transient blip should not leave
+        // the page frozen on "running" forever with no way forward but
+        // a manual refresh.
+        delay = Math.min(delay * 2, 30000);
+        setTimeout(tick, delay);
+      });
+  }
+  setTimeout(tick, delay);
+})();
+</script>
+{% endif %}
+{% endblock %}

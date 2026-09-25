@@ -623,3 +623,72 @@ tbody tr.row-link:focus-within { box-shadow: inset 2px 0 0 var(--accent); backgr
 .palette-trigger:hover { border-color: var(--border-strong); color: var(--text); }
 .palette-trigger svg { width: 13px; height: 13px; }
 @media (max-width: 720px) { .palette-trigger .hint-text { display: none; } }
+
+
+/* ---- Repositories page and audits ------------------------------------ */
+
+/* Two states the existing .pill set had no entry for. `bad` reuses the
+   critical-severity red rather than introducing a second red, so a
+   failure reads as a failure in both themes without a new token; the
+   severity ramp is otherwise reserved for severity, and this is the one
+   deliberate exception, for a status that IS a failure. */
+.pill.bad   { color: var(--sev-critical); border-color: color-mix(in srgb, var(--sev-critical) 35%, transparent); background: color-mix(in srgb, var(--sev-critical) 10%, transparent); }
+.pill.muted { color: var(--text-mute); background: var(--bg-sunken); }
+
+/* Page-level notice. One neutral form plus a warn variant — not a new
+   colour system, just the accent and warn tokens already in use. */
+.banner {
+  display: flex; gap: 8px; align-items: baseline;
+  padding: 10px 14px; margin-bottom: 16px;
+  border: 1px solid var(--accent-brd); background: var(--accent-sub);
+  border-radius: 8px; font-size: 13px; line-height: 1.5; color: var(--text);
+}
+.banner strong { font-weight: 600; }
+.banner.warn { border-color: color-mix(in srgb, var(--warn) 35%, transparent); background: var(--warn-sub); color: var(--warn); }
+.banner.warn strong { color: var(--warn); }
+
+/* Inline "private" marker on a repository name. */
+.tag {
+  margin-left: 6px; padding: 1px 6px; border-radius: 4px;
+  font-size: 11px; font-weight: 500; letter-spacing: .01em;
+  color: var(--text-mute); background: var(--bg-sunken); border: 1px solid var(--border);
+}
+
+.audit-col { white-space: nowrap; }
+.audit-col form { display: inline; margin: 0; }
+.last-audit { display: block; margin-top: 3px; font-size: 11px; color: var(--text-mute); }
+
+/* Indeterminate progress. Deliberately not a percentage bar: the audit
+   reports no intermediate progress, and a bar that advanced on a timer
+   would be inventing information. */
+.spinner {
+  display: inline-block; width: 10px; height: 10px; margin-right: 5px;
+  vertical-align: -1px; border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, currentColor 30%, transparent);
+  border-top-color: currentColor;
+  animation: cg-spin .7s linear infinite;
+}
+@keyframes cg-spin { to { transform: rotate(360deg); } }
+/* Respect a reduced-motion preference: the spinner's job is "something
+   is happening", which a static ring plus the word "Running" already
+   conveys. */
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+
+.panel-body { padding: 14px 16px; }
+
+/* The report and the failure reason are both preformatted, escaped text
+   — never parsed as Markdown or HTML. See audit.html for why. */
+.report, .error-text {
+  margin: 0; padding: 14px 16px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px; line-height: 1.55;
+  white-space: pre-wrap; word-break: break-word;
+  color: var(--text);
+}
+.report { max-height: 70vh; overflow: auto; background: var(--bg-sunken); }
+.error-text { color: var(--sev-critical); padding: 0; }
+
+.toplinks { display: flex; gap: 14px; margin-left: 4px; }
+.toplinks a { font-size: 13px; color: var(--text-mute); text-decoration: none; }
+.toplinks a:hover { color: var(--text); }
+@media (max-width: 720px) { .toplinks { display: none; } }

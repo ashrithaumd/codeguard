@@ -277,9 +277,15 @@ async def test_the_index_says_what_codeguard_is(pool, client):
 async def test_a_signed_in_user_with_no_reviews_gets_setup_instructions(pool, client):
     """Not an error and not a blank table — "not set up yet". The state
     has to say what CodeGuard is and how to get a first review.
+
+    Asks for the log explicitly. A bare /dashboard now redirects a
+    signed-in visitor to the repositories page, which is the landing
+    view and has its own setup state (covered in test_repositories.py);
+    this is still the right copy for the review log itself, which is
+    where anyone arriving from a shared or filtered link lands.
     """
     with patch("codeguard.api.routes.dashboard.client_principal", return_value="alice"):
-        text = client.get("/dashboard").text
+        text = client.get("/dashboard?page=1").text
 
     assert "No reviews yet" in text
     assert "GitHub App" in text

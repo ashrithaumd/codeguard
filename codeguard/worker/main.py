@@ -21,13 +21,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import signal
 import socket
+import tempfile
 import time
+from pathlib import Path
 
 import requests
 from prometheus_client import Counter, Histogram, start_http_server
 
+from codeguard.api.audits import finish_audit, mark_running
+from codeguard.cli import run_audit
 from codeguard.config import Settings, get_settings, verify_required_settings
 from codeguard.diff.ingest import ingest_pr_diff
 from codeguard.github.auth import get_installation_token
@@ -489,11 +494,86 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
         verdict_call_failures=final_state["verdict_call_failures"],
     )
 
+
+
+async def handle_repo_audit(job: Job, pool, abandoned: asyncio.Event) -> bool:
+    """An on-demand `codeguard audit` over a whole repository, requested
+    from the dashboard rather than by a webhook.
+
+    Reuses cli.run_audit unchanged. That function is the audit, it is
+    already covered by tests/cli, and the MCP server already calls it as
+    a library -- reimplementing an async variant here would be a second
+    copy of the chunking, budget and reporting logic to keep in step
+    with the first.
+
+    RUN IN A THREAD, not on the event loop. run_audit is synchronous and
+    blocking: it clones, shells out to semgrep/bandit/ruff and makes
+    Anthropic calls, for minutes on a real repository. Called directly
+    it would block this task's event loop, and the first casualty would
+    be heartbeat_loop -- the lease is 30s with a 10s heartbeat, so the
+    reaper would declare the job abandoned and requeue it WHILE IT WAS
+    STILL RUNNING, producing a second clone and a second lot of spend
+    for one request. asyncio.to_thread keeps the loop free so the
+    heartbeat keeps landing for however long the audit takes.
+
+    Failure is recorded, not raised. A review nacks and retries because
+    the PR is still there to review; an audit has a user watching a page
+    for an answer, and "failed: git clone failed" on that page is a
+    better answer than a silent retry that spends the money again. The
+    job is acked either way and run_audit's own (exit_code, error)
+    return is what the page renders.
+    """
+    audit_id = job.payload["audit_id"]
+    target = job.payload["target"]
+
+    await mark_running(pool, audit_id)
+    started = time.perf_counter()
+
+    tmp_dir = tempfile.mkdtemp(prefix="codeguard-audit-out-")
+    output_path = str(Path(tmp_dir) / "report.md")
+    try:
+        exit_code, error = await asyncio.to_thread(run_audit, target, output_path, False)
+
+        report = ""
+        report_file = Path(output_path)
+        if report_file.exists():
+            report = report_file.read_text(encoding="utf-8")
+
+        duration = time.perf_counter() - started
+        if error:
+            await finish_audit(
+                pool, audit_id, status="failed", exit_code=exit_code,
+                error=error, report_markdown=report or None, duration_s=duration,
+            )
+            logger.warning("audit %s failed: %s", audit_id, error)
+        else:
+            await finish_audit(
+                pool, audit_id, status="done", exit_code=exit_code,
+                report_markdown=report, duration_s=duration,
+            )
+            logger.info("audit %s completed in %.1fs (exit=%s, %d chars)",
+                        audit_id, duration, exit_code, len(report))
+    except Exception as exc:
+        # Nothing from run_audit's own error path reaches here -- it
+        # returns failures rather than raising. This is the unexpected
+        # case (a thread that died, a disk that filled), and the page
+        # still has to say something true, so the exception text is what
+        # it says.
+        logger.exception("audit %s raised", audit_id)
+        await finish_audit(
+            pool, audit_id, status="failed", error=f"{type(exc).__name__}: {exc}",
+            duration_s=time.perf_counter() - started,
+        )
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    return True
     return True
 
 
 HANDLERS = {
     "pull_request_review": handle_pull_request_review,
+    "repo_audit": handle_repo_audit,
 }
 
 

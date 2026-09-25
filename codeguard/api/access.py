@@ -163,6 +163,7 @@ def reset_caches() -> None:
     revocation take effect immediately rather than within _DECISION_TTL.
     """
     _installation_cache.clear()
+    _installed_cache.clear()
     _decision_cache.clear()
 
 
@@ -181,3 +182,144 @@ def visible_private_repos(
         (owner, repo) for owner, repo in candidates
         if can_view(owner=owner, repo=repo, private=True, principal=principal)
     ]
+
+
+# ---------------------------------------------------------------------------
+# Which repositories CodeGuard is installed on.
+#
+# Separate from the can_view machinery above and deliberately NOT an
+# authorization input. This answers "is CodeGuard active here", which is
+# a fact about the App; can_view answers "may this person see it", which
+# is a fact about the person. The repositories page needs both and ANDs
+# them -- an installed private repo is still invisible to someone GitHub
+# says cannot access it.
+# ---------------------------------------------------------------------------
+
+# Installations change only when someone installs, uninstalls, or edits
+# the repository selection on github.com. An hour matches
+# _INSTALLATION_TTL above for the same reason: the cost of being stale
+# is a row that is briefly wrong on one page, and the "Manage on GitHub"
+# link is right there to correct it.
+_INSTALLED_TTL = 3600
+_installed_cache: dict[str, tuple[float, list[dict] | None]] = {}
+
+
+class InstallationLookupFailed(Exception):
+    """GitHub could not be asked. Distinct from "asked, and the answer is
+    none": the repositories page renders those two differently, because
+    an empty list means "you have not installed CodeGuard anywhere" and
+    a failure means "we do not know", and telling a user the first when
+    the second is true sends them to go and re-install something that is
+    already installed.
+    """
+
+
+def _app_installations() -> list[dict]:
+    """Every installation of this App, via an App JWT.
+
+    GitHub has no single endpoint for "every repo across every
+    installation" -- /installation/repositories is scoped to one
+    installation token -- so this is the first of the two calls.
+    """
+    resp = requests.get(
+        f"{_API}/app/installations",
+        headers={"Authorization": f"Bearer {build_app_jwt()}",
+                 "Accept": "application/vnd.github+json"},
+        params={"per_page": 100},
+        timeout=_TIMEOUT,
+    )
+    if resp.status_code != 200:
+        raise InstallationLookupFailed(f"/app/installations returned {resp.status_code}")
+    return resp.json()
+
+
+def _installation_repositories(installation_id: int) -> list[dict]:
+    """The repos one installation covers.
+
+    Paginated at 100. Deliberately capped at 10 pages: this feeds a page
+    that makes a visibility call per repo, so an installation with
+    thousands of repos would turn one page view into thousands of GitHub
+    calls. Hitting the cap means the page is incomplete, which is
+    visible to the user, rather than slow enough to time out, which is
+    not.
+    """
+    repos: list[dict] = []
+    for page in range(1, 11):
+        resp = requests.get(
+            f"{_API}/installation/repositories",
+            headers={"Authorization": f"Bearer {get_installation_token(installation_id)}",
+                     "Accept": "application/vnd.github+json"},
+            params={"per_page": 100, "page": page},
+            timeout=_TIMEOUT,
+        )
+        if resp.status_code != 200:
+            raise InstallationLookupFailed(
+                f"/installation/repositories returned {resp.status_code}"
+            )
+        batch = resp.json().get("repositories", [])
+        repos.extend(batch)
+        if len(batch) < 100:
+            break
+    return repos
+
+
+def installed_repositories() -> list[dict]:
+    """Every repo CodeGuard is installed on, as
+    [{owner, repo, private, installation_id, html_url}].
+
+    UNFILTERED by visibility, and that is a hazard worth naming: this
+    list contains PRIVATE repository names, and /installation/repositories
+    returns them because the App can see them, not because the viewer
+    can. Callers must run every entry through can_view before it reaches
+    a template. Nothing in this function can enforce that, so it is
+    stated here and again at the call site.
+
+    Raises InstallationLookupFailed rather than returning [] when GitHub
+    cannot be reached, so the caller can distinguish "none" from
+    "unknown" and fail closed on the second.
+    """
+    hit = _cached(_installed_cache, "all", _INSTALLED_TTL)
+    if hit is not None:
+        if hit[0] is None:
+            raise InstallationLookupFailed("cached failure")
+        return hit[0]
+
+    try:
+        repos: list[dict] = []
+        for installation in _app_installations():
+            installation_id = installation["id"]
+            for entry in _installation_repositories(installation_id):
+                owner, _, name = entry["full_name"].partition("/")
+                repos.append({
+                    "owner": owner,
+                    "repo": name,
+                    "private": bool(entry.get("private", True)),
+                    "installation_id": installation_id,
+                    "html_url": entry.get("html_url", ""),
+                })
+    except InstallationLookupFailed:
+        # Not cached. A transient failure should be retried on the next
+        # page view, not remembered for an hour -- same reasoning as
+        # _installation_id's bare `return None` above.
+        logger.warning("installed-repository lookup failed", exc_info=True)
+        raise
+    except Exception as exc:
+        logger.warning("installed-repository lookup failed", exc_info=True)
+        raise InstallationLookupFailed(str(exc)) from exc
+
+    _installed_cache["all"] = (time.monotonic(), repos)
+    return repos
+
+
+def installation_settings_url(installation_id: int | None) -> str:
+    """Where a user goes to connect or disconnect a repository.
+
+    GitHub's own installation settings page is the on/off switch and is
+    not reimplemented here: it is the only place that can actually grant
+    or revoke the App's access, it already handles org approval flows and
+    repository pickers, and a local copy would be a permissions UI whose
+    state could disagree with the real one.
+    """
+    if installation_id is None:
+        return "https://github.com/settings/installations"
+    return f"https://github.com/settings/installations/{installation_id}"

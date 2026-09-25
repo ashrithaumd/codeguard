@@ -123,6 +123,16 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
         exc.status_code,
         ("Something went wrong", "That request could not be completed."),
     )
+    # 400 is the one status whose detail is shown. Everywhere else the
+    # canned copy is deliberate — 404's whole job is to read the same
+    # for "no such thing" and "not yours", so echoing a detail there
+    # would undo the conflation the routes went out of their way to
+    # create. A 400 is different: it means the request was understood
+    # and refused for a reason the caller can act on (auditing a private
+    # repository, say), and hiding that reason leaves them with
+    # "something went wrong" and nothing to do about it.
+    if exc.status_code == 400 and exc.detail:
+        body = exc.detail
     return templates.TemplateResponse(
         request=request, name="error.html", status_code=exc.status_code,
         context={"status": exc.status_code, "title": title, "body": body,

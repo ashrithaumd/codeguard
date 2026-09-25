@@ -35,6 +35,18 @@
 <header class="topbar">
   <div class="topbar-inner">
     <a class="brand" href="/dashboard"><span class="brand-mark">C</span>CodeGuard</a>
+    {#
+      Both views reachable from anywhere. /dashboard/repos is the
+      control panel (what is connected, what it costs, run an audit) and
+      /dashboard?page=1 is the log — the explicit parameter is what stops
+      the signed-in landing redirect bouncing straight back to repos.
+    #}
+    {% if principal %}
+    <nav class="toplinks">
+      <a href="/dashboard/repos">Repositories</a>
+      <a href="/dashboard?page=1">Reviews</a>
+    </nav>
+    {% endif %}
     <nav class="crumbs">{% block crumbs %}{% endblock %}</nav>
     <div class="topbar-right">
       <button class="palette-trigger" id="palette-open" type="button" aria-haspopup="dialog">
@@ -130,6 +142,11 @@
   document.querySelectorAll("tr.row-link[data-href]").forEach(function (row) {
     row.addEventListener("click", function (e) {
       if (e.target.closest("a")) return;
+      // A cell holding its own controls — the audit button and its form
+      // — opts out. Without this, clicking Run audit would navigate to
+      // the repo page and the POST would be lost, which reads as the
+      // button doing nothing.
+      if (e.target.closest("[data-no-rowlink]")) return;
       window.location = row.getAttribute("data-href");
     });
   });
