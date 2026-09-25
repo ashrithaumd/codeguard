@@ -17,7 +17,7 @@ from codeguard.api.routes.dashboard import (
 )
 from codeguard.api.routes.health import router as health_router
 from codeguard.api.routes.webhooks import router as webhooks_router
-from codeguard.config import get_settings
+from codeguard.config import get_settings, verify_required_settings
 from codeguard.github.notifications import notify_dead_letter
 from codeguard.queue import reaper
 from codeguard.queue.db import bootstrap_schema, create_pool
@@ -44,6 +44,11 @@ async def _on_sweep(result) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # In lifespan, not at import: tests/api/conftest.py imports this
+    # module, so a module-level exit would break collection. Startup is
+    # also the right moment — uvicorn should refuse to serve, not accept
+    # webhooks it cannot review.
+    verify_required_settings()
     settings = get_settings()
     pool = await create_pool(settings)
     await bootstrap_schema(pool)

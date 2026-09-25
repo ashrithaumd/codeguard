@@ -43,7 +43,7 @@ import requests
 import tiktoken
 import yaml
 
-from codeguard.config import Budget, RepoConfig, effective_budget, get_settings
+from codeguard.config import Budget, RepoConfig, effective_budget, get_settings, verify_required_settings
 from codeguard.diff.filters import is_dependency_manifest, is_reviewable_path
 from codeguard.pipeline.eval_hygiene import review_eval_hygiene
 from codeguard.pipeline.guardrails import MAX_CHUNK_TOKENS
@@ -670,6 +670,9 @@ def main(argv: list[str] | None = None) -> int:
     audit_parser.add_argument("--post-issue", action="store_true", help="Also post the report as a GitHub Issue (requires GITHUB_TOKEN env var, github.com targets only)")
 
     args = parser.parse_args(argv)
+    # After parse_args, so --help and a bad subcommand still work without a
+    # key, and before any work starts.
+    verify_required_settings()
     if args.command == "audit":
         exit_code, _error = run_audit(args.target, args.output, args.post_issue)
         return exit_code

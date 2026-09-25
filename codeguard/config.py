@@ -1,5 +1,7 @@
+import sys
 from functools import lru_cache
-from pydantic import BaseModel, Field, field_validator
+
+from pydantic import BaseModel, Field, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from codeguard.severity import Severity
@@ -207,6 +209,61 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()  # raises at first call if required env vars are missing
+
+
+MISSING_ANTHROPIC_KEY_MESSAGE = (
+    "Error: ANTHROPIC_API_KEY is not set. "
+    "Get one at https://console.anthropic.com/ and export it, or add it to your .env file."
+)
+
+
+def verify_required_settings() -> None:
+    """Fail fast with one readable line instead of a pydantic traceback.
+
+    Called at the top of every entry point that is about to need a real
+    Anthropic key: the CLI, the worker, the API's lifespan and the MCP
+    server. Without it the first thing a new user following the
+    quickstart sees is a ValidationError stack trace naming
+    `anthropic_api_key` — technically accurate and useless as an
+    instruction.
+
+    Deliberately NOT an os.environ check: Settings loads `.env` too (see
+    its model_config), so reading the environment directly would reject a
+    key that is sitting in the file the message itself tells people to
+    put it in. Building Settings is the only way to ask the same question
+    the app will actually ask.
+
+    Scope is presence, never validity. A key that is set but wrong is not
+    handled here — that surfaces as a 401 from Anthropic and is caught
+    per-call, so the review degrades to raw tool findings and says so
+    rather than dying. Conflating the two would mean telling someone with
+    a revoked key to go and set a variable they have already set.
+
+    An empty string counts as missing. Pydantic accepts it for a `str`
+    field, so it would otherwise sail past this check and produce that
+    same 401 — the least useful diagnostic of the three.
+
+    Raises SystemExit(2) rather than returning a code, so it behaves the
+    same at every call site including the two that have no return value
+    to propagate. 2 follows argparse's convention for a usage error,
+    which is what a missing setting is.
+    """
+    try:
+        settings = get_settings()
+    except ValidationError as exc:
+        missing = {
+            error["loc"][0]
+            for error in exc.errors()
+            if error.get("type") == "missing" and error.get("loc")
+        }
+        if "anthropic_api_key" in missing:
+            print(MISSING_ANTHROPIC_KEY_MESSAGE, file=sys.stderr)
+            raise SystemExit(2) from None
+        raise
+
+    if not settings.anthropic_api_key.strip():
+        print(MISSING_ANTHROPIC_KEY_MESSAGE, file=sys.stderr)
+        raise SystemExit(2)
 
 
 class RepoConfig(BaseModel):

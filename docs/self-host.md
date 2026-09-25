@@ -83,7 +83,7 @@ gates a specific feature.
 
 | Variable | Needed for | Notes |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | Everything | The only genuinely required setting. |
+| `ANTHROPIC_API_KEY` | Everything | The only genuinely required setting. Every entry point exits 2 with a one-line error when it is unset. A key that is set but invalid starts normally and fails at the first model call. |
 | `DATABASE_URL` | GitHub App path | The queue. Not needed by `codeguard audit` or the MCP server. `sslmode=require` in production. |
 | `GITHUB_APP_ID` | GitHub App path | |
 | `GITHUB_WEBHOOK_SECRET` | GitHub App path | Verifies `X-Hub-Signature-256` on every delivery. |

@@ -27,7 +27,7 @@ from pathlib import Path
 from mcp.server.mcpserver import MCPServer
 
 from codeguard.cli import _collect_repo_files, _load_local_repo_config, _synthetic_whole_file_patch, run_audit
-from codeguard.config import Budget, effective_budget, get_settings
+from codeguard.config import Budget, effective_budget, get_settings, verify_required_settings
 from codeguard.diff.filters import filter_files, is_dependency_manifest
 from codeguard.diff.ingest import apply_file_budget, apply_token_budget
 from codeguard.diff.parse import build_hunks
@@ -275,6 +275,10 @@ async def audit_repo(target: str, post_issue: bool = False) -> dict:
 
 
 def main() -> None:
+    # Before mcp.run() takes over stdio. The message goes to stderr,
+    # which the MCP client surfaces as server output; stdout is the
+    # JSON-RPC channel and writing to it would corrupt the protocol.
+    verify_required_settings()
     mcp.run(transport="stdio")
 
 

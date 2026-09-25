@@ -28,7 +28,7 @@ import time
 import requests
 from prometheus_client import Counter, Histogram, start_http_server
 
-from codeguard.config import Settings, get_settings
+from codeguard.config import Settings, get_settings, verify_required_settings
 from codeguard.diff.ingest import ingest_pr_diff
 from codeguard.github.auth import get_installation_token
 from codeguard.github.base_tree import fetch_base_tree_python_files
@@ -596,6 +596,9 @@ async def process_job(pool, job: Job, settings: Settings, stopping: asyncio.Even
 
 
 async def main() -> None:
+    # Before create_pool, the metrics server or any signal handler: a
+    # worker with no key would claim jobs and fail every one of them.
+    verify_required_settings()
     settings = get_settings()
     _validate_config(settings)
     logger.info(

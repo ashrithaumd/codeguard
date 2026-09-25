@@ -51,7 +51,9 @@ codeguard audit . --output report.md
 Verified on a clean clone into a bare `python:3.12-slim`: `pip install -e .` pulls Semgrep, Bandit
 and Ruff, and `codeguard audit` runs the scanners, the eval-hygiene checks and the verdict agents,
 then writes a markdown report with findings, dismissals and cost. `ANTHROPIC_API_KEY` is the only
-setting without a default — everything else is optional.
+setting without a default — everything else is optional. Every entry point (`codeguard audit`, the
+MCP server, the api and the worker) checks it at startup and exits 2 with a single line if it is
+unset, rather than starting and failing at the first model call.
 
 **2. MCP server** — same pipeline, from Claude Code or Cursor, against your uncommitted changes:
 
