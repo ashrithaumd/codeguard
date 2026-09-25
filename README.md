@@ -146,6 +146,8 @@ nothing was re-measured.
 - **[evals/RESULTS.md](evals/RESULTS.md)** — every measurement, including the per-finding triage
   behind the langflow and simonw/llm numbers above, and a wrong finding CodeGuard produced about its
   own code.
+- **[CHANGELOG.md](CHANGELOG.md)** — notable changes, and anything that needs action from someone
+  already running CodeGuard.
 
 ## Author
 

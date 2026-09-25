@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from codeguard.api.redact import MASK, redact
+from codeguard.redact import MASK, redact
 
 
 # Every token here is invented, but the formats are real enough that

@@ -34,7 +34,7 @@ from fastapi.templating import Jinja2Templates
 from codeguard.api import dashboard_queries as q
 from codeguard.api.access import can_view, visible_private_repos
 from codeguard.api.auth import client_principal
-from codeguard.api.redact import redact
+from codeguard.redact import redact
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 # Registered as a filter rather than applied in each route, so a new
 # template that renders a stored string gets redaction by writing
 # `|redact` instead of by remembering a helper exists. See
-# codeguard/api/redact.py for why any of this is needed.
+# codeguard/redact.py for why any of this is needed.
 templates.env.filters["redact"] = redact
 
 PAGE_SIZE = 50

@@ -50,6 +50,7 @@ from codeguard.pipeline.guardrails import MAX_CHUNK_TOKENS
 from codeguard.pipeline.models import DismissedFinding
 from codeguard.pipeline.nodes import _build_findings_block, _file_touches_ai_markers, review_ai_aware, review_security
 from codeguard.pipeline.state import FileReviewState
+from codeguard.redact import redact
 from codeguard.severity import Severity
 from codeguard.tools.models import Finding
 from codeguard.tools.osv_runner import check_dependency_updates
@@ -502,10 +503,25 @@ def render_report(
 
 
 def post_issue(token: str, owner: str, repo: str, report_markdown: str) -> str:
+    """Publish a report as a GitHub Issue.
+
+    Redacts the body here as well as at the source, and this is the one
+    place in the codebase where belt-and-braces is justified rather than
+    lazy: this sink is PUBLIC and PERMANENT. An issue body on a public
+    repository is world-readable the moment it is created, is indexed,
+    and survives deletion in GitHub's own event stream. Every other sink
+    for this text — a log line, a stored row, a dashboard page — is
+    revocable in a way an issue is not.
+
+    So it does not depend on run_audit having remembered to pass a
+    redacted target, and it does not depend on a future caller passing a
+    report that was assembled safely. The cost of the duplicate pass is
+    one regex sweep over a document that is about to cross the network.
+    """
     resp = requests.post(
         GITHUB_ISSUES_URL.format(owner=owner, repo=repo),
         headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
-        json={"title": "CodeGuard audit report", "body": report_markdown},
+        json={"title": "CodeGuard audit report", "body": redact(report_markdown)},
         timeout=15,
     )
     resp.raise_for_status()
@@ -538,22 +554,40 @@ def run_audit(target: str, output_path: str, post_issue_flag: bool) -> tuple[int
     settings = get_settings()
     start = time.monotonic()
 
+    # SECURITY: `target` is caller-supplied and may carry a credential.
+    # `https://<token>@github.com/owner/repo` is the ordinary way to hand
+    # git a PAT, and this function is reached from three callers — the
+    # CLI, the MCP server's audit_repo tool, and the dashboard's audit
+    # job — of which only the last builds the URL itself.
+    #
+    # So: `target` is used for the `git clone` subprocess and NOWHERE
+    # else. Everything that is printed, stored, returned or rendered uses
+    # `safe_target`. That includes the report's own title line, which
+    # `--post-issue` publishes to a GitHub Issue — public and permanent,
+    # and the reason this is redacted at the source rather than in each
+    # caller. git's own masking does not cover it: git hides a
+    # password-position credential in its errors and echoes a
+    # username-position one verbatim.
+    safe_target = redact(target)
+
     tmp_dir: str | None = None
     try:
         if _is_remote_url(target):
             tmp_dir = tempfile.mkdtemp(prefix="codeguard-audit-")
-            print(f"Cloning {target}...", file=sys.stderr)
+            print(f"Cloning {safe_target}...", file=sys.stderr)
             try:
                 _clone_shallow(target, Path(tmp_dir))
             except subprocess.CalledProcessError as e:
-                error = f"git clone failed: {e.stderr}"
+                # git's stderr echoes the URL it was given, so it is
+                # redacted too rather than trusted to have masked itself.
+                error = f"git clone failed: {redact(e.stderr or '')}"
                 print(error, file=sys.stderr)
                 return 1, error
             root = Path(tmp_dir)
         else:
             root = Path(target).resolve()
             if not root.is_dir():
-                error = f"{target} is not a directory and not a recognizable git URL"
+                error = f"{safe_target} is not a directory and not a recognizable git URL"
                 print(error, file=sys.stderr)
                 return 1, error
 
@@ -629,7 +663,7 @@ def run_audit(target: str, output_path: str, post_issue_flag: bool) -> tuple[int
         elapsed_s = time.monotonic() - start
 
         report = render_report(
-            target=target, files_scanned=len(files), files_ai_aware=files_ai_aware,
+            target=safe_target, files_scanned=len(files), files_ai_aware=files_ai_aware,
             ai_reviewed_findings=ai_reviewed_findings, passthrough_findings=passthrough_findings,
             dismissed=dismissed, eval_hygiene_findings=eval_hygiene_findings, osv_findings=osv_findings,
             skipped_files=skipped_files, verdict_call_failures=sec.call_failures + aa.call_failures,

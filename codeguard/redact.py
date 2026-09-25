@@ -76,6 +76,32 @@ _ASSIGNED = re.compile(
 # Credentials embedded in a URL: scheme://user:secret@host.
 _URL_CREDS = re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://[^\s:/@]+:)([^\s@]{1,200})(@)")
 
+# The same, WITHOUT a colon: scheme://secret@host.
+#
+# A separate pattern rather than making the colon optional above,
+# because the two need different replacements — there the secret is the
+# second component and the username survives; here the whole userinfo IS
+# the secret and all of it goes.
+#
+# This is the shape _URL_CREDS missed, and it is the common one:
+# `https://<token>@github.com/owner/repo` is how a GitHub PAT is
+# normally handed to git. It matters more than the other because git
+# itself masks a password-position credential in its error output and
+# echoes a username-position one verbatim -- verified against git
+# directly, not assumed:
+#
+#   user:secret@  -> "fatal: Authentication failed for
+#                     'https://github.com/owner/repo.git/'"      (masked)
+#   secret@       -> "fatal: could not read Password for
+#                     'https://ghp_AAAA...@github.com'"          (LEAKED)
+#
+# Over-redacts a URL whose userinfo is a genuine username, e.g.
+# https://alice@example.com. That is the intended trade, per this
+# module's docstring: an ordinary https://github.com/owner/repo has no
+# `@` at all, so normal URLs are untouched, and a masked username costs
+# a reader nothing they cannot recover from the rest of the URL.
+_URL_USERINFO = re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)([^\s:/@]{1,200})(@)")
+
 # A long unbroken high-entropy run inside quotes. The last net, for a
 # token with no recognisable prefix. Length and the mix requirement keep
 # it off ordinary prose, file paths and rule ids — all of which contain
@@ -108,6 +134,13 @@ def redact(text: str) -> str:
     out = _PEM.sub(rf"\1 {MASK} \2", text)
     out = _VENDOR.sub(MASK, out)
     out = _URL_CREDS.sub(rf"\1{MASK}\3", out)
+    # After _URL_CREDS, never before. _URL_CREDS has already replaced the
+    # password with MASK, leaving `scheme://user:[redacted]@host`, and
+    # _URL_USERINFO's own character class excludes `:` so it cannot then
+    # eat the surviving username. Running it first would collapse
+    # `user:secret@` to `[redacted]@` and lose the distinction between a
+    # masked password and a masked whole-userinfo.
+    out = _URL_USERINFO.sub(rf"\1{MASK}\3", out)
     out = _ASSIGNED.sub(lambda m: f"{m.group(1)}{m.group(2)}{MASK}{m.group(2)}", out)
     out = _OPAQUE.sub(lambda m: f"{m.group(1)}{MASK}{m.group(1)}", out)
     return out
