@@ -37,6 +37,16 @@
     <div class="v">{% if audit.duration_s %}{{ "%.1f"|format(audit.duration_s) }}s{% else %}—{% endif %}</div></div>
   <div class="stat"><div class="k">Exit code</div>
     <div class="v">{% if audit.exit_code is not none %}{{ audit.exit_code }}{% else %}—{% endif %}</div></div>
+  {#
+    Shown because the number is now real. It was 0 for every audit until
+    run_audit started handing its economics back — the report said
+    $0.0406 and the row said $0, and a KPI reading the row would have
+    under-reported audit spend by all of it.
+  #}
+  <div class="stat"><div class="k">{{ m.term("Cost", "cost") }}</div>
+    <div class="v">{{ m.cost(audit.estimated_cost_usd) }}</div></div>
+  <div class="stat"><div class="k">Tokens</div>
+    <div class="v">{{ "{:,}".format(audit.tokens_in) }} in / {{ "{:,}".format(audit.tokens_out) }} out</div></div>
 </div>
 
 {% if audit.status == 'failed' %}

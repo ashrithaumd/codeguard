@@ -36,6 +36,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
 
@@ -544,7 +545,33 @@ def _parse_owner_repo(url: str) -> tuple[str, str] | None:
     return None
 
 
-def run_audit(target: str, output_path: str, post_issue_flag: bool) -> tuple[int, str | None]:
+@dataclass
+class AuditStats:
+    """Economics of one audit, filled in by run_audit.
+
+    An out-parameter rather than a third return value, deliberately.
+    run_audit's `(exit_code, error)` tuple is unpacked at eleven call
+    sites across the CLI, the MCP server, the worker and the tests;
+    widening the tuple would break every one of them to give ten of them
+    something they do not use. A caller that wants the numbers passes one
+    of these and reads it afterwards, and a caller that does not is
+    untouched.
+
+    Defaults are zero and stay zero on any path that returns before the
+    verdict layer runs — a failed clone, a target that is not a
+    repository. Zero is then the truth: no model was called, so nothing
+    was spent.
+    """
+    tokens_in: int = 0
+    tokens_out: int = 0
+    estimated_cost_usd: float = 0.0
+    duration_s: float = 0.0
+
+
+def run_audit(
+    target: str, output_path: str, post_issue_flag: bool,
+    stats: "AuditStats | None" = None,
+) -> tuple[int, str | None]:
     """Returns (exit_code, error_message) rather than a bare exit code —
     the MCP audit_repo tool wrapping this needs the actual failure
     reason to return a real error object, not silently fall back to an
@@ -661,6 +688,21 @@ def run_audit(target: str, output_path: str, post_issue_flag: bool) -> tuple[int
         tokens_out = sec.tokens_out + aa.tokens_out
         estimated_cost_usd = sec.cost + aa.cost
         elapsed_s = time.monotonic() - start
+
+        # Hand the numbers back before the report is rendered, so a
+        # caller storing them cannot end up with a report that says
+        # $0.0406 next to a row that says $0. That exact mismatch shipped:
+        # the audits table declared these columns "same meaning as
+        # reviews'" and recorded zeroes for every run, because run_audit
+        # printed the cost and embedded it in the report but never
+        # returned it. Caught by auditing a repo that actually had
+        # findings -- the first demo target had one trivial file, so $0
+        # was correct and the bug was invisible.
+        if stats is not None:
+            stats.tokens_in = tokens_in
+            stats.tokens_out = tokens_out
+            stats.estimated_cost_usd = estimated_cost_usd
+            stats.duration_s = elapsed_s
 
         report = render_report(
             target=safe_target, files_scanned=len(files), files_ai_aware=files_ai_aware,

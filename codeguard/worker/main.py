@@ -32,7 +32,7 @@ import requests
 from prometheus_client import Counter, Histogram, start_http_server
 
 from codeguard.api.audits import finish_audit, mark_running
-from codeguard.cli import run_audit
+from codeguard.cli import AuditStats, run_audit
 from codeguard.config import Settings, get_settings, verify_required_settings
 from codeguard.diff.ingest import ingest_pr_diff
 from codeguard.github.auth import get_installation_token
@@ -532,7 +532,13 @@ async def handle_repo_audit(job: Job, pool, abandoned: asyncio.Event) -> bool:
     tmp_dir = tempfile.mkdtemp(prefix="codeguard-audit-out-")
     output_path = str(Path(tmp_dir) / "report.md")
     try:
-        exit_code, error = await asyncio.to_thread(run_audit, target, output_path, False)
+        # stats is filled in by run_audit. Without it the audits row
+        # recorded 0 tokens and $0 for every run while the report it
+        # stored alongside said $0.0406 -- see AuditStats.
+        stats = AuditStats()
+        exit_code, error = await asyncio.to_thread(
+            run_audit, target, output_path, False, stats,
+        )
 
         report = ""
         report_file = Path(output_path)
@@ -543,13 +549,17 @@ async def handle_repo_audit(job: Job, pool, abandoned: asyncio.Event) -> bool:
         if error:
             await finish_audit(
                 pool, audit_id, status="failed", exit_code=exit_code,
-                error=error, report_markdown=report or None, duration_s=duration,
+                error=error, report_markdown=report or None,
+                tokens_in=stats.tokens_in, tokens_out=stats.tokens_out,
+                estimated_cost_usd=stats.estimated_cost_usd, duration_s=duration,
             )
             logger.warning("audit %s failed: %s", audit_id, error)
         else:
             await finish_audit(
                 pool, audit_id, status="done", exit_code=exit_code,
-                report_markdown=report, duration_s=duration,
+                report_markdown=report,
+                tokens_in=stats.tokens_in, tokens_out=stats.tokens_out,
+                estimated_cost_usd=stats.estimated_cost_usd, duration_s=duration,
             )
             logger.info("audit %s completed in %.1fs (exit=%s, %d chars)",
                         audit_id, duration, exit_code, len(report))

@@ -49,7 +49,7 @@ async def _queued(pool):
 async def test_a_successful_audit_is_recorded_done(pool, monkeypatch, tmp_path):
     audit = await _queued(pool)
 
-    def fake_run_audit(target, output_path, post_issue):
+    def fake_run_audit(target, output_path, post_issue, stats=None):
         with open(output_path, "w", encoding="utf-8") as fh:
             fh.write("# Audit report\n\nNothing found.\n")
         return 0, None
@@ -72,7 +72,7 @@ async def test_a_failed_audit_records_the_reason(pool, monkeypatch):
     audit = await _queued(pool)
     monkeypatch.setattr(
         "codeguard.worker.main.run_audit",
-        lambda target, output_path, post_issue: (1, "git clone failed: not found"),
+        lambda target, output_path, post_issue, stats=None: (1, "git clone failed: not found"),
     )
 
     assert await handle_repo_audit(_job(audit["id"]), pool, asyncio.Event()) is True
@@ -89,7 +89,7 @@ async def test_an_unexpected_exception_still_reaches_a_terminal_state(pool, monk
     entry, so the repo could never be audited again."""
     audit = await _queued(pool)
 
-    def boom(target, output_path, post_issue):
+    def boom(target, output_path, post_issue, stats=None):
         raise RuntimeError("disk full")
 
     monkeypatch.setattr("codeguard.worker.main.run_audit", boom)
@@ -104,7 +104,7 @@ async def test_a_finished_audit_frees_the_repo_for_another(pool, monkeypatch):
     audit = await _queued(pool)
     monkeypatch.setattr(
         "codeguard.worker.main.run_audit",
-        lambda target, output_path, post_issue: (0, None),
+        lambda target, output_path, post_issue, stats=None: (0, None),
     )
     await handle_repo_audit(_job(audit["id"]), pool, asyncio.Event())
 
@@ -127,7 +127,7 @@ async def test_the_audit_does_not_block_the_event_loop(pool, monkeypatch):
     audit = await _queued(pool)
     monkeypatch.setattr(
         "codeguard.worker.main.run_audit",
-        lambda target, output_path, post_issue: (_time.sleep(0.4), (0, None))[1],
+        lambda target, output_path, post_issue, stats=None: (_time.sleep(0.4), (0, None))[1],
     )
 
     ticks = 0
@@ -147,3 +147,58 @@ async def test_the_audit_does_not_block_the_event_loop(pool, monkeypatch):
     # ~20 ticks are possible in 0.4s; anything clearly above zero proves
     # the loop stayed free. Asserted loosely because CI timing varies.
     assert ticks >= 5, f"event loop was blocked during the audit (ticks={ticks})"
+
+
+async def test_the_economics_are_recorded_not_just_printed(pool, monkeypatch):
+    """Regression: the audits row recorded 0 tokens and $0 for every run
+    while the report stored beside it said $0.0406.
+
+    run_audit computes the cost, prints it and embeds it in the report,
+    but returns only (exit_code, error) -- so finish_audit was called
+    with its defaults. migration 009 declares these columns "same meaning
+    as reviews', so the two can be summed without reconciling units",
+    which made the under-report silent and wrong in the one place it
+    would be believed.
+
+    Invisible on the first live audit because that target had one trivial
+    file: 0 findings meant no model call, so $0 was genuinely correct.
+    Only a target with real findings exposed it.
+    """
+    audit = await _queued(pool)
+
+    def fake_run_audit(target, output_path, post_issue, stats=None):
+        if stats is not None:
+            stats.tokens_in = 5853
+            stats.tokens_out = 1533
+            stats.estimated_cost_usd = 0.0406
+            stats.duration_s = 35.9
+        return 0, None
+
+    monkeypatch.setattr("codeguard.worker.main.run_audit", fake_run_audit)
+    await handle_repo_audit(_job(audit["id"]), pool, asyncio.Event())
+
+    row = await get_audit(pool, audit["id"])
+    assert row["tokens_in"] == 5853
+    assert row["tokens_out"] == 1533
+    assert row["estimated_cost_usd"] == 0.0406
+
+
+async def test_a_failed_audit_still_records_what_it_spent(pool, monkeypatch):
+    """A clone that succeeded and a verdict layer that then failed has
+    still spent money. Recording zero there would hide real spend behind
+    a failure."""
+    audit = await _queued(pool)
+
+    def fake_run_audit(target, output_path, post_issue, stats=None):
+        if stats is not None:
+            stats.tokens_in = 100
+            stats.estimated_cost_usd = 0.002
+        return 1, "something broke after the model calls"
+
+    monkeypatch.setattr("codeguard.worker.main.run_audit", fake_run_audit)
+    await handle_repo_audit(_job(audit["id"]), pool, asyncio.Event())
+
+    row = await get_audit(pool, audit["id"])
+    assert row["status"] == "failed"
+    assert row["estimated_cost_usd"] == 0.002
+    assert row["tokens_in"] == 100
