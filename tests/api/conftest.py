@@ -14,12 +14,14 @@ table these tests touch.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import sys
 from urllib.parse import urlsplit, urlunsplit
 
 import pytest
 import pytest_asyncio
+from unittest import mock
 import uuid
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
@@ -83,13 +85,38 @@ async def pool():
     await p.close()
 
 
-@pytest.fixture
-async def client(pool):
-    """A TestClient wired to the test-database pool.
+TEST_PRINCIPAL = "test-user"
 
-    TestClient's own lifespan would rebuild app.state.pool against the
-    live database, so the fixture's pool is reinstated after startup.
+
+@contextlib.contextmanager
+def _identity(principal: str | None, *, collaborator: bool):
+    """Patch who the visitor is, and what GitHub says about them.
+
+    Both together, always. The pair is what stops a test from passing
+    vacuously: a principal with no collaborator answer sends the access
+    path to the live GitHub API, and a collaborator answer with no
+    principal is never consulted.
+
+    Goes through the dev-principal settings rather than injecting the
+    header, so it exercises the same path a local dev run does and
+    inherits client_principal's two-key requirement.
     """
+    from codeguard.api import access
+    from codeguard.config import Settings, get_settings
+
+    base = get_settings().model_dump()
+    base.update({
+        "dashboard_dev_principal": principal or "",
+        "dashboard_trust_dev_principal": bool(principal),
+    })
+    patched = Settings(**base)
+    with mock.patch("codeguard.api.auth.get_settings", lambda: patched), \
+         mock.patch.object(access, "_is_collaborator", return_value=collaborator):
+        yield
+
+
+@contextlib.asynccontextmanager
+async def _client(pool, principal: str | None, collaborator: bool):
     from fastapi.testclient import TestClient
 
     from codeguard.api import access
@@ -99,10 +126,47 @@ async def client(pool):
     app.state.pool = pool
     async with pool.connection() as conn:
         await conn.execute(_TRUNCATE)
-    with TestClient(app) as c:
-        app.state.pool = pool
-        yield c
+    with _identity(principal, collaborator=collaborator):
+        with TestClient(app) as c:
+            app.state.pool = pool
+            yield c
     access.reset_caches()
+
+
+@pytest.fixture
+async def client(pool):
+    """A TestClient wired to the test-database pool, SIGNED IN with access.
+
+    Authenticated by default, deliberately. The dashboard requires an
+    access decision on every row now — public repositories included,
+    since the page aggregates what a single public review does not
+    disclose — so "signed in and allowed" is the state in which almost
+    every page has any content to assert about.
+
+    The alternative, an anonymous default, was actively dangerous here: a
+    test asserting some element is ABSENT would pass because the whole
+    page was empty, which is exactly the failure that let
+    test_the_button_is_absent_for_a_user_who_may_not_audit pass while
+    observing nothing. Anonymity is now opt-in via `anon_client`, so a
+    test that means to check it has to say so.
+
+    TestClient's own lifespan would rebuild app.state.pool against the
+    live database, so the fixture's pool is reinstated after startup.
+    """
+    async with _client(pool, TEST_PRINCIPAL, collaborator=True) as c:
+        yield c
+
+
+@pytest.fixture
+async def anon_client(pool):
+    """A TestClient with no identity, for the tests that are about that.
+
+    _is_collaborator returns False as well as there being no principal —
+    belt and braces, so a test cannot accidentally depend on the access
+    path being reached at all.
+    """
+    async with _client(pool, None, collaborator=False) as c:
+        yield c
 
 
 async def insert_review(pool, **over):

@@ -16,11 +16,9 @@ import uuid
 from unittest.mock import patch
 
 import pytest
-from fastapi.testclient import TestClient
 from psycopg.types.json import Jsonb
 
 from codeguard.api import access
-from codeguard.api.main import app
 
 XSS = "<script>alert('pwn')</script>"
 
@@ -30,19 +28,6 @@ def _clear_access_caches():
     access.reset_caches()
     yield
     access.reset_caches()
-
-
-@pytest.fixture
-async def client(pool):
-    app.state.pool = pool
-    async with pool.connection() as conn:
-        await conn.execute("TRUNCATE reviews")
-    with TestClient(app) as c:
-        # TestClient's own lifespan would rebuild the pool against the
-        # live database; the fixture's test-database pool is reinstated
-        # here so every query below hits codeguard_test.
-        app.state.pool = pool
-        yield c
 
 
 async def _insert(pool, **over):
@@ -85,7 +70,28 @@ async def _insert(pool, **over):
 
 
 @pytest.mark.asyncio
-async def test_a_public_review_renders_for_an_anonymous_visitor(pool, client):
+async def test_a_public_review_is_404_for_an_anonymous_visitor(pool, anon_client):
+    """Was test_a_public_review_renders_for_an_anonymous_visitor, and
+    asserted 200. The premise changed, not the test.
+
+    A review of public code is public information; the PAGE is not --
+    which repos this installation reviews, the PR titles and the spend are
+    published by no repository. So the dashboard now requires an access
+    decision on every row, public included, and an anonymous visitor sees
+    nothing rather than everything.
+    """
+    job_id = await _insert(pool, private=False)
+
+    resp = anon_client.get(f"/dashboard/reviews/{job_id}")
+
+    assert resp.status_code == 404
+    assert "acme" not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_a_public_review_renders_for_a_signed_in_collaborator(pool, client):
+    """The other side of it: gating on access must not hide a repo from
+    someone who has access."""
     job_id = await _insert(pool, private=False)
 
     resp = client.get(f"/dashboard/reviews/{job_id}")
@@ -95,25 +101,25 @@ async def test_a_public_review_renders_for_an_anonymous_visitor(pool, client):
 
 
 @pytest.mark.asyncio
-async def test_a_private_review_is_404_for_an_anonymous_visitor(pool, client):
+async def test_a_private_review_is_404_for_an_anonymous_visitor(pool, anon_client):
     job_id = await _insert(pool, private=True, summary_body="secret plans")
 
-    resp = client.get(f"/dashboard/reviews/{job_id}")
+    resp = anon_client.get(f"/dashboard/reviews/{job_id}")
 
     assert resp.status_code == 404
     assert "secret plans" not in resp.text
 
 
 @pytest.mark.asyncio
-async def test_a_missing_review_is_indistinguishable_from_a_forbidden_one(pool, client):
+async def test_a_missing_review_is_indistinguishable_from_a_forbidden_one(pool, anon_client):
     """Both answer 404 with the same body. A different status or a
     different message would let an anonymous visitor enumerate which
     (repo, PR) pairs are being reviewed.
     """
     private_id = await _insert(pool, private=True)
     missing_id = uuid.uuid4()
-    missing = client.get(f"/dashboard/reviews/{missing_id}")
-    forbidden = client.get(f"/dashboard/reviews/{private_id}")
+    missing = anon_client.get(f"/dashboard/reviews/{missing_id}")
+    forbidden = anon_client.get(f"/dashboard/reviews/{private_id}")
 
     assert missing.status_code == forbidden.status_code == 404
 
@@ -127,25 +133,41 @@ async def test_a_missing_review_is_indistinguishable_from_a_forbidden_one(pool, 
 
 @pytest.mark.asyncio
 async def test_the_index_omits_private_reviews_entirely(pool, client):
+    """Per-repo access, not a blanket answer.
+
+    The visitor is a collaborator on public-one and not on secret-one,
+    which is the only shape that can distinguish "the filter works" from
+    "the page is empty". A blanket True would show both; a blanket False
+    would show neither, and either would pass an assertion about one of
+    them for the wrong reason.
+    """
     await _insert(pool, private=False, repo="public-one")
     await _insert(pool, private=True, repo="secret-one")
 
-    resp = client.get("/dashboard")
+    with patch.object(access, "_is_collaborator",
+                      side_effect=lambda o, r, u: r == "public-one"):
+        resp = client.get("/dashboard?page=1")
 
     assert "public-one" in resp.text
     assert "secret-one" not in resp.text
 
 
 @pytest.mark.asyncio
-async def test_a_repo_page_is_gated_by_its_strictest_review(pool, client):
-    """A repo made public does not publish the reviews recorded while it
-    was private. The page lists every row it fetched, so one private row
-    gates all of them.
+async def test_a_repo_page_needs_access_whatever_its_rows_say(pool, anon_client):
+    """Was test_a_repo_page_is_gated_by_its_strictest_review.
+
+    That rule -- "any private row gates the whole page" -- is gone because
+    it is subsumed. The question is no longer "is any row private" but
+    "may this person see this repository", which is strictly stronger and
+    does not depend on what the rows happen to say. A repo whose rows are
+    ALL public is now gated too.
     """
     await _insert(pool, repo="flipped", private=True, pr_number=1)
     await _insert(pool, repo="flipped", private=False, pr_number=2)
+    assert anon_client.get("/dashboard/repos/acme/flipped").status_code == 404
 
-    assert client.get("/dashboard/repos/acme/flipped").status_code == 404
+    await _insert(pool, repo="allpublic", private=False, pr_number=3)
+    assert anon_client.get("/dashboard/repos/acme/allpublic").status_code == 404
 
 
 @pytest.mark.asyncio
@@ -222,8 +244,13 @@ async def test_a_hostile_repo_name_is_escaped_on_the_index(pool, client):
 
 
 @pytest.mark.asyncio
-async def test_the_empty_index_explains_itself(pool, client):
-    resp = client.get("/dashboard")
+async def test_the_empty_index_explains_itself(pool, anon_client):
+    """Anonymous, and asking for the log explicitly.
+
+    Anonymous visitors now see no reviews at all rather than the public
+    ones, so this is the copy they land on.
+    """
+    resp = anon_client.get("/dashboard?page=1")
 
     assert resp.status_code == 200
     assert "Nothing public to show" in resp.text
@@ -268,7 +295,9 @@ async def test_the_index_says_what_codeguard_is(pool, client):
     """
     await _insert(pool)
 
-    text = client.get("/dashboard").text
+    # ?page=1 because a bare /dashboard redirects a signed-in visitor to
+    # the repositories page, which has its own copy.
+    text = client.get("/dashboard?page=1").text
 
     assert "reviews every pull request" in text
 
@@ -293,11 +322,11 @@ async def test_a_signed_in_user_with_no_reviews_gets_setup_instructions(pool, cl
 
 
 @pytest.mark.asyncio
-async def test_an_anonymous_visitor_with_no_reviews_is_told_to_sign_in_instead(pool, client):
+async def test_an_anonymous_visitor_with_no_reviews_is_told_to_sign_in_instead(pool, anon_client):
     """Install instructions would be the wrong advice for someone who
     simply is not signed in — the reviews may well exist.
     """
-    text = client.get("/dashboard").text
+    text = anon_client.get("/dashboard").text
 
     assert "Nothing public to show" in text
     assert "Install the CodeGuard GitHub App" not in text
@@ -311,7 +340,7 @@ async def test_every_column_term_carries_a_definition(pool, client):
     """
     await _insert(pool)
 
-    text = client.get("/dashboard").text
+    text = client.get("/dashboard?page=1").text
 
     for phrase in [
         "Whether this review blocked the pull request",   # Gate
@@ -333,7 +362,7 @@ async def test_the_mix_legend_sits_in_its_own_column_header(pool, client):
     """
     await _insert(pool)
 
-    text = client.get("/dashboard").text
+    text = client.get("/dashboard?page=1").text
     head = text.split("<tbody>")[0]
 
     assert "mix-legend" in head, "the legend belongs inside the table header"
@@ -345,7 +374,7 @@ async def test_the_mix_legend_sits_in_its_own_column_header(pool, client):
 async def test_rows_are_navigable_and_look_it(pool, client):
     job_id = await _insert(pool)
 
-    text = client.get("/dashboard").text
+    text = client.get("/dashboard?page=1").text
 
     assert f'data-href="/dashboard/reviews/{job_id}"' in text
     assert 'class="row-link"' in text

@@ -84,6 +84,48 @@ An unset `ANTHROPIC_API_KEY` now produces one line and exit code 2 at every
 entry point, instead of a pydantic traceback. A key that is set but invalid is
 unaffected and still takes the existing degraded path.
 
+## Decisions
+
+### The hosted dashboard stays single-tenant. Multi-tenancy is the Action. (2026-09-26)
+
+**Closed as won't-do.** Recorded so it is not re-litigated.
+
+The hosted dashboard resolves repositories from *one* installation — the
+operator's. A different GitHub user signing in would see the operator's
+repositories rather than their own. Making it per-user requires resolving
+installations per authenticated user:
+
+    GET /user/installations                        -> that user's installations
+    GET /user/installations/{id}/repositories      -> repos in one, scoped to them
+
+Both need a **user-to-server token issued by a GitHub App**. We cannot get one:
+
+| | Client ID | |
+|---|---|---|
+| GitHub App `codeguard-review-bot` (4934663) | `Iv23liMt21lUXpodO0tx` | `Iv` = GitHub App |
+| EasyAuth's GitHub provider | `Ov23liiicptHTowTyLLD` | `Ov` = **OAuth App** |
+
+Different applications. An OAuth App token is rejected by those endpoints —
+*"You must authenticate with an access token authorized to a GitHub App in order
+to list installations"* — and there is no `login.tokenStore` configured, so
+`X-MS-TOKEN-GITHUB-ACCESS-TOKEN` is never injected and no `login.scopes` are set.
+
+Enabling it would mean: repointing EasyAuth at the GitHub App's client id and
+secret, provisioning a blob container and managed identity for the token store,
+widening OAuth scopes to `repo` and `read:org`, and **forcing every existing
+user to re-consent to CodeGuard reading their private repository list**. That is
+the same infrastructure-and-privacy escalation rejected earlier the same day for
+per-user dashboard scoping, arriving from a different direction.
+
+**The GitHub Action is the answer instead.** Each user runs it in their own
+repository with their own Anthropic key: there is no installation to resolve, no
+user token needed, and no consent to collect. Multi-tenancy falls out of the
+execution model rather than being bolted onto a single-tenant dashboard.
+
+Meanwhile the hosted dashboard is **safe rather than merely undisclosed**: every
+row is access-checked per viewer, so a signed-in stranger sees nothing.
+Single-tenant is now a capability limit, not a disclosure.
+
 ## Notes for future work
 
 ### The GitHub Action must use the sanitized path

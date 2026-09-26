@@ -33,7 +33,6 @@ from fastapi.templating import Jinja2Templates
 
 from codeguard.api import access, audits
 from codeguard.api import dashboard_queries as q
-from codeguard.api.access import can_view, visible_private_repos
 from codeguard.api.auth import client_principal
 from codeguard.config import get_settings
 from codeguard.queue.queue import enqueue
@@ -58,7 +57,20 @@ PAGE_SIZE = 50
 
 
 async def _visible_repos(pool, principal: str | None) -> list[tuple[str, str]]:
-    return visible_private_repos(await q.distinct_private_repos(pool), principal)
+    """Every repo with reviews that this visitor may see. Public included.
+
+    Was `visible_private_repos(distinct_private_repos(...))` — only
+    private repos were ever checked, because the SQL clause let public
+    ones through unconditionally. Both halves moved together: the
+    candidate set is now every repo with a review row, and every one of
+    them is asked about.
+
+    Anonymous short-circuits to [] inside accessible_repos, so an
+    unauthenticated page view still makes no GitHub calls at all — and []
+    now means FALSE in _visibility_clause rather than "public only".
+    """
+    candidates = [(owner, repo) for owner, repo, _private in await q.distinct_repos(pool)]
+    return sorted(await access.accessible_repos(candidates, principal))
 
 
 def asset_version() -> str:
@@ -180,9 +192,10 @@ async def review_detail(request: Request, job_id: UUID) -> HTMLResponse:
     review = await q.get_review(pool, job_id)
     # Both branches answer 404, deliberately and identically: "no such
     # review" and "not yours" must be indistinguishable from outside.
-    if review is None or not can_view(
-        owner=review["owner"], repo=review["repo"],
-        private=review["private"], principal=principal,
+    # can_access_repo, not can_view: a review page carries the PR title,
+    # the findings and the spend. Public code does not make those public.
+    if review is None or not access.can_access_repo(
+        review["owner"], review["repo"], principal,
     ):
         raise HTTPException(status_code=404, detail="review not found")
 
@@ -218,10 +231,11 @@ async def repo_detail(request: Request, owner: str, repo: str) -> HTMLResponse:
     # moment it was made public — the rows recorded while it was private
     # included. Visibility is per-row because it is recorded per-row
     # (migrations/007), so the strictest row is the one that answers.
-    if not can_view(
-        owner=owner, repo=repo,
-        private=any(r["private"] for r in reviews), principal=principal,
-    ):
+    # The per-row `any(private)` rule is gone because it is subsumed: the
+    # question is no longer "is any row private" but "may this person see
+    # this repository at all", which is strictly stronger and does not
+    # depend on what the rows happen to say.
+    if not access.can_access_repo(owner, repo, principal):
         raise HTTPException(status_code=404, detail="repo not found")
 
     pulls = await q.pr_summaries(pool, owner=owner, repo=repo)
@@ -241,10 +255,7 @@ async def pr_detail(request: Request, owner: str, repo: str, pr_number: int) -> 
     principal = client_principal(request)
 
     reviews = await q.pr_history(pool, owner=owner, repo=repo, pr_number=pr_number)
-    if not reviews or not can_view(
-        owner=owner, repo=repo,
-        private=any(r["private"] for r in reviews), principal=principal,
-    ):
+    if not reviews or not access.can_access_repo(owner, repo, principal):
         raise HTTPException(status_code=404, detail="pull request not found")
 
     return _page(request, "pr.html", principal,
@@ -414,7 +425,7 @@ async def trigger_audit(request: Request, owner: str, repo: str):
         (e for e in _installed_or_empty() if (e["owner"], e["repo"]) == (owner, repo)), None,
     )
     private = entry["private"] if entry else True
-    if not can_view(owner=owner, repo=repo, private=private, principal=principal):
+    if not access.can_access_repo(owner, repo, principal):
         raise HTTPException(status_code=404, detail="not found")
     if private:
         # Not a permission failure — a capability one. See
@@ -472,8 +483,7 @@ async def _audit_or_404(request: Request, audit_id: UUID) -> dict:
     audit = await audits.get_audit(pool, audit_id)
     if audit is None:
         raise HTTPException(status_code=404, detail="audit not found")
-    if not can_view(owner=audit["owner"], repo=audit["repo"],
-                    private=audit["private"], principal=principal):
+    if not access.can_access_repo(audit["owner"], audit["repo"], principal):
         raise HTTPException(status_code=404, detail="audit not found")
     return audit
 

@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 import pytest
 
+from codeguard.api import access
 from codeguard.api.dashboard_queries import Filters
 from tests.api.conftest import insert_review
 
@@ -120,10 +121,16 @@ async def test_the_totals_describe_the_filtered_set(pool, client):
 
 @pytest.mark.asyncio
 async def test_a_filter_cannot_widen_visibility(pool, client):
-    """Filters narrow; they never reach past the visibility clause."""
+    """Filters narrow; they never reach past the visibility clause.
+
+    The visitor is signed in but has access to nothing, so this pins that
+    a filter cannot reach a row the access clause excluded -- rather than
+    that an anonymous page happens to be empty.
+    """
     await insert_review(pool, repo="secret-one", private=True, check_conclusion="failure")
 
-    text = client.get("/dashboard?gate=blocked").text
+    with patch.object(access, "_is_collaborator", return_value=False):
+        text = client.get("/dashboard?gate=blocked").text
 
     assert "secret-one" not in text
 
@@ -160,13 +167,13 @@ async def test_the_search_index_offers_repos_pulls_and_files(pool, client):
 
 
 @pytest.mark.asyncio
-async def test_the_search_index_never_leaks_a_private_repo_to_anonymous(pool, client):
+async def test_the_search_index_never_leaks_a_private_repo_to_anonymous(pool, anon_client):
     """The palette is the easiest place to leak a name, because it lists
     things rather than being asked about one.
     """
     await insert_review(pool, repo="secret-one", private=True, pr_title="Rotate the prod key")
 
-    data = client.get("/dashboard/search").json()
+    data = anon_client.get("/dashboard/search").json()
 
     assert data["repos"] == []
     assert data["pulls"] == []

@@ -158,8 +158,8 @@ async def test_a_filtered_dashboard_url_is_not_redirected(client, pool, as_princ
     assert resp.status_code == 200
 
 
-async def test_an_anonymous_visitor_is_not_redirected(client):
-    resp = client.get("/dashboard", follow_redirects=False)
+async def test_an_anonymous_visitor_is_not_redirected(anon_client):
+    resp = anon_client.get("/dashboard", follow_redirects=False)
     assert resp.status_code == 200
 
 

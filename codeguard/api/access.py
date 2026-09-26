@@ -23,6 +23,7 @@ fragments to anyone holding the URL.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
@@ -188,6 +189,52 @@ def can_access_repo(owner: str, repo: str, principal: str | None) -> bool:
     assuming, and it is paid per page view, not per row rendered.
     """
     return can_view(owner=owner, repo=repo, private=True, principal=principal)
+
+
+async def accessible_repos(
+    candidates: list[tuple[str, str]], principal: str | None,
+) -> set[tuple[str, str]]:
+    """Which of these repos this visitor may see, asked CONCURRENTLY.
+
+    Two problems with doing it in a loop, one of which is worse than
+    slowness. Measured against production, 11 repos: 11.03s cold, and
+    each check is ~0.78s of which ~0.6s is a fresh installation-token
+    POST that github/auth.py deliberately does not cache.
+
+    The slowness is the visible problem. The real one is that
+    can_access_repo is SYNCHRONOUS `requests`, so a loop in an async
+    handler blocks the event loop for the whole 11 seconds — on a
+    single-replica api that stalls every other request, including
+    /health and the reaper's own ticks. Same class of mistake as running
+    run_audit on the loop (see worker.handle_repo_audit), found the same
+    way: by measuring instead of assuming.
+
+    asyncio.to_thread + gather fixes both. Nothing about freshness, call
+    count or the token policy changes: the same one call per (repo,
+    principal) on a cold cache, the same _DECISION_TTL, the same
+    _decision_cache. They are simply not serialised, and the loop stays
+    free while they are in flight.
+
+    The TTL is deliberately NOT widened to paper over this. 60s is the
+    revocation window and it is shared with the review pages; a stale
+    allow there has exactly the shape of the leak this filter exists to
+    close. Latency is the cheaper thing to fix.
+
+    _decision_cache is a plain dict written from several threads. Safe
+    here: each write is a single `dict[key] = value`, which is atomic
+    under CPython, and two threads racing the same key can only ever
+    write the same GitHub answer. Worst case is a duplicate call, never
+    a wrong verdict.
+    """
+    if not principal or not candidates:
+        return set()
+
+    unique = list(dict.fromkeys(candidates))
+    results = await asyncio.gather(
+        *(asyncio.to_thread(can_access_repo, owner, repo, principal)
+          for owner, repo in unique)
+    )
+    return {pair for pair, allowed in zip(unique, results) if allowed}
 
 
 def reset_caches() -> None:

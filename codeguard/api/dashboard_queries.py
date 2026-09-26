@@ -7,11 +7,17 @@ and nothing here should ever start.
 
 Two access-control rules are enforced in SQL rather than in Python:
 
-  - the index and repo listings take `principal_repos`, the set of
-    private repos this visitor may see, and filter to `NOT private OR
-    (owner, repo) IN (...)`. Filtering after the fetch would mean a
-    LIMIT 50 could return 3 visible rows, and paging would be wrong in
-    a way that leaks the shape of what is hidden.
+  - the index and repo listings take `principal_repos`, the set of repos
+    this visitor may see AT ALL — public and private alike — and filter to
+    `(owner, repo) IN (...)`, or to FALSE when that set is empty.
+    Filtering after the fetch would mean a LIMIT 50 could return 3
+    visible rows, and paging would be wrong in a way that leaks the shape
+    of what is hidden.
+
+    Note what changed: this was `NOT private OR (owner, repo) IN (...)`,
+    so public reviews were visible to everyone. See _visibility_clause
+    for why aggregation makes that wrong even though each individual
+    review is about public code.
   - the single-review fetch does NOT filter. It returns the row with
     its `private` flag and the route decides, because the route needs
     to tell "no such review" from "not yours" — and then deliberately
@@ -44,20 +50,37 @@ _LIST_COLUMNS = """
 """
 
 
-def _visibility_clause(principal_repos: list[tuple[str, str]], params: list[Any]) -> str:
-    """`NOT private` for anonymous visitors, widened by an explicit list
-    of (owner, repo) pairs the visitor has been cleared for.
+def _visibility_clause(allowed_repos: list[tuple[str, str]], params: list[Any]) -> str:
+    """Rows in repositories this visitor has been cleared for. Nothing else.
+
+    This used to read `NOT private OR (owner, repo) IN (cleared private
+    repos)`, i.e. every public review was visible to everyone including
+    anonymous visitors. That was the documented design — "public repo ->
+    anyone, signed in or not" — and it was wrong for the same reason the
+    repositories page was wrong, one level up: any single review of public
+    code is public information, but THE PAGE AGGREGATES. Which repos this
+    installation reviews, the pull request titles, and the money spent are
+    not published by any of those repositories.
+
+    So the clause is now a pure allow-list and an empty list means FALSE,
+    not "public only". Anonymous visitors get an empty list, which is how
+    `FALSE` reaches them.
+
+    `FALSE` rather than `1=0` or an impossible comparison, because it is
+    the unambiguous thing to read in a logged query, and rather than
+    short-circuiting in Python because every caller composes this into a
+    larger WHERE and one of them would eventually forget.
 
     The pairs are passed as parameters, never interpolated — they
     originate in review rows, which carry repo names a PR author can
     influence.
     """
-    if not principal_repos:
-        return "NOT private"
-    placeholders = ", ".join(["(%s, %s)"] * len(principal_repos))
-    for owner, repo in principal_repos:
+    if not allowed_repos:
+        return "FALSE"
+    placeholders = ", ".join(["(%s, %s)"] * len(allowed_repos))
+    for owner, repo in allowed_repos:
         params.extend([owner, repo])
-    return f"(NOT private OR (owner, repo) IN ({placeholders}))"
+    return f"(owner, repo) IN ({placeholders})"
 
 
 async def list_reviews(

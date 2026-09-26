@@ -153,7 +153,7 @@ async def test_the_kpi_strip_counts_every_visible_review_not_just_the_page(pool,
         await insert_review(pool, pr_number=i, findings_total=2, det=2)
 
     with patch.object(d, "PAGE_SIZE", 1):
-        text = client.get("/dashboard").text
+        text = client.get("/dashboard?page=1").text
 
     stats = text.split('class="stats"')[1].split("</div>\n</div>")[0]
     assert ">6<" in stats, "findings is the total across all 3, not the 1 row on this page"
@@ -164,10 +164,10 @@ async def test_the_kpi_strip_counts_every_visible_review_not_just_the_page(pool,
 
 
 @pytest.mark.asyncio
-async def test_an_anonymous_visitor_gets_a_sign_in_button(pool, client):
+async def test_an_anonymous_visitor_gets_a_sign_in_button(pool, anon_client):
     await insert_review(pool)
 
-    text = client.get("/dashboard").text
+    text = anon_client.get("/dashboard").text
 
     assert "Sign in with GitHub" in text
     assert "/.auth/login/github" in text
