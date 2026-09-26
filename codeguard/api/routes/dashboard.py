@@ -446,14 +446,24 @@ async def trigger_audit(request: Request, owner: str, repo: str):
         audit = await audits.request_audit(
             pool, owner=owner, repo=repo, requested_by=principal, private=private,
         )
-    except audits.AuditInFlight as inflight:
-        # Not an error. The user asked for an audit of this repo and
-        # there already is one, so they are sent to watch it rather than
-        # told off — and, critically, no second job is enqueued and no
-        # second lot of Anthropic credit is spent.
+    except audits.AuditInFlightMine as inflight:
+        # Their OWN audit. Not an error: they asked for an audit and there
+        # already is one, so they are sent to watch it rather than told
+        # off — and no second job is enqueued, no second lot of Anthropic
+        # credit spent.
         return RedirectResponse(
             url=f"/dashboard/audits/{inflight.existing['id']}", status_code=303,
         )
+    except audits.AuditInFlightOther:
+        # SOMEONE ELSE's audit. Must NOT redirect: an audit is visible only
+        # to its requester, so the id alone would be a working URL to
+        # another person's result. The exception deliberately carries no
+        # row, so there is nothing here to leak even by accident.
+        raise HTTPException(
+            status_code=409,
+            detail="Someone is already auditing that repository. "
+                   "Please try again in a few minutes.",
+        ) from None
 
     job, created = await enqueue(
         pool, type="repo_audit",

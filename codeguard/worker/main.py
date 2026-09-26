@@ -31,7 +31,7 @@ from pathlib import Path
 import requests
 from prometheus_client import Counter, Histogram, start_http_server
 
-from codeguard.api.audits import finish_audit, mark_running
+from codeguard.api.audits import fail_audit_for_dead_letter, finish_audit, mark_running
 from codeguard.cli import AuditStats, run_audit
 from codeguard.config import Settings, get_settings, verify_required_settings
 from codeguard.diff.ingest import ingest_pr_diff
@@ -546,6 +546,24 @@ async def handle_repo_audit(job: Job, pool, abandoned: asyncio.Event) -> bool:
             report = report_file.read_text(encoding="utf-8")
 
         duration = time.perf_counter() - started
+
+        # The lease was reassigned while the audit ran, so another replica
+        # is already redoing this work. Writing a terminal status now would
+        # race that replica for the same row, and on a redelivery the
+        # second write would land on an audit the first had already
+        # finished. Bail without writing and let the owner finish it.
+        #
+        # This is handle_repo_audit's equivalent of
+        # _review_already_posted: at-least-once delivery means the side
+        # effect needs its own guard, and for an audit the side effect is
+        # the terminal row plus the money already spent.
+        if abandoned.is_set():
+            logger.warning(
+                "audit %s: lease lost mid-audit, not writing a terminal status "
+                "(another replica owns this job now)", audit_id,
+            )
+            return False
+
         if error:
             await finish_audit(
                 pool, audit_id, status="failed", exit_code=exit_code,
@@ -577,7 +595,6 @@ async def handle_repo_audit(job: Job, pool, abandoned: asyncio.Event) -> bool:
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    return True
     return True
 
 
@@ -654,6 +671,11 @@ async def process_job(pool, job: Job, settings: Settings, stopping: asyncio.Even
         )
         logger.warning("job %s failed: %s", job.id, exc)
         if dead_letter is not None:
+            # An audit whose job is dead-lettered here would otherwise stay
+            # 'running' forever, holding audits_one_in_flight_per_repo and
+            # taking that repository permanently out of service. The reaper
+            # path is covered separately in api/main.py's _on_sweep.
+            await fail_audit_for_dead_letter(pool, dead_letter)
             await notify_dead_letter(dead_letter)
     else:
         if abandoned.is_set() or not completed:

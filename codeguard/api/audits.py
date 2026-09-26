@@ -17,6 +17,7 @@ index a real lock rather than an optimistic hint -- see migration 009.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import Any
 
@@ -24,9 +25,16 @@ from psycopg import errors
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
-# Terminal states. A poll stops here, and the in-flight index does not
-# cover them, so a repo in one of these can be audited again.
-TERMINAL = ("done", "failed")
+logger = logging.getLogger(__name__)
+
+# Terminal states. A poll stops here, and neither partial unique index
+# covers them, so a repo (and a requester) in one of these is free again.
+#
+# 'rejected' is refused-before-the-work: too large, not public, no Python,
+# demo budget exhausted. 'failed' is tried-and-broke. Both are terminal --
+# the distinction is what the page tells the user to do next, not whether
+# the audit is over. See migration 010.
+TERMINAL = ("done", "failed", "rejected")
 
 _COLUMNS = """
     id, owner, repo, requested_by, private, status, job_id,
@@ -37,18 +45,44 @@ _COLUMNS = """
 
 
 class AuditInFlight(Exception):
-    """Raised instead of inserting a second audit for a repo that
-    already has one queued or running.
+    """Base for "not inserting a second audit". Never raised directly.
 
-    Carries the existing row so the caller can redirect to it rather
-    than having to go and look it up again -- the user asked for an
-    audit of this repo and there is one, which is a redirect, not an
-    error page.
+    Two subclasses, and the split is a security boundary rather than
+    tidiness. The two partial unique indexes on `audits` mean different
+    things and the caller must react differently:
+
+      AuditInFlightMine   the CALLER already has one running. Carries the
+                          row, because redirecting them to their own audit
+                          is exactly what they want.
+      AuditInFlightOther  SOMEONE ELSE is auditing this repository.
+                          Carries NOTHING -- not the row, not the id, not
+                          the requester -- because a visitor audit is
+                          visible only to its requester, and the id alone
+                          would be a working URL to someone else's result.
+
+    Before the split there was one exception carrying the row, and the
+    route redirected to it unconditionally. Under per-requester visibility
+    that hands visitor B a link to visitor A's audit: a leak created by
+    our own in-flight rule, with no attacker involved.
     """
 
+
+class AuditInFlightMine(AuditInFlight):
     def __init__(self, existing: dict):
         self.existing = existing
-        super().__init__(f"audit already in flight for {existing['owner']}/{existing['repo']}")
+        super().__init__(
+            f"this requester already has an audit in flight for "
+            f"{existing['owner']}/{existing['repo']}"
+        )
+
+
+class AuditInFlightOther(AuditInFlight):
+    """Deliberately carries no attributes. See AuditInFlight."""
+
+    def __init__(self, owner: str, repo: str):
+        self.owner = owner
+        self.repo = repo
+        super().__init__(f"another audit is already in flight for {owner}/{repo}")
 
 
 async def request_audit(
@@ -67,6 +101,7 @@ async def request_audit(
     two jobs, two clones, two lots of Anthropic spend, on one repo.
     """
     audit_id = uuid.uuid4()
+    violated = None
     try:
         async with pool.connection() as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
@@ -79,8 +114,12 @@ async def request_audit(
                     (audit_id, owner, repo, requested_by, private),
                 )
                 return await cur.fetchone()
-    except errors.UniqueViolation:
-        pass
+    except errors.UniqueViolation as exc:
+        # WHICH index fired decides what the caller may be told, so the
+        # constraint name is read rather than guessed. Postgres puts it in
+        # diag.constraint_name; falling back to the message keeps this
+        # working if that is ever empty.
+        violated = getattr(exc.diag, "constraint_name", None) or str(exc)
 
     # A SEPARATE connection, and the reason is not stylistic. psycopg
     # wraps `pool.connection()` in a transaction, and a constraint
@@ -88,24 +127,69 @@ async def request_audit(
     # fails with InFailedSqlTransaction until it unwinds. The recovery
     # read therefore cannot share the block that raised — it has to
     # happen after the rollback, on a connection that is not poisoned.
-    async with pool.connection() as conn:
-        async with conn.cursor(row_factory=dict_row) as cur:
-            await cur.execute(
-                f"SELECT {_COLUMNS} FROM audits "
-                "WHERE owner = %s AND repo = %s AND status IN ('queued', 'running') "
-                "ORDER BY created_at DESC LIMIT 1",
-                (owner, repo),
+    # The per-repo index fired: someone else is auditing this repository.
+    # Nothing about their audit is looked up, let alone returned -- see
+    # AuditInFlightOther. This branch comes FIRST because it is the one
+    # that must not leak, so it cannot be reached by falling through.
+    if "per_repo" in violated:
+        async with pool.connection() as conn:
+            async with conn.cursor(row_factory=dict_row) as cur:
+                await cur.execute(
+                    "SELECT requested_by FROM audits WHERE owner = %s AND repo = %s "
+                    "AND status IN ('queued', 'running') ORDER BY created_at DESC LIMIT 1",
+                    (owner, repo),
+                )
+                row = await cur.fetchone()
+        if row is None:
+            # Finished between the violation and this read. Retry once: the
+            # constraint that blocked us no longer applies.
+            return await request_audit(
+                pool, owner=owner, repo=repo, requested_by=requested_by, private=private,
             )
-            existing = await cur.fetchone()
+        if row["requested_by"] == requested_by:
+            # Their own, reached via the per-repo index because they asked
+            # for the same repository twice. RAISE rather than return it:
+            # a value from request_audit means "I created this row", and
+            # handing back an existing one would make the caller enqueue
+            # against an audit that already has a job.
+            existing = await _in_flight_for(pool, owner, repo, requested_by=requested_by)
+            raise AuditInFlightMine(existing)
+        raise AuditInFlightOther(owner, repo)
 
+    # The per-requester index fired: the caller's own audit, on any repo.
+    existing = await _in_flight_for(pool, requested_by=requested_by)
     if existing is None:
-        # The in-flight row finished between the violation and this read.
-        # Genuinely rare, and retrying once is the honest response: the
-        # constraint that blocked us no longer applies.
         return await request_audit(
             pool, owner=owner, repo=repo, requested_by=requested_by, private=private,
         )
-    raise AuditInFlight(existing)
+    raise AuditInFlightMine(existing)
+
+
+async def _in_flight_for(
+    pool: AsyncConnectionPool, owner: str | None = None, repo: str | None = None,
+    *, requested_by: str | None = None,
+) -> dict | None:
+    """The caller's own in-flight audit, by repo or by requester.
+
+    Only ever used to build AuditInFlightMine, i.e. only ever to return a
+    row to the person who created it.
+    """
+    where = "status IN ('queued', 'running')"
+    params: list[Any] = []
+    if requested_by is not None:
+        where += " AND requested_by = %s"
+        params.append(requested_by)
+    if owner is not None:
+        where += " AND owner = %s AND repo = %s"
+        params.extend([owner, repo])
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"SELECT {_COLUMNS} FROM audits WHERE {where} "
+                "ORDER BY created_at DESC LIMIT 1",
+                params,
+            )
+            return await cur.fetchone()
 
 
 async def attach_job(pool: AsyncConnectionPool, audit_id, job_id) -> None:
@@ -156,6 +240,71 @@ async def finish_audit(
             (status, report_markdown, exit_code, error, tokens_in, tokens_out,
              estimated_cost_usd, duration_s, audit_id),
         )
+
+
+DEAD_LETTER_REASON = (
+    "The audit was interrupted and could not be completed. Please try again."
+)
+
+
+async def fail_audit_for_dead_letter(pool: AsyncConnectionPool, dead_letter) -> bool:
+    """Move an audit to 'failed' when its job is dead-lettered.
+
+    THE HOLE THIS CLOSES. handle_repo_audit sets 'running' and is the only
+    writer that ever sets a terminal status. A worker that dies leaves the
+    row 'running'; if the job is then dead-lettered -- lease expiry past
+    max_delivery_attempts, or nack() exhausting them -- nothing ever
+    finishes it.
+
+    That is not merely an untidy row. audits_one_in_flight_per_repo is a
+    partial unique index over ('queued','running'), so a permanently
+    running row means THAT REPOSITORY CAN NEVER BE AUDITED AGAIN. One
+    dead worker removes a repo from service for good.
+
+    Called from BOTH producers of a DeadLetter, because they are different
+    paths and only one of them runs in the worker:
+
+      api/main.py  _on_sweep      the reaper, for a worker that never
+                                  called nack() -- i.e. one that died
+      worker       process_job    nack() exhausting max_attempts
+
+    Guarded on the current status rather than blindly updating. A
+    redelivery can dead-letter a job whose audit already finished, and
+    rewriting a 'done' row with a report into 'failed' would destroy the
+    result the user is looking at. Returns whether it changed anything, so
+    a caller can log the difference between "recovered a stuck audit" and
+    "nothing to do".
+
+    Tolerant of payloads that are not audits and of audit payloads with no
+    audit_id: this runs inside the reaper's sweep loop, and a sweep that
+    raises stops reaping every other expired lease behind it.
+    """
+    if getattr(dead_letter, "type", None) != "repo_audit":
+        return False
+    audit_id = (dead_letter.payload or {}).get("audit_id")
+    if not audit_id:
+        logger.warning("repo_audit dead letter %s has no audit_id in its payload",
+                       getattr(dead_letter, "id", "?"))
+        return False
+
+    reason = dead_letter.failed_reason or "unknown"
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            """
+            UPDATE audits
+               SET status = 'failed',
+                   error = %s,
+                   finished_at = now()
+             WHERE id = %s AND status IN ('queued', 'running')
+            """,
+            (f"{DEAD_LETTER_REASON} (job dead-lettered after {dead_letter.attempts} "
+             f"attempt(s): {reason})", audit_id),
+        )
+        changed = cur.rowcount > 0
+
+    if changed:
+        logger.warning("audit %s marked failed: its job was dead-lettered", audit_id)
+    return changed
 
 
 async def latest_per_repo(pool: AsyncConnectionPool) -> dict[tuple[str, str], dict]:

@@ -202,3 +202,31 @@ async def test_a_failed_audit_still_records_what_it_spent(pool, monkeypatch):
     assert row["status"] == "failed"
     assert row["estimated_cost_usd"] == 0.002
     assert row["tokens_in"] == 100
+
+
+async def test_a_lost_lease_writes_no_terminal_status(pool, monkeypatch):
+    """The double-spend guard.
+
+    handle_repo_audit never consulted `abandoned`, so a worker whose lease
+    was reassigned mid-audit still wrote a terminal row -- racing the
+    replica that had legitimately taken the job over. On a redelivery the
+    loser's write could land on an audit the winner had already finished.
+
+    This is the audit's equivalent of _review_already_posted: at-least-once
+    delivery means the side effect needs its own guard, and here the side
+    effect is the terminal row plus the Anthropic spend behind it.
+    """
+    audit = await _queued(pool)
+    abandoned = asyncio.Event()
+
+    def fake_run_audit(target, output_path, post_issue, stats=None):
+        abandoned.set()          # the reaper reclaimed it while we worked
+        return 0, None
+
+    monkeypatch.setattr("codeguard.worker.main.run_audit", fake_run_audit)
+    completed = await handle_repo_audit(_job(audit["id"]), pool, abandoned)
+
+    assert completed is False, "an abandoned job must not report completion"
+    row = await get_audit(pool, audit["id"])
+    assert row["status"] == "running", "the terminal write belongs to the lease owner"
+    assert row["finished_at"] is None

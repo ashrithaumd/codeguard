@@ -563,3 +563,30 @@ async def test_one_github_call_per_repo_not_per_row_rendered(client, pool, as_pr
 
     assert first == 2, "one call per repo on a cold cache"
     assert second == 2, "second page view inside the TTL must be free"
+
+
+async def test_a_second_requester_is_not_redirected_to_the_first_audit(
+    client, pool, as_principal,
+):
+    """The leak our own in-flight rule creates, at the route level.
+
+    tests/queue/test_audit_constraints.py proves request_audit refuses
+    without carrying the row; this proves the route does not reconstruct
+    the id from somewhere else and hand it over anyway.
+    """
+    from codeguard.api import audits as audits_mod
+
+    first = await audits_mod.request_audit(
+        pool, owner=OWNER, repo=PUBLIC, requested_by="someone-first", private=False,
+    )
+
+    as_principal(OWNER_LOGIN, audit_principals=OWNER_LOGIN)
+    with patch.object(access, "installed_repositories",
+                      return_value=_installed((OWNER, PUBLIC, False))), \
+         patch.object(access, "_is_collaborator", return_value=True):
+        resp = client.post(f"/dashboard/repos/{OWNER}/{PUBLIC}/audit",
+                           follow_redirects=False)
+
+    assert resp.status_code == 409, "must refuse, not redirect"
+    assert str(first["id"]) not in resp.text, "must not leak the other audit's id"
+    assert "someone-first" not in resp.text, "must not name the other requester"

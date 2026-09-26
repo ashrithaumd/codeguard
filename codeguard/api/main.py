@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from codeguard.api import audits
 from codeguard.api.auth import require_metrics_token
 from codeguard.api.routes.dashboard import (
     STATIC_DIR,
@@ -31,14 +32,23 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname
 logger = logging.getLogger("codeguard.api")
 
 
-async def _on_sweep(result) -> None:
+async def _on_sweep(pool, result) -> None:
     """Reaper callback: best-effort dead-letter notice for every job the
     reaper itself dead-lettered (a crash-looping worker that never called
     nack()). The other dead-lettering path — nack() exhausting attempts —
     is handled directly in the worker; this covers the path that doesn't
     go through the worker at all.
+
+    Takes `pool` because failing the corresponding audit needs a write.
+    The reaper passes only the ReapResult, so lifespan binds the pool in
+    when it registers the callback.
     """
     for dead_letter in result.dead_lettered:
+        # Before the notice, because this is the one that unblocks a
+        # repository: an audit left 'running' by a dead worker holds
+        # audits_one_in_flight_per_repo forever. See
+        # audits.fail_audit_for_dead_letter.
+        await audits.fail_audit_for_dead_letter(pool, dead_letter)
         await notify_dead_letter(dead_letter)
 
 
@@ -65,7 +75,9 @@ async def lifespan(app: FastAPI):
             pool,
             interval_seconds=settings.reaper_interval_seconds,
             max_attempts=settings.max_delivery_attempts,
-            on_sweep=_on_sweep,
+            # Bound to this lifespan's pool: the reaper hands the callback
+            # only a ReapResult, and failing a dead-lettered audit needs a write.
+            on_sweep=lambda result: _on_sweep(pool, result),
         )
     )
     logger.info("reaper started (interval=%ss, max_attempts=%d)",
@@ -143,6 +155,8 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 # 404 covers both "no such review" and "not yours" — routes/dashboard.py
 # answers 404 for both deliberately, so this copy must not hint at which.
 _ERROR_COPY = {
+    409: ("Already running",
+          "Someone is already auditing that repository. Please try again in a few minutes."),
     404: ("Not found",
           "This review either does not exist or is not visible to you. "
           "If it belongs to a private repository, sign in with a GitHub account that can access it."),

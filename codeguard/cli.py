@@ -103,10 +103,51 @@ def _is_remote_url(target: str) -> bool:
     return target.startswith(("http://", "https://", "git@")) or target.endswith(".git")
 
 
+# Layer one of the untrusted-repository controls: what git is allowed to
+# materialise. Layer two is _collect_repo_files, which re-checks on read.
+# Both, because a flag can be wrong or a file can be created between the
+# clone finishing and the walk starting.
+_CLONE_HARDENING = [
+    # Symlinks become plain text files containing the target path. Inert,
+    # and it means a link to /app/.env cannot be followed even by code
+    # that forgets to look.
+    "-c", "core.symlinks=false",
+    # A repository can ship hooks. Cloning does not run them, but nothing
+    # downstream should be one `git` invocation away from executing repo
+    # code, and the audit contract is static analysis only.
+    "-c", "core.hooksPath=/dev/null",
+    # Blocks file:// and submodule-via-local-path tricks that read the
+    # worker's own filesystem through git rather than through open().
+    "-c", "protocol.file.allow=never",
+    # Submodules are other people's repositories, fetched recursively,
+    # with their own symlinks and their own size.
+    "-c", "protocol.ext.allow=never",
+]
+
+# Deliberately shorter than the old 300s. A public repository that cannot
+# be shallow-cloned in two minutes is not one we want to audit, and the
+# clone runs inside the overall audit deadline.
+CLONE_TIMEOUT_S = 120
+
+
 def _clone_shallow(url: str, dest: Path) -> None:
+    """Clone an untrusted repository as inertly as git allows.
+
+    --no-tags and --single-branch keep it to one ref; --depth 1 keeps it to
+    one commit. GIT_TERMINAL_PROMPT=0 stops a private or renamed target
+    blocking forever on a credential prompt, and GIT_LFS_SKIP_SMUDGE=1
+    stops LFS pointers pulling down arbitrary extra payload.
+    """
+    env = {
+        **os.environ,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_LFS_SKIP_SMUDGE": "1",
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
     subprocess.run(
-        ["git", "clone", "--depth", "1", url, str(dest)],
-        check=True, capture_output=True, text=True, timeout=300,
+        ["git", *_CLONE_HARDENING, "clone", "--depth", "1", "--no-tags",
+         "--single-branch", "--no-recurse-submodules", url, str(dest)],
+        check=True, capture_output=True, text=True, timeout=CLONE_TIMEOUT_S, env=env,
     )
 
 
@@ -178,8 +219,18 @@ def _collect_repo_files(
     dependency_contents: dict[str, str] = {}
     dependency_patches: dict[str, str] = {}
 
+    real_root = root.resolve()
+
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d != ".git"]
+        # followlinks is False by default, so a symlinked DIRECTORY is
+        # never descended into. Pruning .git as well keeps the walk off
+        # object storage. Symlinked directories are still dropped from
+        # dirnames explicitly, so the list cannot be misread later as
+        # "directories we visited".
+        dirnames[:] = [
+            d for d in dirnames
+            if d != ".git" and not (Path(dirpath) / d).is_symlink()
+        ]
         for name in filenames:
             abs_path = Path(dirpath) / name
             rel_path = abs_path.relative_to(root).as_posix()
@@ -190,6 +241,39 @@ def _collect_repo_files(
             # would waste real I/O on every audit run for no benefit.
             is_manifest = is_dependency_manifest(rel_path)
             if not is_manifest and not is_reviewable_path(rel_path, repo_config):
+                continue
+
+            # SECURITY: what the path IS, before what it is called.
+            #
+            # A visitor chooses the repository. A file named `settings.py`
+            # that is really a symlink to /app/.env, /proc/self/environ or
+            # the mounted App key was previously read straight through by
+            # read_text() and carried into the scanners, the LLM prompt,
+            # the findings, the stored report and the page. Path
+            # classification happens above and is a statement about the
+            # NAME; these three checks are statements about the FILE.
+            #
+            # Every symlink is skipped, including one pointing inside the
+            # repo. Its target is collected on its own, so following it
+            # would only duplicate content and the tokens paid for it --
+            # and "is it a link" is a rule that cannot be subtly wrong,
+            # where "does every resolved component stay inside" is.
+            if abs_path.is_symlink():
+                continue
+
+            # Belt and braces on the containment question, for anything the
+            # link check could miss: a bind mount, a hardlink farm, or a
+            # path that becomes a link between the walk and the read.
+            try:
+                if not abs_path.resolve().is_relative_to(real_root):
+                    continue
+            except OSError:
+                continue
+
+            # Regular files only. A FIFO named `pipe.py` makes read_text()
+            # block FOREVER -- one file in a repository, and that worker
+            # replica never finishes another job. A device node is worse.
+            if not abs_path.is_file():
                 continue
 
             try:
