@@ -158,6 +158,38 @@ def can_view(*, owner: str, repo: str, private: bool, principal: str | None) -> 
     return allowed
 
 
+def can_access_repo(owner: str, repo: str, principal: str | None) -> bool:
+    """Does GitHub say this person can access this repository?
+
+    Not a second access path — it is `can_view` with private=True, which
+    is the same _is_collaborator call and the same _decision_cache. The
+    only thing this adds is a name for the question, because the question
+    differs from can_view's:
+
+      can_view         "may this person see this REVIEW?"
+      can_access_repo  "may this person see that this repo EXISTS?"
+
+    can_view answers the first by short-circuiting on `not private`,
+    because a review of public code is public information. That
+    short-circuit is right there and wrong here. The repositories page
+    lists what CodeGuard is INSTALLED on, and an installation list is a
+    fact about the operator, not about the repositories in it: that these
+    nine public repos are the ones someone chose to run a code reviewer
+    over is not something any of those repos published. Reading
+    `private=False` as "safe to name" leaked the whole list to anonymous
+    visitors on a public URL.
+
+    So every row on that page is treated as needing access, whatever its
+    visibility flag says, and `private=True` is how that is expressed to
+    the one function allowed to decide it.
+
+    COST: one GitHub round trip per (repo, principal) on a cold cache,
+    cached for _DECISION_TTL. That is the price of asking rather than
+    assuming, and it is paid per page view, not per row rendered.
+    """
+    return can_view(owner=owner, repo=repo, private=True, principal=principal)
+
+
 def reset_caches() -> None:
     """For tests, and for a future admin endpoint that needs to make a
     revocation take effect immediately rather than within _DECISION_TTL.

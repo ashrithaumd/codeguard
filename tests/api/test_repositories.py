@@ -68,7 +68,8 @@ async def test_an_installed_repo_with_no_reviews_still_appears(client, pool, as_
     own button sends you."""
     as_principal(OWNER_LOGIN)
     with patch.object(access, "installed_repositories",
-                      return_value=_installed((OWNER, PUBLIC, False))):
+                      return_value=_installed((OWNER, PUBLIC, False))), \
+         patch.object(access, "_is_collaborator", return_value=True):
         resp = client.get("/dashboard/repos")
 
     assert resp.status_code == 200
@@ -109,7 +110,8 @@ async def test_review_stats_are_rolled_up_per_repo(client, pool, as_principal):
     as_principal(OWNER_LOGIN)
 
     with patch.object(access, "installed_repositories",
-                      return_value=_installed((OWNER, PUBLIC, False))):
+                      return_value=_installed((OWNER, PUBLIC, False))), \
+         patch.object(access, "_is_collaborator", return_value=True):
         resp = client.get("/dashboard/repos")
 
     assert resp.status_code == 200
@@ -130,7 +132,8 @@ async def test_a_github_failure_falls_back_without_inventing_repos(
     as_principal(OWNER_LOGIN)
 
     with patch.object(access, "installed_repositories",
-                      side_effect=access.InstallationLookupFailed("boom")):
+                      side_effect=access.InstallationLookupFailed("boom")), \
+         patch.object(access, "_is_collaborator", return_value=True):
         resp = client.get("/dashboard/repos")
 
     assert resp.status_code == 200
@@ -197,10 +200,16 @@ async def test_the_button_is_absent_for_a_user_who_may_not_audit(
     client, pool, as_principal,
 ):
     as_principal(STRANGER, audit_principals=OWNER_LOGIN)
+    # _is_collaborator patched TRUE deliberately, so the row is VISIBLE and
+    # this asserts the BUTTON is absent rather than the row. Left unpatched,
+    # the access filter hides the repo entirely and the assertion passes
+    # for the wrong reason — which it did, briefly.
     with patch.object(access, "installed_repositories",
-                      return_value=_installed((OWNER, PUBLIC, False))):
+                      return_value=_installed((OWNER, PUBLIC, False))), \
+         patch.object(access, "_is_collaborator", return_value=True):
         resp = client.get("/dashboard/repos")
 
+    assert f"{OWNER}/{PUBLIC}" in resp.text, "the row must be visible for this to mean anything"
     # The form's action, not the button's label: base.html's row-link
     # script mentions "Run audit" in a comment, so matching the label
     # would pass or fail on the wording of a comment.
@@ -212,7 +221,8 @@ async def test_the_button_is_present_for_the_allowed_principal(
 ):
     as_principal(OWNER_LOGIN, audit_principals=OWNER_LOGIN)
     with patch.object(access, "installed_repositories",
-                      return_value=_installed((OWNER, PUBLIC, False))):
+                      return_value=_installed((OWNER, PUBLIC, False))), \
+         patch.object(access, "_is_collaborator", return_value=True):
         resp = client.get("/dashboard/repos")
 
     assert f"/dashboard/repos/{OWNER}/{PUBLIC}/audit" in resp.text
@@ -442,3 +452,114 @@ async def test_the_signed_in_landing_shows_setup_copy_when_nothing_is_installed(
     assert resp.status_code == 200
     assert "No repositories yet" in resp.text
     assert "Add or remove a repository" in resp.text
+
+
+# --------------------------------------------------------------------------
+# The access filter on the repo LIST itself
+#
+# This page leaked in production: it passed each row through
+# can_view(private=entry["private"], ...), which short-circuits to True on
+# `not private`, so all nine public repos rendered to anonymous visitors
+# with names, review counts and costs. can_view is right for a review of
+# public code and wrong for an installation list -- which repos someone
+# chose to run a reviewer over is a fact about the operator.
+# --------------------------------------------------------------------------
+
+async def test_an_anonymous_visitor_sees_no_repository_names(client, pool, as_principal):
+    """The leak, as a test. PUBLIC repos, anonymous visitor, nothing."""
+    as_principal(None)
+    with patch.object(access, "installed_repositories",
+                      return_value=_installed((OWNER, PUBLIC, False),
+                                              (OWNER, "another-public", False))):
+        resp = client.get("/dashboard/repos")
+
+    assert resp.status_code == 200
+    assert PUBLIC not in resp.text
+    assert "another-public" not in resp.text
+    assert "Sign in" in resp.text
+
+
+async def test_an_anonymous_visitor_sees_no_count_either(client, pool, as_principal):
+    """"Installed 2" is still information about the installation."""
+    as_principal(None)
+    with patch.object(access, "installed_repositories",
+                      return_value=_installed((OWNER, PUBLIC, False),
+                                              (OWNER, "another-public", False))):
+        resp = client.get("/dashboard/repos")
+
+    assert "Installed" not in resp.text
+    # The settings URL carries the installation id; withheld too.
+    assert "settings/installations" not in resp.text
+
+
+async def test_the_installation_list_is_not_even_fetched_when_anonymous(
+    client, pool, as_principal,
+):
+    """Returns before the lookup rather than fetching and filtering to
+    nothing: no list in memory for a future template edit to leak, and an
+    unauthenticated page view costs zero GitHub calls."""
+    as_principal(None)
+    with patch.object(access, "installed_repositories") as spy:
+        client.get("/dashboard/repos")
+
+    spy.assert_not_called()
+
+
+async def test_a_public_repo_is_hidden_from_a_signed_in_non_collaborator(
+    client, pool, as_principal,
+):
+    """The other half of the leak, and the half that can_view could never
+    have caught: a signed-in stranger got every public repo waved through
+    by the `not private` short-circuit."""
+    as_principal(STRANGER)
+    with patch.object(access, "installed_repositories",
+                      return_value=_installed((OWNER, PUBLIC, False))), \
+         patch.object(access, "_is_collaborator", return_value=False):
+        resp = client.get("/dashboard/repos")
+
+    assert resp.status_code == 200
+    assert PUBLIC not in resp.text
+
+
+async def test_a_public_repo_is_shown_to_a_collaborator(client, pool, as_principal):
+    """And the filter must not be so strict it hides your own repos."""
+    as_principal(OWNER_LOGIN)
+    with patch.object(access, "installed_repositories",
+                      return_value=_installed((OWNER, PUBLIC, False))), \
+         patch.object(access, "_is_collaborator", return_value=True):
+        resp = client.get("/dashboard/repos")
+
+    assert f"{OWNER}/{PUBLIC}" in resp.text
+
+
+async def test_the_collaborator_check_runs_for_public_repos_too(
+    client, pool, as_principal,
+):
+    """Pins the actual defect. The old code never asked GitHub about a
+    public repo, so _is_collaborator was never called for one and the
+    filter was structurally incapable of excluding it."""
+    as_principal(OWNER_LOGIN)
+    with patch.object(access, "installed_repositories",
+                      return_value=_installed((OWNER, PUBLIC, False))), \
+         patch.object(access, "_is_collaborator", return_value=True) as spy:
+        client.get("/dashboard/repos")
+
+    spy.assert_called_once_with(OWNER, PUBLIC, OWNER_LOGIN)
+
+
+async def test_one_github_call_per_repo_not_per_row_rendered(client, pool, as_principal):
+    """Cost guard. can_view caches on (owner, repo, principal), so a
+    second page view inside the TTL must not re-ask."""
+    access.reset_caches()
+    as_principal(OWNER_LOGIN)
+    with patch.object(access, "installed_repositories",
+                      return_value=_installed((OWNER, PUBLIC, False),
+                                              (OWNER, PRIVATE, True))), \
+         patch.object(access, "_is_collaborator", return_value=True) as spy:
+        client.get("/dashboard/repos")
+        first = spy.call_count
+        client.get("/dashboard/repos")
+        second = spy.call_count
+
+    assert first == 2, "one call per repo on a cold cache"
+    assert second == 2, "second page view inside the TTL must be free"

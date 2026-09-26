@@ -279,20 +279,34 @@ def _audit_target(owner: str, repo: str) -> str:
 
 @router.get("/repos", response_class=HTMLResponse)
 async def repositories(request: Request) -> HTMLResponse:
-    """Every repository CodeGuard is installed on, with its activity.
+    """Every repository CodeGuard is installed on THAT THIS VISITOR CAN
+    ACCESS, with its activity.
 
     Two independent sources, ANDed:
 
       access.installed_repositories()  -> is CodeGuard active here
-      access.can_view()                -> may this visitor see it
+      access.can_access_repo()         -> may this visitor see it exists
 
-    The first returns PRIVATE repository names, because the App can see
-    them; it says nothing about whether the person looking at this page
-    can. Every row therefore passes through can_view before it reaches
-    the template, exactly as the review listings do. This is the one
-    place in the dashboard where the repo list does not originate in a
-    review row, so it is also the one place that could leak a repo name
-    that has never been reviewed.
+    ACCESS RULE, and why it is not can_view's: this page originally passed
+    each row through can_view(private=entry["private"], ...), which reads
+    correctly and was wrong. can_view short-circuits to True on
+    `not private`, because a review of public code is public information.
+    An INSTALLATION LIST is not. That these particular public repos are
+    the ones someone chose to run a code reviewer over is a fact about the
+    operator, published by nobody -- and the old call leaked all nine of
+    them, by name and with review counts and costs, to anonymous visitors
+    on a public URL.
+
+    So:
+
+      anonymous  -> nothing. Not a filtered list, not a count, not
+                    "installed 9". installed_repositories() is not even
+                    called, so there is no list in memory to leak through
+                    a future template edit, and an unauthenticated page
+                    view still costs zero GitHub calls.
+      signed in  -> can_access_repo per row, which is can_view with
+                    private=True: the same collaborator call and the same
+                    cache, asked for every row regardless of visibility.
 
     A repo with no reviews still appears, with zeroed stats — "installed
     but never reviewed" is a real and interesting state (it usually means
@@ -302,6 +316,17 @@ async def repositories(request: Request) -> HTMLResponse:
     pool = request.app.state.pool
     principal = client_principal(request)
     settings = get_settings()
+
+    # Before any lookup. An anonymous visitor gets the sign-in prompt and
+    # no data of any kind, so this returns before the installation list is
+    # fetched rather than fetching it and filtering to nothing.
+    if not principal:
+        return _page(
+            request, "repositories.html", principal,
+            rows=[], may_audit=False, lookup_failed=False, signed_out=True,
+            settings_url=access.installation_settings_url(None),
+            audit_note=AUDIT_NO_FIXES_NOTE, private_note=PRIVATE_AUDIT_NOTE,
+        )
 
     lookup_failed = False
     installed: list[dict] = []
@@ -331,7 +356,10 @@ async def repositories(request: Request) -> HTMLResponse:
     rows = []
     for entry in installed:
         owner, name = entry["owner"], entry["repo"]
-        if not can_view(owner=owner, repo=name, private=entry["private"], principal=principal):
+        # can_access_repo, NOT can_view(private=entry["private"]). The
+        # latter waves every public repo through for any signed-in
+        # visitor, which is the leak this page had.
+        if not access.can_access_repo(owner, name, principal):
             continue
         stat = stats.get((owner, name), {})
         audit = latest_audits.get((owner, name))
