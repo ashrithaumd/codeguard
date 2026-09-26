@@ -49,7 +49,7 @@ async def _queued(pool):
 async def test_a_successful_audit_is_recorded_done(pool, monkeypatch, tmp_path):
     audit = await _queued(pool)
 
-    def fake_run_audit(target, output_path, post_issue, stats=None):
+    def fake_run_audit(target, output_path, post_issue, stats=None, deadline_s=None):
         with open(output_path, "w", encoding="utf-8") as fh:
             fh.write("# Audit report\n\nNothing found.\n")
         return 0, None
@@ -72,7 +72,7 @@ async def test_a_failed_audit_records_the_reason(pool, monkeypatch):
     audit = await _queued(pool)
     monkeypatch.setattr(
         "codeguard.worker.main.run_audit",
-        lambda target, output_path, post_issue, stats=None: (1, "git clone failed: not found"),
+        lambda target, output_path, post_issue, stats=None, deadline_s=None: (1, "git clone failed: not found"),
     )
 
     assert await handle_repo_audit(_job(audit["id"]), pool, asyncio.Event()) is True
@@ -89,7 +89,7 @@ async def test_an_unexpected_exception_still_reaches_a_terminal_state(pool, monk
     entry, so the repo could never be audited again."""
     audit = await _queued(pool)
 
-    def boom(target, output_path, post_issue, stats=None):
+    def boom(target, output_path, post_issue, stats=None, deadline_s=None):
         raise RuntimeError("disk full")
 
     monkeypatch.setattr("codeguard.worker.main.run_audit", boom)
@@ -104,7 +104,7 @@ async def test_a_finished_audit_frees_the_repo_for_another(pool, monkeypatch):
     audit = await _queued(pool)
     monkeypatch.setattr(
         "codeguard.worker.main.run_audit",
-        lambda target, output_path, post_issue, stats=None: (0, None),
+        lambda target, output_path, post_issue, stats=None, deadline_s=None: (0, None),
     )
     await handle_repo_audit(_job(audit["id"]), pool, asyncio.Event())
 
@@ -127,7 +127,7 @@ async def test_the_audit_does_not_block_the_event_loop(pool, monkeypatch):
     audit = await _queued(pool)
     monkeypatch.setattr(
         "codeguard.worker.main.run_audit",
-        lambda target, output_path, post_issue, stats=None: (_time.sleep(0.4), (0, None))[1],
+        lambda target, output_path, post_issue, stats=None, deadline_s=None: (_time.sleep(0.4), (0, None))[1],
     )
 
     ticks = 0
@@ -166,7 +166,7 @@ async def test_the_economics_are_recorded_not_just_printed(pool, monkeypatch):
     """
     audit = await _queued(pool)
 
-    def fake_run_audit(target, output_path, post_issue, stats=None):
+    def fake_run_audit(target, output_path, post_issue, stats=None, deadline_s=None):
         if stats is not None:
             stats.tokens_in = 5853
             stats.tokens_out = 1533
@@ -189,7 +189,7 @@ async def test_a_failed_audit_still_records_what_it_spent(pool, monkeypatch):
     a failure."""
     audit = await _queued(pool)
 
-    def fake_run_audit(target, output_path, post_issue, stats=None):
+    def fake_run_audit(target, output_path, post_issue, stats=None, deadline_s=None):
         if stats is not None:
             stats.tokens_in = 100
             stats.estimated_cost_usd = 0.002
@@ -219,7 +219,7 @@ async def test_a_lost_lease_writes_no_terminal_status(pool, monkeypatch):
     audit = await _queued(pool)
     abandoned = asyncio.Event()
 
-    def fake_run_audit(target, output_path, post_issue, stats=None):
+    def fake_run_audit(target, output_path, post_issue, stats=None, deadline_s=None):
         abandoned.set()          # the reaper reclaimed it while we worked
         return 0, None
 

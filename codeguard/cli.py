@@ -130,13 +130,18 @@ _CLONE_HARDENING = [
 CLONE_TIMEOUT_S = 120
 
 
-def _clone_shallow(url: str, dest: Path) -> None:
+def _clone_shallow(url: str, dest: Path, timeout: float | None = None) -> None:
     """Clone an untrusted repository as inertly as git allows.
 
     --no-tags and --single-branch keep it to one ref; --depth 1 keeps it to
     one commit. GIT_TERMINAL_PROMPT=0 stops a private or renamed target
     blocking forever on a credential prompt, and GIT_LFS_SKIP_SMUDGE=1
     stops LFS pointers pulling down arbitrary extra payload.
+
+    `timeout` exists because a clone is the one stage the audit's own
+    deadline cannot interrupt: it is a subprocess, so the only thing that
+    stops it is git being told to stop. The caller passes whatever is left
+    of the audit budget, capped at CLONE_TIMEOUT_S.
     """
     env = {
         **os.environ,
@@ -144,10 +149,16 @@ def _clone_shallow(url: str, dest: Path) -> None:
         "GIT_LFS_SKIP_SMUDGE": "1",
         "GIT_CONFIG_NOSYSTEM": "1",
     }
+    effective = CLONE_TIMEOUT_S if timeout is None else timeout
+    # inf arrives from an unbounded _Deadline; subprocess wants a real
+    # number or None, and None there means "wait forever", which is the
+    # one thing this must never do.
+    if effective == float("inf"):
+        effective = CLONE_TIMEOUT_S
     subprocess.run(
         ["git", *_CLONE_HARDENING, "clone", "--depth", "1", "--no-tags",
          "--single-branch", "--no-recurse-submodules", url, str(dest)],
-        check=True, capture_output=True, text=True, timeout=CLONE_TIMEOUT_S, env=env,
+        check=True, capture_output=True, text=True, timeout=effective, env=env,
     )
 
 
@@ -652,18 +663,92 @@ class AuditStats:
     duration_s: float = 0.0
 
 
+class DeadlineExceeded(Exception):
+    """The audit ran out of its wall-clock budget. Internal only.
+
+    Never shown to a user: run_audit converts it into the friendly
+    TIMEOUT_MESSAGE. An exception class name is not an instruction.
+    """
+
+
+class _Deadline:
+    """A wall-clock budget, checked at the points where stopping is safe.
+
+    WHY THIS IS NOT asyncio.wait_for. run_audit is synchronous and the
+    worker runs it via asyncio.to_thread. CANCELLING A to_thread TASK DOES
+    NOT STOP THE THREAD -- the coroutine raises CancelledError while the
+    thread keeps cloning and keeps calling Anthropic. An outer wait_for
+    would therefore mark the audit timed out while the work continued and
+    the money kept being spent: a limit that reports a stop it has not
+    achieved. The only thing that can stop this work is the work itself
+    asking whether it should.
+
+    So the deadline is passed in, and checked BETWEEN STAGES and BEFORE
+    EVERY MODEL CALL. Cooperative, which means a single stage that blocks
+    with no checkpoint can still overrun -- the clone gets git's own
+    subprocess timeout for exactly that reason, and the outer wait_for
+    stays as a backstop for anything wedged with no checkpoint at all.
+
+    seconds <= 0 (or None) disables it, which is how the CLI and MCP paths
+    keep the behaviour they had before this existed.
+    """
+
+    __slots__ = ("seconds", "started")
+
+    def __init__(self, seconds: float | None):
+        self.seconds = float(seconds or 0)
+        self.started = time.monotonic()
+
+    @property
+    def elapsed(self) -> float:
+        return time.monotonic() - self.started
+
+    @property
+    def expired(self) -> bool:
+        return bool(self.seconds) and self.elapsed >= self.seconds
+
+    @property
+    def remaining(self) -> float:
+        """Seconds left, floored at 0. Unbounded budgets report inf so a
+        caller can pass this straight to a subprocess timeout."""
+        if not self.seconds:
+            return float("inf")
+        return max(0.0, self.seconds - self.elapsed)
+
+    def check(self, stage: str) -> None:
+        if self.expired:
+            raise DeadlineExceeded(stage)
+
+
+TIMEOUT_MESSAGE = (
+    "This audit took too long and was stopped. Very large repositories can "
+    "exceed the time limit; try a smaller one."
+)
+
+NO_PYTHON_MESSAGE = (
+    "CodeGuard currently analyzes Python repositories, and this one has no "
+    "Python files to review."
+)
+
+
 def run_audit(
     target: str, output_path: str, post_issue_flag: bool,
     stats: "AuditStats | None" = None,
+    deadline_s: float | None = None,
 ) -> tuple[int, str | None]:
     """Returns (exit_code, error_message) rather than a bare exit code —
     the MCP audit_repo tool wrapping this needs the actual failure
     reason to return a real error object, not silently fall back to an
     empty report string with no indication of what went wrong.
     error_message is None on success.
+
+    `deadline_s` bounds the whole audit. Defaults to None, i.e. unbounded,
+    so the CLI and MCP callers behave exactly as before; the worker passes
+    the configured ceiling because a visitor chooses the repository there.
     """
     settings = get_settings()
     start = time.monotonic()
+    deadline = _Deadline(deadline_s)
 
     # SECURITY: `target` is caller-supplied and may carry a credential.
     # `https://<token>@github.com/owner/repo` is the ordinary way to hand
@@ -687,7 +772,13 @@ def run_audit(
             tmp_dir = tempfile.mkdtemp(prefix="codeguard-audit-")
             print(f"Cloning {safe_target}...", file=sys.stderr)
             try:
-                _clone_shallow(target, Path(tmp_dir))
+                # The clone cannot be interrupted by a Python-level check,
+                # so it gets git's own timeout -- and never more than what
+                # is left of the audit's budget.
+                _clone_shallow(
+                    target, Path(tmp_dir),
+                    timeout=min(CLONE_TIMEOUT_S, deadline.remaining),
+                )
             except subprocess.CalledProcessError as e:
                 # git's stderr echoes the URL it was given, so it is
                 # redacted too rather than trusted to have masked itself.
@@ -702,6 +793,8 @@ def run_audit(
                 print(error, file=sys.stderr)
                 return 1, error
 
+        deadline.check("after cloning, before reading the repository")
+
         repo_config = _load_local_repo_config(root, settings)
         ceiling = Budget(
             max_files=settings.audit_max_files_ceiling,
@@ -712,6 +805,16 @@ def run_audit(
 
         all_files, dependency_contents, dependency_patches = _collect_repo_files(root, repo_config)
         print(f"{len(all_files)} reviewable file(s) found.", file=sys.stderr)
+
+        # No Python, no audit -- and crucially no model call. Checked here
+        # rather than after the scanners so a repository of nothing but
+        # Markdown costs one clone and nothing else.
+        if not all_files:
+            error = NO_PYTHON_MESSAGE
+            print(error, file=sys.stderr)
+            return 1, error
+
+        deadline.check("before the scanners")
 
         files, skipped_files = _select_files_for_audit(all_files, budget.max_files, budget.max_tokens)
 
@@ -732,6 +835,7 @@ def run_audit(
         security_findings_by_file = {
             p: [f for f in tool_findings if f.file == p and f.source_tool == "bandit"] for p in files
         }
+        deadline.check("before the security verdict layer")
         sec = _run_verdict_layer(
             review_security, "audit", root.name, files, security_findings_by_file,
         )
@@ -815,7 +919,26 @@ def run_audit(
                     print(f"Issue posted: {url}", file=sys.stderr)
 
         return 0, None
+    except DeadlineExceeded as exc:
+        # The internal reason goes to the log; the user gets
+        # TIMEOUT_MESSAGE. An exception class name and a stage label are
+        # diagnostics, not instructions.
+        logger.warning("audit of %s exceeded its deadline: %s", safe_target, exc)
+        print(TIMEOUT_MESSAGE, file=sys.stderr)
+        return 1, TIMEOUT_MESSAGE
+    except subprocess.TimeoutExpired:
+        # The clone hit git's own timeout, which is the deadline arriving
+        # during the one stage a Python-level check cannot interrupt. Same
+        # message: from the user's side it is the same event.
+        logger.warning("clone of %s timed out", safe_target)
+        print(TIMEOUT_MESSAGE, file=sys.stderr)
+        return 1, TIMEOUT_MESSAGE
     finally:
+        # Whatever happened, report the clock. A timeout is not a reason to
+        # lose the accounting: what was spent before it was still spent,
+        # and the audits row's duration_s is what the page shows.
+        if stats is not None and not stats.duration_s:
+            stats.duration_s = time.monotonic() - start
         if tmp_dir is not None:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 

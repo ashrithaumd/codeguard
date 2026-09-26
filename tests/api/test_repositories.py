@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-from codeguard.api import access
+from codeguard.api import access, repo_url
 from codeguard.config import Settings, get_settings
 from tests.api.conftest import insert_review
 
@@ -55,6 +55,23 @@ def as_principal(monkeypatch):
         monkeypatch.setattr("codeguard.api.routes.dashboard.get_settings", lambda: patched)
         return patched
     return _sign_in
+
+
+@pytest.fixture
+def repo_is_public(monkeypatch):
+    """GitHub says the repo is public and small enough.
+
+    Opt-in, NOT autouse. An autouse stub of a security gate is how a test
+    stops testing the gate without anyone noticing -- the same failure as
+    test_the_button_is_absent_for_a_user_who_may_not_audit passing while
+    observing an empty page. Every POST test that wants to get past the
+    precheck says so, and test_the_public_repo_gate_is_enforced_on_the_post
+    asserts the gate is still there.
+    """
+    monkeypatch.setattr(
+        "codeguard.api.repo_url.verify_public_and_sized",
+        lambda owner, repo: {"private": False, "size": 100},
+    )
 
 
 # --------------------------------------------------------------------------
@@ -228,7 +245,7 @@ async def test_the_button_is_present_for_the_allowed_principal(
     assert f"/dashboard/repos/{OWNER}/{PUBLIC}/audit" in resp.text
 
 
-async def test_the_allow_list_is_case_insensitive(client, pool, as_principal):
+async def test_the_allow_list_is_case_insensitive(client, pool, as_principal, repo_is_public):
     """GitHub logins are case-insensitive, so an allow-list that is not
     would deny the right person for the wrong reason."""
     as_principal("AshrithaUMD", audit_principals="ashrithaumd")
@@ -260,7 +277,7 @@ async def test_a_private_repo_cannot_be_audited(client, pool, as_principal):
 # --------------------------------------------------------------------------
 
 async def test_a_second_audit_redirects_to_the_one_already_running(
-    client, pool, as_principal,
+    client, pool, as_principal, repo_is_public,
 ):
     """The money question. Two tabs, a double click, or a retried POST
     must not produce two clones and two lots of spend for one repo. The
@@ -286,7 +303,7 @@ async def test_a_second_audit_redirects_to_the_one_already_running(
 
 
 async def test_a_repo_can_be_audited_again_once_the_first_finishes(
-    client, pool, as_principal,
+    client, pool, as_principal, repo_is_public,
 ):
     """The index is partial on the in-flight states, so it constrains
     CONCURRENCY, not history."""
@@ -308,7 +325,7 @@ async def test_a_repo_can_be_audited_again_once_the_first_finishes(
 
 
 async def test_the_enqueued_job_carries_what_the_worker_needs(
-    client, pool, as_principal,
+    client, pool, as_principal, repo_is_public,
 ):
     as_principal(OWNER_LOGIN, audit_principals=OWNER_LOGIN)
     with patch.object(access, "installed_repositories",
@@ -330,7 +347,7 @@ async def test_the_enqueued_job_carries_what_the_worker_needs(
 # Progress and the report
 # --------------------------------------------------------------------------
 
-async def test_the_poll_endpoint_reports_terminal_state(client, pool, as_principal):
+async def test_the_poll_endpoint_reports_terminal_state(client, pool, as_principal, repo_is_public):
     from codeguard.api import audits as audits_mod
 
     as_principal(OWNER_LOGIN, audit_principals=OWNER_LOGIN)
@@ -349,7 +366,7 @@ async def test_the_poll_endpoint_reports_terminal_state(client, pool, as_princip
     assert done["terminal"] is True
 
 
-async def test_the_poll_payload_excludes_the_report(client, pool, as_principal):
+async def test_the_poll_payload_excludes_the_report(client, pool, as_principal, repo_is_public):
     """A 2s poll must not re-send tens of kilobytes to say "still the
     same"."""
     from codeguard.api import audits as audits_mod
@@ -366,7 +383,7 @@ async def test_the_poll_payload_excludes_the_report(client, pool, as_principal):
     assert "report_markdown" not in body
 
 
-async def test_a_failed_audit_says_why(client, pool, as_principal):
+async def test_a_failed_audit_says_why(client, pool, as_principal, repo_is_public):
     from codeguard.api import audits as audits_mod
 
     as_principal(OWNER_LOGIN, audit_principals=OWNER_LOGIN)
@@ -386,7 +403,7 @@ async def test_a_failed_audit_says_why(client, pool, as_principal):
 
 
 async def test_the_audit_page_says_there_are_no_fix_suggestions(
-    client, pool, as_principal,
+    client, pool, as_principal, repo_is_public,
 ):
     as_principal(OWNER_LOGIN, audit_principals=OWNER_LOGIN)
     with patch.object(access, "installed_repositories",
@@ -398,7 +415,7 @@ async def test_the_audit_page_says_there_are_no_fix_suggestions(
     assert "no fix suggestions" in page.text.lower()
 
 
-async def test_a_report_is_escaped_not_rendered_as_html(client, pool, as_principal):
+async def test_a_report_is_escaped_not_rendered_as_html(client, pool, as_principal, repo_is_public):
     """The report contains scanner messages, which echo fragments of the
     scanned source — i.e. text the repository's authors control."""
     from codeguard.api import audits as audits_mod
@@ -566,7 +583,7 @@ async def test_one_github_call_per_repo_not_per_row_rendered(client, pool, as_pr
 
 
 async def test_a_second_requester_is_not_redirected_to_the_first_audit(
-    client, pool, as_principal,
+    client, pool, as_principal, repo_is_public,
 ):
     """The leak our own in-flight rule creates, at the route level.
 
@@ -590,3 +607,29 @@ async def test_a_second_requester_is_not_redirected_to_the_first_audit(
     assert resp.status_code == 409, "must refuse, not redirect"
     assert str(first["id"]) not in resp.text, "must not leak the other audit's id"
     assert "someone-first" not in resp.text, "must not name the other requester"
+
+
+async def test_the_public_repo_gate_is_enforced_on_the_post(client, pool, as_principal):
+    """The gate must be ON the POST path, not merely available.
+
+    Deliberately does NOT use the repo_is_public fixture: this asserts that
+    a refusal from repo_url reaches the caller as a 400 with its own
+    message, so removing the precheck from the route fails here.
+    """
+    as_principal(OWNER_LOGIN, audit_principals=OWNER_LOGIN)
+    with patch.object(access, "installed_repositories",
+                      return_value=_installed((OWNER, PUBLIC, False))), \
+         patch.object(access, "_is_collaborator", return_value=True), \
+         patch("codeguard.api.repo_url.verify_public_and_sized",
+               side_effect=repo_url.RepoRejected(
+                   "This repository is too large to audit (900 MB; the limit is 244 MB).")):
+        resp = client.post(f"/dashboard/repos/{OWNER}/{PUBLIC}/audit",
+                           follow_redirects=False)
+
+    assert resp.status_code == 400
+    assert "too large" in resp.text
+    async with pool.connection() as conn:
+        cur = await conn.execute("SELECT count(*) AS n FROM audits")
+        assert (await cur.fetchone())["n"] == 0, "nothing may be queued after a refusal"
+        cur = await conn.execute("SELECT count(*) AS n FROM jobs")
+        assert (await cur.fetchone())["n"] == 0

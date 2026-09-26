@@ -154,7 +154,7 @@ def test_the_real_target_still_reaches_git(tmp_path):
     the actual credential to clone a private repository."""
     seen = {}
 
-    def fake_clone(url, dest):
+    def fake_clone(url, dest, timeout=None):
         seen["url"] = url
         raise subprocess.CalledProcessError(128, "git", stderr="stop here")
 

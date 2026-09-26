@@ -23,6 +23,7 @@ hiding.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from pathlib import Path
 from uuid import UUID
@@ -31,7 +32,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from codeguard.api import access, audits
+from codeguard.api import access, audits, repo_url
 from codeguard.api import dashboard_queries as q
 from codeguard.api.auth import client_principal
 from codeguard.config import get_settings
@@ -441,6 +442,21 @@ async def trigger_audit(request: Request, owner: str, repo: str):
         # Not a permission failure — a capability one. See
         # PRIVATE_AUDIT_NOTE.
         raise HTTPException(status_code=400, detail=PRIVATE_AUDIT_NOTE)
+
+    # GitHub's own answer on "public, and small enough", from one call,
+    # BEFORE anything is queued or cloned. Off the event loop because it is
+    # synchronous requests and this handler is async.
+    #
+    # Redundant for an operator auditing an installed repo, which is the
+    # only path that reaches here today — the installed list already said
+    # private=False. Enforced anyway, because Stage 2's visitor route
+    # supplies an arbitrary URL and this is the gate it will share: a
+    # control that exists only on the path that does not need it is a
+    # control that will be missing from the path that does.
+    try:
+        await asyncio.to_thread(repo_url.verify_public_and_sized, owner, repo)
+    except repo_url.RepoRejected as rejected:
+        raise HTTPException(status_code=400, detail=str(rejected)) from None
 
     try:
         audit = await audits.request_audit(

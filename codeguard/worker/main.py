@@ -536,8 +536,19 @@ async def handle_repo_audit(job: Job, pool, abandoned: asyncio.Event) -> bool:
         # recorded 0 tokens and $0 for every run while the report it
         # stored alongside said $0.0406 -- see AuditStats.
         stats = AuditStats()
+        # The deadline is enforced INSIDE run_audit, not with wait_for
+        # around this call. Cancelling a to_thread task does not stop the
+        # thread: the coroutine would raise while the thread kept cloning
+        # and kept calling Anthropic, so an outer timeout would report a
+        # stop it had not achieved and spend money after saying so. See
+        # cli._Deadline.
+        #
+        # A visitor chooses the repository here, which is why the worker
+        # passes a limit at all while the CLI and MCP callers stay
+        # unbounded.
         exit_code, error = await asyncio.to_thread(
             run_audit, target, output_path, False, stats,
+            get_settings().audit_max_wall_clock_s_ceiling,
         )
 
         report = ""
