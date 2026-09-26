@@ -26,10 +26,28 @@
 -- Collapsing them would force one message to cover "this repository is
 -- too large" and "something broke, try again", which are opposite
 -- instructions to the person reading the page.
+--
+-- 'timed_out' is here too, in ONE migration rather than a later widening.
+-- bootstrap_schema() re-runs every migration on every startup, and
+-- ADD CONSTRAINT VALIDATES EXISTING ROWS -- so a 010 that forbade
+-- 'timed_out' followed by an 011 that allowed it would fail permanently
+-- the moment a single timed-out audit existed: 010 would run first, find
+-- the row, and refuse. Found by the constraint violating on a database
+-- that already had one. A CHECK recreated on every startup has to list
+-- every value the schema will ever hold, so the list lives in one place.
+--
+-- WHY timed_out IS ITS OWN STATUS rather than 'failed' with a message:
+-- distinguishing outcomes by the wording of user-facing copy breaks
+-- silently the first time someone rewords it, and it breaks in the
+-- direction of telling people to retry something that cannot succeed. A
+-- timeout is also genuinely neither of the others -- 'failed' says
+-- something broke, 'rejected' says we declined before starting, and a
+-- timeout means we started, did real work, spent real money, and ran out
+-- of time. The page's advice differs for each.
 ALTER TABLE audits DROP CONSTRAINT IF EXISTS audits_status_check;
 ALTER TABLE audits
     ADD CONSTRAINT audits_status_check
-    CHECK (status IN ('queued', 'running', 'done', 'failed', 'rejected'));
+    CHECK (status IN ('queued', 'running', 'done', 'failed', 'rejected', 'timed_out'));
 
 -- ---------------------------------------------------------------------
 -- One in-flight audit per REQUESTER, alongside the existing per-repo one.

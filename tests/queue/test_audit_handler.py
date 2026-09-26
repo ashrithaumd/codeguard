@@ -230,3 +230,103 @@ async def test_a_lost_lease_writes_no_terminal_status(pool, monkeypatch):
     row = await get_audit(pool, audit["id"])
     assert row["status"] == "running", "the terminal write belongs to the lease owner"
     assert row["finished_at"] is None
+
+
+# --------------------------------------------------------------------------
+# Typed outcomes -> audits.status, mapped WITHOUT reading any message.
+#
+# Before this, run_audit returned (1, message) for a timeout, for a repo
+# with no Python, and for every other refusal, and the worker turned exit
+# code 1 into status 'failed'. "This repository is too large" and "the
+# worker crashed" were stored identically, and the only thing telling them
+# apart was the wording of a string.
+# --------------------------------------------------------------------------
+
+import pytest  # noqa: E402
+
+from codeguard.cli import AuditOutcome  # noqa: E402
+
+
+@pytest.mark.parametrize("outcome,expected_status", [
+    (AuditOutcome.COMPLETED, "done"),
+    (AuditOutcome.REJECTED, "rejected"),
+    (AuditOutcome.TIMED_OUT, "timed_out"),
+    (AuditOutcome.FAILED, "failed"),
+])
+async def test_each_outcome_maps_to_its_own_status(
+    pool, monkeypatch, outcome, expected_status,
+):
+    audit = await _queued(pool)
+
+    def fake_run_audit(target, output_path, post_issue, stats=None, deadline_s=None):
+        if stats is not None:
+            stats.outcome = outcome
+            stats.message = None if outcome is AuditOutcome.COMPLETED else "because reasons"
+        return (0 if outcome is AuditOutcome.COMPLETED else 1), None
+
+    monkeypatch.setattr("codeguard.worker.main.run_audit", fake_run_audit)
+    await handle_repo_audit(_job(audit["id"]), pool, asyncio.Event())
+
+    row = await get_audit(pool, audit["id"])
+    assert row["status"] == expected_status
+
+
+async def test_the_status_does_not_follow_the_message_wording(pool, monkeypatch):
+    """The whole point. A message that SAYS "too large" while the outcome
+    says FAILED must store 'failed' -- so rewording copy can never change
+    how an audit is recorded."""
+    audit = await _queued(pool)
+
+    def fake_run_audit(target, output_path, post_issue, stats=None, deadline_s=None):
+        if stats is not None:
+            stats.outcome = AuditOutcome.FAILED
+            stats.message = "This repository is too large to audit."
+        return 1, None
+
+    monkeypatch.setattr("codeguard.worker.main.run_audit", fake_run_audit)
+    await handle_repo_audit(_job(audit["id"]), pool, asyncio.Event())
+
+    row = await get_audit(pool, audit["id"])
+    assert row["status"] == "failed", "status follows the outcome, not the text"
+
+
+async def test_a_rejection_message_reaches_the_row(pool, monkeypatch):
+    """The user has to be told WHY, so stats.message is stored when
+    run_audit did not return an error string of its own."""
+    audit = await _queued(pool)
+
+    def fake_run_audit(target, output_path, post_issue, stats=None, deadline_s=None):
+        if stats is not None:
+            stats.outcome = AuditOutcome.REJECTED
+            stats.message = "CodeGuard currently analyzes Python repositories."
+        return 1, None
+
+    monkeypatch.setattr("codeguard.worker.main.run_audit", fake_run_audit)
+    await handle_repo_audit(_job(audit["id"]), pool, asyncio.Event())
+
+    row = await get_audit(pool, audit["id"])
+    assert row["status"] == "rejected"
+    assert "Python" in row["error"]
+
+
+async def test_a_terminal_outcome_frees_the_repo_and_the_requester(pool, monkeypatch):
+    """Every one of the four is terminal, so neither partial unique index
+    still covers it. A 'timed_out' audit must not wedge the repository the
+    way a stuck 'running' one did."""
+    from codeguard.api.audits import request_audit
+
+    audit = await _queued(pool)
+
+    def fake_run_audit(target, output_path, post_issue, stats=None, deadline_s=None):
+        if stats is not None:
+            stats.outcome = AuditOutcome.TIMED_OUT
+            stats.message = "took too long"
+        return 1, None
+
+    monkeypatch.setattr("codeguard.worker.main.run_audit", fake_run_audit)
+    await handle_repo_audit(_job(audit["id"]), pool, asyncio.Event())
+
+    again = await request_audit(
+        pool, owner=OWNER, repo=REPO, requested_by="tester", private=False,
+    )
+    assert again["id"] != audit["id"]

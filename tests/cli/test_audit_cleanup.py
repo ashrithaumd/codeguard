@@ -25,11 +25,9 @@ names, so the assertion is about the directory the code actually created.
 
 from __future__ import annotations
 
-import asyncio
 import os
 import subprocess
 import tempfile
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -84,8 +82,6 @@ def _stub_verdict():
 
 def test_cleanup_on_a_successful_remote_audit(tmp_path, created_dirs):
     """The success path. A clone happened, so there IS a directory to leak."""
-    source = _repo(tmp_path)
-
     def fake_clone(url, dest, timeout=None):
         # Populate the destination the way a real clone would.
         dest.mkdir(parents=True, exist_ok=True)

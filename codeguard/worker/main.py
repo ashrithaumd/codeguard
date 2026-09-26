@@ -31,8 +31,13 @@ from pathlib import Path
 import requests
 from prometheus_client import Counter, Histogram, start_http_server
 
-from codeguard.api.audits import fail_audit_for_dead_letter, finish_audit, mark_running
-from codeguard.cli import AuditStats, run_audit
+from codeguard.api.audits import (
+    OUTCOME_TO_STATUS,
+    fail_audit_for_dead_letter,
+    finish_audit,
+    mark_running,
+)
+from codeguard.cli import AuditOutcome, AuditStats, run_audit
 from codeguard.config import Settings, get_settings, verify_required_settings
 from codeguard.diff.ingest import ingest_pr_diff
 from codeguard.github.auth import get_installation_token
@@ -575,23 +580,38 @@ async def handle_repo_audit(job: Job, pool, abandoned: asyncio.Event) -> bool:
             )
             return False
 
-        if error:
-            await finish_audit(
-                pool, audit_id, status="failed", exit_code=exit_code,
-                error=error, report_markdown=report or None,
-                tokens_in=stats.tokens_in, tokens_out=stats.tokens_out,
-                estimated_cost_usd=stats.estimated_cost_usd, duration_s=duration,
+        # Mapped from the TYPED outcome, never from the message. Before
+        # this, exit code 1 meant status 'failed' for every refusal, so
+        # "this repository is too large" and "the worker crashed" were
+        # stored identically -- and the only thing telling them apart was
+        # the wording of a string. See cli.AuditOutcome and
+        # audits.OUTCOME_TO_STATUS.
+        outcome = stats.outcome
+        if error and outcome is AuditOutcome.COMPLETED:
+            # Inconsistent: run_audit reported a problem but left the
+            # outcome at its default. Believe the error, not the default --
+            # storing 'done' alongside an error message would show a
+            # visitor a clean-looking result for an audit that did not
+            # finish. Defensive: every real path in run_audit records an
+            # outcome, so reaching this means a caller or a future branch
+            # forgot one.
+            logger.warning(
+                "audit %s: error reported with outcome=completed; recording failed instead",
+                audit_id,
             )
-            logger.warning("audit %s failed: %s", audit_id, error)
-        else:
-            await finish_audit(
-                pool, audit_id, status="done", exit_code=exit_code,
-                report_markdown=report,
-                tokens_in=stats.tokens_in, tokens_out=stats.tokens_out,
-                estimated_cost_usd=stats.estimated_cost_usd, duration_s=duration,
-            )
-            logger.info("audit %s completed in %.1fs (exit=%s, %d chars)",
-                        audit_id, duration, exit_code, len(report))
+            outcome = AuditOutcome.FAILED
+        status = OUTCOME_TO_STATUS[outcome.value]
+        await finish_audit(
+            pool, audit_id, status=status, exit_code=exit_code,
+            error=error or stats.message,
+            report_markdown=report or None,
+            tokens_in=stats.tokens_in, tokens_out=stats.tokens_out,
+            estimated_cost_usd=stats.estimated_cost_usd, duration_s=duration,
+        )
+        log = logger.info if status == "done" else logger.warning
+        log("audit %s -> %s in %.1fs (exit=%s, %d report chars)%s",
+            audit_id, status, duration, exit_code, len(report),
+            f": {error}" if error else "")
     except Exception as exc:
         # Nothing from run_audit's own error path reaches here -- it
         # returns failures rather than raising. This is the unexpected

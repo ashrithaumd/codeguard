@@ -34,7 +34,18 @@ logger = logging.getLogger(__name__)
 # demo budget exhausted. 'failed' is tried-and-broke. Both are terminal --
 # the distinction is what the page tells the user to do next, not whether
 # the audit is over. See migration 010.
-TERMINAL = ("done", "failed", "rejected")
+TERMINAL = ("done", "failed", "rejected", "timed_out")
+
+# cli.AuditOutcome -> audits.status. The worker maps through this table and
+# NEVER by reading a message, so rewording user-facing copy cannot change
+# how an audit is stored. See migration 011 for why timed_out is its own
+# status rather than a flavour of 'failed'.
+OUTCOME_TO_STATUS = {
+    "completed": "done",
+    "rejected": "rejected",
+    "timed_out": "timed_out",
+    "failed": "failed",
+}
 
 _COLUMNS = """
     id, owner, repo, requested_by, private, status, job_id,

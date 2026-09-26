@@ -33,6 +33,7 @@ from urllib.parse import urlsplit
 
 import requests
 
+from codeguard.api.access import audit_api_token
 from codeguard.redact import redact
 
 _API = "https://api.github.com"
@@ -49,6 +50,27 @@ _SEGMENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 # BEFORE cloning -- measuring the clone directory afterwards means the
 # repository is already on disk, which is the cost we are trying to avoid.
 MAX_REPO_SIZE_KB = 250_000
+
+
+NOT_FOUND_MESSAGE = (
+    "We couldn't find a public repository at that URL. "
+    "CodeGuard can only audit public repositories."
+)
+
+
+def _is_rate_limited(resp) -> bool:
+    """GitHub signals throttling as 403 with no remaining quota, or 429.
+
+    A plain 403 is a permission problem and must NOT be reported as "try
+    again in a minute", so the remaining-quota header is what distinguishes
+    them rather than the status alone.
+    """
+    if resp.status_code == 429:
+        return True
+    if resp.status_code != 403:
+        return False
+    remaining = (getattr(resp, "headers", None) or {}).get("x-ratelimit-remaining")
+    return remaining == "0"
 
 
 class RepoRejected(Exception):
@@ -124,18 +146,41 @@ def verify_public_and_sized(owner: str, repo: str) -> dict:
                  a private repository on their behalf
       size       refused here, BEFORE the clone, from GitHub's own figure
 
-    Unauthenticated deliberately: this asks a question about a PUBLIC
-    repository, and sending the App JWT would let a visitor probe whether
-    a private repository exists by watching which error they get.
+    AUTHENTICATED, with an installation token. The first version called
+    GitHub anonymously, reasoning that an anonymous call cannot be used to
+    probe for private repositories -- true, but unauthenticated GitHub
+    allows 60 REQUESTS PER HOUR PER IP and every visitor shares the api's
+    IP. After roughly 60 audits in an hour the gate refused everything,
+    and refused with "we couldn't find a public repository at that URL":
+    a message that sends the user to fix a URL that was never wrong. An
+    installation token raises the limit to 5,000/hour.
 
-    Anything that is not a clear 200 -- 404, 403, a rate limit, a 5xx, a
-    timeout -- is not an answer and is refused. "The lookup failed" has no
-    safe default that means yes.
+    The probing concern moves here instead of being solved by staying
+    anonymous: NOT_FOUND_MESSAGE is returned for `private: true` AND for
+    404, identically, so the response reveals nothing about whether a
+    private repository exists. An installation token CAN see private repos
+    the App is installed on, so that identity has to be deliberate rather
+    than incidental.
+
+    Rate limiting is its own branch. "GitHub is busy, try again" and "that
+    repository does not exist" are different instructions, and giving the
+    second when the first is true wastes the user's time entirely.
+
+    Anything else that is not a clear 200 is refused. "The lookup failed"
+    has no safe default that means yes, and no token means refuse rather
+    than quietly fall back to the 60/hour path.
     """
+    token = audit_api_token()
+    if not token:
+        raise RepoRejected(
+            "We couldn't check that repository just now. Please try again."
+        )
+
     try:
         resp = requests.get(
             f"{_API}/repos/{owner}/{repo}",
-            headers={"Accept": "application/vnd.github+json"},
+            headers={"Accept": "application/vnd.github+json",
+                     "Authorization": f"Bearer {token}"},
             timeout=_TIMEOUT,
         )
     except Exception as exc:  # noqa: BLE001 - every transport failure is one refusal
@@ -143,15 +188,12 @@ def verify_public_and_sized(owner: str, repo: str) -> dict:
             "We couldn't reach GitHub to check that repository. Please try again."
         ) from exc
 
-    if resp.status_code == 404:
-        # 404 is also what GitHub returns for a private repository to an
-        # unauthenticated caller, and that conflation is useful here: the
-        # message is the same either way, so this cannot be used to
-        # discover whether a private repository exists.
+    if _is_rate_limited(resp):
         raise RepoRejected(
-            "We couldn't find a public repository at that URL. "
-            "CodeGuard can only audit public repositories."
+            "GitHub is busy right now. Please try again in a minute."
         )
+    if resp.status_code == 404:
+        raise RepoRejected(NOT_FOUND_MESSAGE)
     if resp.status_code != 200:
         raise RepoRejected(
             "We couldn't check that repository just now. Please try again."
@@ -165,7 +207,11 @@ def verify_public_and_sized(owner: str, repo: str) -> dict:
         ) from exc
 
     if info.get("private", True):
-        raise RepoRejected("CodeGuard can only audit public repositories.")
+        # IDENTICAL to the 404 message, deliberately. An installation token
+        # can see private repositories the App is installed on, so without
+        # this a visitor could tell "that private repo exists" from
+        # "nothing there" by which refusal came back.
+        raise RepoRejected(NOT_FOUND_MESSAGE)
 
     size_kb = info.get("size") or 0
     if size_kb > MAX_REPO_SIZE_KB:

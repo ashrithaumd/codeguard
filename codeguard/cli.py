@@ -37,6 +37,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import NamedTuple
 
@@ -439,6 +440,8 @@ class VerdictLayerResult(NamedTuple):
 def _run_verdict_layer(
     verdict_fn: Callable[[FileReviewState], dict],
     owner: str, repo: str, files: dict[str, str], findings_by_file: dict[str, list[Finding]],
+    chunk_budget: int | None = None,
+    deadline: "_Deadline | None" = None,
 ) -> VerdictLayerResult:
     """Shared driver for review_security/review_ai_aware in audit mode.
     findings_by_file: path -> that file's raw findings for this agent's
@@ -470,7 +473,8 @@ def _run_verdict_layer(
         if not raw_findings:
             continue
         content = files[path]
-        boundaries = _chunk_file_by_ast(content, _effective_chunk_budget(raw_findings))
+        budget = chunk_budget or _effective_chunk_budget(raw_findings)
+        boundaries = _chunk_file_by_ast(content, budget)
         if boundaries is None:
             call_failures.append((path, "not parseable as Python; reviewed as one oversized, unchunked call"))
             boundaries = [(1, max(len(content.splitlines()), 1))]
@@ -491,6 +495,19 @@ def _run_verdict_layer(
                 "patch": "",
                 "findings": chunk_findings, "hunk_cache_hits": {},
             }
+            # THE expensive line, so THE place the clock belongs. Checked
+            # per chunk rather than per stage: this layer makes one model
+            # call per chunk, so a boundary check before the layer bounds
+            # nothing once a large repository is inside it.
+            #
+            # The partial spend rides out on the exception because tokens
+            # burned before the clock ran out were still burned, and the
+            # audits row is where the operator looks for them.
+            if deadline is not None and deadline.expired:
+                raise DeadlineExceeded(
+                    f"during the verdict layer, at {path}:{start}-{end}",
+                    tokens_in=tokens_in, tokens_out=tokens_out, cost=cost,
+                )
             result = verdict_fn(state)
             for failure in result.get("verdict_call_failures", []):
                 call_failures.append((
@@ -640,6 +657,33 @@ def _parse_owner_repo(url: str) -> tuple[str, str] | None:
     return None
 
 
+class AuditOutcome(str, Enum):
+    """How an audit ended, as a VALUE rather than as a message to parse.
+
+    run_audit previously returned (1, message) for a timeout, for a
+    repository with no Python, and for every other refusal, and the worker
+    mapped exit code 1 to status 'failed'. So "this repository is too
+    large" and "the worker crashed" were stored identically, and the only
+    thing telling them apart was the wording of a string -- which breaks
+    the first time someone rewords it, silently, in the direction of
+    telling users to retry something that can never work.
+
+    The four are distinguished by what the reader should DO:
+
+      COMPLETED  here are the findings
+      REJECTED   we declined: too large, not public, no Python, budget
+                 exhausted. Retrying unchanged will not help
+      TIMED_OUT  we started and ran out of time. A smaller repository
+                 might work
+      FAILED     something broke. Retrying is reasonable
+    """
+
+    COMPLETED = "completed"
+    REJECTED = "rejected"
+    TIMED_OUT = "timed_out"
+    FAILED = "failed"
+
+
 @dataclass
 class AuditStats:
     """Economics of one audit, filled in by run_audit.
@@ -662,13 +706,32 @@ class AuditStats:
     estimated_cost_usd: float = 0.0
     duration_s: float = 0.0
 
+    # HOW it ended, as a value. The worker maps this to audits.status
+    # WITHOUT reading the message, so rewording user-facing copy cannot
+    # change how an audit is stored. See AuditOutcome.
+    outcome: AuditOutcome = AuditOutcome.COMPLETED
+    message: str | None = None
+
 
 class DeadlineExceeded(Exception):
     """The audit ran out of its wall-clock budget. Internal only.
 
     Never shown to a user: run_audit converts it into the friendly
     TIMEOUT_MESSAGE. An exception class name is not an instruction.
+
+    Carries whatever the interrupted stage had already spent. A timeout is
+    not a reason to lose the accounting -- tokens burned before the clock
+    ran out were still burned, and the audits row is what the operator
+    reads to see where the money went.
     """
+
+    def __init__(self, stage: str, *, tokens_in: int = 0, tokens_out: int = 0,
+                 cost: float = 0.0):
+        super().__init__(stage)
+        self.stage = stage
+        self.tokens_in = tokens_in
+        self.tokens_out = tokens_out
+        self.cost = cost
 
 
 class _Deadline:
@@ -731,6 +794,17 @@ NO_PYTHON_MESSAGE = (
 )
 
 
+def _record(stats: "AuditStats | None", outcome: AuditOutcome, message: str | None) -> None:
+    """One place that writes the outcome, so no exit path can forget.
+
+    Kept separate from the `finally` that records duration because the
+    outcome is decided per branch while duration is the same everywhere.
+    """
+    if stats is not None:
+        stats.outcome = outcome
+        stats.message = message
+
+
 def run_audit(
     target: str, output_path: str, post_issue_flag: bool,
     stats: "AuditStats | None" = None,
@@ -784,6 +858,7 @@ def run_audit(
                 # redacted too rather than trusted to have masked itself.
                 error = f"git clone failed: {redact(e.stderr or '')}"
                 print(error, file=sys.stderr)
+                _record(stats, AuditOutcome.FAILED, error)
                 return 1, error
             root = Path(tmp_dir)
         else:
@@ -791,6 +866,7 @@ def run_audit(
             if not root.is_dir():
                 error = f"{safe_target} is not a directory and not a recognizable git URL"
                 print(error, file=sys.stderr)
+                _record(stats, AuditOutcome.FAILED, error)
                 return 1, error
 
         deadline.check("after cloning, before reading the repository")
@@ -812,6 +888,7 @@ def run_audit(
         if not all_files:
             error = NO_PYTHON_MESSAGE
             print(error, file=sys.stderr)
+            _record(stats, AuditOutcome.REJECTED, error)
             return 1, error
 
         deadline.check("before the scanners")
@@ -838,6 +915,7 @@ def run_audit(
         deadline.check("before the security verdict layer")
         sec = _run_verdict_layer(
             review_security, "audit", root.name, files, security_findings_by_file,
+            deadline=deadline,
         )
 
         files_ai_aware = sum(1 for c in files.values() if _file_touches_ai_markers(c))
@@ -848,6 +926,7 @@ def run_audit(
             }
             aa = _run_verdict_layer(
                 review_ai_aware, "audit", root.name, files, ai_aware_findings_by_file,
+                deadline=deadline,
             )
         else:
             aa = VerdictLayerResult([], [], 0, 0, 0.0, [])
@@ -918,13 +997,21 @@ def run_audit(
                     url = post_issue(token, owner, repo, report)
                     print(f"Issue posted: {url}", file=sys.stderr)
 
+        _record(stats, AuditOutcome.COMPLETED, None)
         return 0, None
     except DeadlineExceeded as exc:
         # The internal reason goes to the log; the user gets
         # TIMEOUT_MESSAGE. An exception class name and a stage label are
         # diagnostics, not instructions.
         logger.warning("audit of %s exceeded its deadline: %s", safe_target, exc)
+        # Whatever the interrupted layer had already spent rides on the
+        # exception; losing it would under-report real money.
+        if stats is not None:
+            stats.tokens_in = stats.tokens_in or exc.tokens_in
+            stats.tokens_out = stats.tokens_out or exc.tokens_out
+            stats.estimated_cost_usd = stats.estimated_cost_usd or exc.cost
         print(TIMEOUT_MESSAGE, file=sys.stderr)
+        _record(stats, AuditOutcome.TIMED_OUT, TIMEOUT_MESSAGE)
         return 1, TIMEOUT_MESSAGE
     except subprocess.TimeoutExpired:
         # The clone hit git's own timeout, which is the deadline arriving
@@ -932,6 +1019,7 @@ def run_audit(
         # message: from the user's side it is the same event.
         logger.warning("clone of %s timed out", safe_target)
         print(TIMEOUT_MESSAGE, file=sys.stderr)
+        _record(stats, AuditOutcome.TIMED_OUT, TIMEOUT_MESSAGE)
         return 1, TIMEOUT_MESSAGE
     finally:
         # Whatever happened, report the clock. A timeout is not a reason to

@@ -390,6 +390,48 @@ def installed_repositories() -> list[dict]:
     return repos
 
 
+def audit_api_token() -> str | None:
+    """An installation token for reading public repository metadata.
+
+    WHY AUTHENTICATE AT ALL. The public/size gate previously called
+    /repos/{owner}/{repo} unauthenticated, reasoning that an anonymous call
+    cannot be used to probe for private repositories. True, but
+    unauthenticated GitHub is limited to 60 REQUESTS PER HOUR PER IP, and
+    every visitor shares the api's IP -- so after roughly 60 audits in an
+    hour the gate refuses everything, and refuses with the wrong message.
+    An installation token raises that to 5,000/hour.
+
+    The probing concern is handled where it belongs instead:
+    repo_url.verify_public_and_sized returns ONE IDENTICAL MESSAGE for
+    `private: true` and for 404, so the response still says nothing about
+    whether a private repository exists.
+
+    ANY installation's token will do -- this reads public metadata, not
+    repository contents -- so the first one is taken. Returns None when no
+    installation exists or GitHub cannot be reached, and the caller FAILS
+    CLOSED rather than falling back to the 60/hour path, which is the bug
+    rather than the remedy.
+
+    Not cached here: get_installation_token is deliberately uncached (see
+    github/auth.py -- one token per unit of work, smaller blast radius),
+    and _installed_cache already spares us the /app/installations call on
+    the common path.
+    """
+    try:
+        installations = _app_installations()
+    except InstallationLookupFailed:
+        logger.warning("no installation available for the audit API token", exc_info=True)
+        return None
+    if not installations:
+        logger.warning("the App has no installations; cannot authenticate repo lookups")
+        return None
+    try:
+        return get_installation_token(installations[0]["id"])
+    except Exception:
+        logger.warning("could not mint an installation token for repo lookups", exc_info=True)
+        return None
+
+
 def installation_settings_url(installation_id: int | None) -> str:
     """Where a user goes to connect or disconnect a repository.
 

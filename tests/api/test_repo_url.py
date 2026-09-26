@@ -39,6 +39,20 @@ from codeguard.api.repo_url import (
     verify_public_and_sized,
 )
 
+@pytest.fixture(autouse=True)
+def _installation_token(monkeypatch):
+    """A token is always available unless a test says otherwise.
+
+    Autouse here is safe in a way it would not be for a security gate:
+    the token is PLUMBING, not the control. The controls are the
+    private/404/size branches, and every one of them is asserted
+    explicitly. The no-token path has its own test
+    (test_no_token_available_fails_closed) which overrides this.
+    """
+    monkeypatch.setattr("codeguard.api.repo_url.audit_api_token",
+                        lambda: "ghs_FIXTURE_TOKEN")
+
+
 ACCEPTED = [
     ("https://github.com/psf/requests", ("psf", "requests")),
     ("https://github.com/psf/requests/", ("psf", "requests")),
@@ -171,3 +185,127 @@ def test_the_rejection_message_never_contains_a_token():
     with pytest.raises(RepoRejected) as caught:
         parse_public_github_url(f"https://{token}@github.com/o/r")
     assert token not in str(caught.value)
+
+
+# --------------------------------------------------------------------------
+# Correction 2: the check must be AUTHENTICATED.
+#
+# THE VULNERABILITY THIS REPRODUCES
+# Unauthenticated GitHub API calls are limited to 60 PER HOUR PER IP, and
+# every visitor shares the api's IP. After roughly 60 audits in an hour the
+# gate starts refusing everything -- and because a rate-limited response
+# was handled by the same branch as any other non-200, it refused with
+# "we couldn't find a public repository at that URL": a misleading message
+# that sends the user to check a URL that is perfectly fine.
+#
+# An installation token raises the limit to 5,000/hour. The probing concern
+# the unauthenticated call was protecting against is handled instead by
+# returning ONE IDENTICAL MESSAGE for `private: true` and for 404, so the
+# response still reveals nothing about whether a private repo exists.
+# --------------------------------------------------------------------------
+
+
+def _resp_with_headers(status, body=None, headers=None):
+    class R:
+        status_code = status
+
+        def __init__(self):
+            self.headers = headers or {}
+
+        def json(self):
+            return body if body is not None else {}
+    return R()
+
+
+def test_the_check_uses_an_installation_token():
+    """60/hour shared across all visitors is not a usable budget."""
+    seen = {}
+
+    def fake_get(url, headers=None, timeout=None):
+        seen["auth"] = (headers or {}).get("Authorization", "")
+        return _resp_with_headers(200, _repo_api())
+
+    with patch("codeguard.api.repo_url.requests.get", side_effect=fake_get), \
+         patch("codeguard.api.repo_url.audit_api_token", return_value="ghs_TESTTOKEN"):
+        verify_public_and_sized("psf", "requests")
+
+    assert seen["auth"].startswith("Bearer "), "the call must be authenticated"
+    assert "ghs_TESTTOKEN" in seen["auth"]
+
+
+def test_a_private_repo_and_a_missing_repo_give_the_SAME_message():
+    """The probing defence, now that the call is authenticated.
+
+    An installation token can see private repositories it is installed on,
+    so `private: true` is a real answer rather than a 404 -- which means the
+    two messages have to be made identical deliberately. If they differed,
+    a visitor could tell "this private repo exists" from "nothing here".
+    """
+    with patch("codeguard.api.repo_url.audit_api_token", return_value="t"):
+        with patch("codeguard.api.repo_url.requests.get",
+                   return_value=_resp_with_headers(200, _repo_api(private=True))):
+            with pytest.raises(RepoRejected) as private_err:
+                verify_public_and_sized("acme", "secret")
+
+        with patch("codeguard.api.repo_url.requests.get",
+                   return_value=_resp_with_headers(404)):
+            with pytest.raises(RepoRejected) as missing_err:
+                verify_public_and_sized("no", "such")
+
+    assert str(private_err.value) == str(missing_err.value), (
+        "private and missing must be indistinguishable"
+    )
+
+
+def test_a_rate_limited_response_says_try_again_not_not_found():
+    """403 with the rate-limit marker. Telling the user their URL is wrong
+    when the truth is "we are throttled" sends them to fix nothing."""
+    with patch("codeguard.api.repo_url.audit_api_token", return_value="t"), \
+         patch("codeguard.api.repo_url.requests.get",
+               return_value=_resp_with_headers(
+                   403, {"message": "API rate limit exceeded"},
+                   {"x-ratelimit-remaining": "0"})):
+        with pytest.raises(RepoRejected) as caught:
+            verify_public_and_sized("o", "r")
+
+    message = str(caught.value).lower()
+    assert "again" in message, "must invite a retry"
+    assert "couldn't find" not in message and "could not find" not in message
+
+
+def test_a_429_is_also_treated_as_rate_limiting():
+    with patch("codeguard.api.repo_url.audit_api_token", return_value="t"), \
+         patch("codeguard.api.repo_url.requests.get",
+               return_value=_resp_with_headers(429, {"message": "Too Many Requests"})):
+        with pytest.raises(RepoRejected) as caught:
+            verify_public_and_sized("o", "r")
+
+    assert "again" in str(caught.value).lower()
+
+
+def test_a_403_that_is_not_rate_limiting_is_not_a_retry_invitation():
+    """A genuine permission 403 is not "try again in a minute"."""
+    with patch("codeguard.api.repo_url.audit_api_token", return_value="t"), \
+         patch("codeguard.api.repo_url.requests.get",
+               return_value=_resp_with_headers(403, {"message": "Forbidden"},
+                                               {"x-ratelimit-remaining": "4999"})):
+        with pytest.raises(RepoRejected):
+            verify_public_and_sized("o", "r")
+
+
+def test_no_token_available_fails_closed():
+    """If we cannot authenticate we do not silently fall back to the
+    60/hour unauthenticated path -- that is the bug, not the remedy."""
+    with patch("codeguard.api.repo_url.audit_api_token", return_value=None):
+        with pytest.raises(RepoRejected):
+            verify_public_and_sized("o", "r")
+
+
+def test_an_oversized_repo_is_still_rejected_when_authenticated():
+    with patch("codeguard.api.repo_url.audit_api_token", return_value="t"), \
+         patch("codeguard.api.repo_url.requests.get",
+               return_value=_resp_with_headers(200, _repo_api(size=MAX_REPO_SIZE_KB + 1))):
+        with pytest.raises(RepoRejected) as caught:
+            verify_public_and_sized("big", "repo")
+
+    assert "too large" in str(caught.value).lower()
