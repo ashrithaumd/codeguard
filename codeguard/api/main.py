@@ -10,6 +10,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from codeguard.api import audits
 from codeguard.api.auth import require_metrics_token
+from codeguard.api.headers import SecurityHeadersMiddleware
 from codeguard.api.routes.dashboard import (
     STATIC_DIR,
     asset_version,
@@ -113,6 +114,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="CodeGuard API", lifespan=lifespan)
+app.add_middleware(SecurityHeadersMiddleware)
 app.include_router(health_router)
 app.include_router(webhooks_router)
 app.include_router(dashboard_router)

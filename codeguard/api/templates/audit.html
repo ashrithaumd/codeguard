@@ -98,7 +98,7 @@
   costs nothing, and it backs off if the endpoint starts failing rather
   than hammering a struggling api.
 #}
-<script>
+<script nonce="{{ csp_nonce }}">
 (function () {
   var url = "/dashboard/audits/{{ audit.id }}.json";
   var delay = 2000;

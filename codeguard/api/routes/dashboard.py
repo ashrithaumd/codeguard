@@ -101,7 +101,15 @@ def _page(request: Request, name: str, principal: str | None, **context) -> HTML
     response = templates.TemplateResponse(
         request=request, name=name,
         context={"principal": principal, "asset_version": asset_version(),
-                 "csrf_token": token, **context},
+                 "csrf_token": token,
+                 # Minted by SecurityHeadersMiddleware, which runs before
+                 # this route, so the header and every inline <script>
+                 # carry the same value. Empty default rather than a
+                 # KeyError: a page rendered with no nonce is a page whose
+                 # scripts do not run, which is bad, but a 500 on a route
+                 # the middleware somehow missed would be worse.
+                 "csp_nonce": getattr(request.state, "csp_nonce", ""),
+                 **context},
     )
     csrf.attach(request, response, token)
     return response

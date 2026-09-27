@@ -19,7 +19,7 @@
   navigation. Wrapped because localStorage throws outright in some
   privacy modes, and a theme preference is never worth a broken page.
 #}
-<script>
+<script nonce="{{ csp_nonce }}">
   try {
     var t = localStorage.getItem("cg-theme");
     if (t === "dark" || t === "light") document.documentElement.setAttribute("data-theme", t);
@@ -120,7 +120,7 @@
   </footer>
 </main>
 
-<script>
+<script nonce="{{ csp_nonce }}">
   (function () {
     var btn = document.getElementById("theme-toggle");
     if (!btn) return;
