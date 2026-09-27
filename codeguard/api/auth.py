@@ -106,6 +106,9 @@ _DIAG_HEADERS = (
 # on the user's own public profile, but neither is printed regardless.
 _DIAG_KNOWN_LOGIN = "ashrithaumd"
 _DIAG_KNOWN_DISPLAY = "Ashritha Pola"
+# Both accounts share the display name, so a third comparison is needed to
+# tell WHICH login urn:github:login carries. Still no values logged.
+_DIAG_OTHER_LOGIN = "AshrithaPola"
 
 
 def _log_easyauth_shape(request: Request) -> None:
@@ -125,11 +128,12 @@ def _log_easyauth_shape(request: Request) -> None:
                 c.get("typ") or c.get("Typ"),
                 (c.get("val") or c.get("Val") or "") == _DIAG_KNOWN_LOGIN,
                 (c.get("val") or c.get("Val") or "") == _DIAG_KNOWN_DISPLAY,
+                (c.get("val") or c.get("Val") or "") == _DIAG_OTHER_LOGIN,
             )
             for c in claims
         ]
         logger.warning(
-            "EASYAUTH-DIAG headers_present=%s name_typ=%r claims(typ,is_login,is_display)=%s",
+            "EASYAUTH-DIAG headers_present=%s name_typ=%r claims(typ,is_owner_login,is_display,is_other_login)=%s",
             present, decoded.get("name_typ") or decoded.get("nameTyp"), shape,
         )
     except Exception as exc:  # diagnostics must never break a page
