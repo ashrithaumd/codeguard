@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import os
 import sys
 from urllib.parse import urlsplit, urlunsplit
@@ -26,7 +27,8 @@ import uuid
 from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
-from codeguard.queue.db import MIGRATIONS_DIR, _configure_connection
+from codeguard.config import Settings, get_settings
+from codeguard.queue.db import _configure_connection, bootstrap_schema
 
 _DEFAULT_DATABASE_URL = "postgresql://codeguard:codeguard_dev_only@localhost:5433/codeguard"
 
@@ -77,15 +79,59 @@ async def pool():
         configure=_configure_connection, open=False,
     )
     await p.open()
+    # bootstrap_schema, NOT a hand-rolled copy of its loop.
+    #
+    # This WAS the loop, inlined, and that made it the one migration
+    # runner in the codebase that does not take
+    # pg_advisory_xact_lock(_MIGRATION_LOCK_KEY). The api's TestClient
+    # lifespan calls the real bootstrap_schema against this same test
+    # database, so an unlocked copy here raced a locked one there and
+    # produced DeadlockDetected in fixture setup -- reported against
+    # whichever unrelated test happened to be next.
+    #
+    # Exactly the failure the advisory lock was added to prevent, reached
+    # by writing a second implementation that opted out of it. The lesson
+    # is the general one: a lock is only a lock if every path takes it.
+    await bootstrap_schema(p)
     async with p.connection() as conn:
-        for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
-            await conn.execute(path.read_text())
         await conn.execute(_TRUNCATE)
     yield p
     await p.close()
 
 
 TEST_PRINCIPAL = "test-user"
+
+
+# Real ids for the accounts these tests name. Real rather than invented
+# because the defect that moved the allow-list to ids was found in exactly
+# this pair -- both carry the display name "Ashritha Pola", so before the fix
+# they were one indistinguishable principal.
+REAL_IDS = {
+    "ashrithaumd": "183667058",
+    "ashrithapola": "60956648",
+}
+
+
+def principal_id(login: str) -> str:
+    """The numeric id for a test login: the real one where it exists, and a
+    stable synthetic otherwise.
+
+    Deterministic, so the same login always yields the same id across files
+    and runs, and distinct, so two different logins can never collide into
+    one operator.
+
+    sha256, NOT the builtin hash(): str.__hash__ is salted per process
+    unless PYTHONHASHSEED is fixed, so ids would have differed run to run —
+    which for a value that decides operator rights in a test is the kind of
+    flakiness that gets diagnosed twice and understood neither time.
+    """
+    known = REAL_IDS.get(login.lower())
+    if known:
+        return known
+    digest = hashlib.sha256(login.lower().encode()).hexdigest()
+    # Offset well clear of the real ids above so a synthetic can never
+    # accidentally equal one.
+    return str(900_000_000 + int(digest[:8], 16) % 10_000_000)
 
 
 @contextlib.contextmanager
@@ -107,6 +153,11 @@ def _identity(principal: str | None, *, collaborator: bool):
     base = get_settings().model_dump()
     base.update({
         "dashboard_dev_principal": principal or "",
+        # The same login -> id mapping as_principal uses, so the default
+        # signed-in client and an as_principal one describe the same person.
+        # Note it grants nothing on its own: operator rights come from the
+        # allow-list, which this leaves alone.
+        "dashboard_dev_principal_id": principal_id(principal) if principal else "",
         "dashboard_trust_dev_principal": bool(principal),
     })
     patched = Settings(**base)
@@ -210,3 +261,51 @@ async def insert_review(pool, **over):
              row["estimated_cost_usd"]),
         )
     return row["job_id"]
+
+
+# ---------------------------------------------------------------------------
+# Signing a visitor in, and the login -> numeric id mapping that needs.
+#
+# ONE fixture, in conftest, replacing three identical copies that lived in
+# test_repositories.py, test_csrf.py and test_audit_ownership.py. They had to
+# be consolidated rather than each given the same new field: the operator
+# allow-list now matches GitHub's immutable numeric id rather than the login
+# (Settings.dashboard_audit_principals), so every one of them needs a
+# login -> id mapping, and three copies of a mapping is three chances for a
+# test to mean "the operator" while another means someone else.
+# ---------------------------------------------------------------------------
+
+
+
+@pytest.fixture
+def as_principal(monkeypatch):
+    """Sign a visitor in without EasyAuth, via the existing dev override.
+
+    Uses the two-key form the setting requires -- a username AND an explicit
+    trust flag -- rather than injecting headers, so the test exercises the
+    same path a local dev run does.
+
+    `audit_principals` is given here as LOGINS and translated to ids, purely
+    so these tests stay readable. THAT TRANSLATION IS A TEST CONVENIENCE AND
+    NOT THE PRODUCTION RULE: a login in DASHBOARD_AUDIT_PRINCIPALS is inert,
+    which tests/api/test_identity.py pins directly against Settings
+    (test_the_allow_list_refuses_a_login_entirely).
+    """
+    def _sign_in(login: str | None, *, audit_principals: str = ""):
+        allowed_ids = ",".join(
+            principal_id(entry.strip())
+            for entry in audit_principals.split(",")
+            if entry.strip()
+        )
+        base = get_settings().model_dump()
+        base.update({
+            "dashboard_dev_principal": login or "",
+            "dashboard_dev_principal_id": principal_id(login) if login else "",
+            "dashboard_trust_dev_principal": bool(login),
+            "dashboard_audit_principals": allowed_ids,
+        })
+        patched = Settings(**base)
+        monkeypatch.setattr("codeguard.api.auth.get_settings", lambda: patched)
+        monkeypatch.setattr("codeguard.api.routes.dashboard.get_settings", lambda: patched)
+        return patched
+    return _sign_in

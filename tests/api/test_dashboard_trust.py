@@ -176,9 +176,22 @@ async def test_an_anonymous_visitor_gets_a_sign_in_button(pool, anon_client):
 
 @pytest.mark.asyncio
 async def test_a_signed_in_visitor_gets_sign_out(pool, client):
-    await insert_review(pool)
+    """Patches client_VIEWER, not client_principal.
 
-    with patch("codeguard.api.routes.dashboard.client_principal", return_value="alice"):
+    A bare /dashboard redirects a signed-in visitor to /dashboard/repos, and
+    that page now reads the whole viewer — the login for access decisions,
+    the immutable id for operator rights, the display name for this very
+    nav. Patching client_principal left the identity the page actually used
+    unpatched, so the assertion was reading the fixture's principal rather
+    than the one under test.
+    """
+    from codeguard.api.auth import Viewer
+
+    await insert_review(pool)
+    alice = Viewer(login="alice", user_id="4242", display_name="Alice Example")
+
+    with patch("codeguard.api.routes.dashboard.client_viewer", return_value=alice), \
+         patch("codeguard.api.routes.dashboard.client_principal", return_value="alice"):
         text = client.get("/dashboard").text
 
     assert "alice" in text

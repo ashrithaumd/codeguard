@@ -94,6 +94,22 @@ async def lifespan(app: FastAPI):
             "METRICS_AUTH_TOKEN is not set — /metrics is UNAUTHENTICATED. Fine for local "
             "compose; on a public ingress it exposes repo names, job counts and cost."
         )
+    # A misconfigured allow-list fails CLOSED, so its only symptom is a
+    # button that is absent — indistinguishable from "not configured yet".
+    # Naming the bad entries is the difference between a five-minute fix and
+    # an afternoon. Entries are numeric GitHub user ids now, not logins; see
+    # Settings.dashboard_audit_principals for why a login is inert rather
+    # than accepted.
+    if settings.audit_principals_ignored:
+        logger.warning(
+            "DASHBOARD_AUDIT_PRINCIPALS contains %d entry/entries that are not "
+            "numeric GitHub user ids and are therefore IGNORED: %s. The audit "
+            "button will be absent for them. Use the numeric id (GitHub's "
+            "/users/<login> API reports it); a login is not accepted, because a "
+            "renamed login can be re-registered by someone else.",
+            len(settings.audit_principals_ignored),
+            ", ".join(settings.audit_principals_ignored),
+        )
     if settings.dashboard_trust_dev_principal:
         logger.warning(
             "DASHBOARD_TRUST_DEV_PRINCIPAL is on — dashboard identity is forced to %r and "

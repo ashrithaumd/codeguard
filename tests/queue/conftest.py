@@ -20,7 +20,7 @@ from urllib.parse import urlsplit, urlunsplit
 import pytest_asyncio
 from psycopg_pool import AsyncConnectionPool
 
-from codeguard.queue.db import MIGRATIONS_DIR, _configure_connection
+from codeguard.queue.db import _configure_connection, bootstrap_schema
 
 # A separate database from the one docker-compose's live api/worker
 # containers use, on the same Postgres server — not just for hygiene.
@@ -69,9 +69,21 @@ async def pool():
         configure=_configure_connection, open=False,
     )
     await p.open()
+    # bootstrap_schema, NOT a hand-rolled copy of its loop.
+    #
+    # This WAS the loop, inlined, and that made it the one migration
+    # runner in the codebase that does not take
+    # pg_advisory_xact_lock(_MIGRATION_LOCK_KEY). The api's TestClient
+    # lifespan calls the real bootstrap_schema against this same test
+    # database, so an unlocked copy here raced a locked one there and
+    # produced DeadlockDetected in fixture setup -- reported against
+    # whichever unrelated test happened to be next.
+    #
+    # Exactly the failure the advisory lock was added to prevent, reached
+    # by writing a second implementation that opted out of it. The lesson
+    # is the general one: a lock is only a lock if every path takes it.
+    await bootstrap_schema(p)
     async with p.connection() as conn:
-        for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
-            await conn.execute(path.read_text())
         # Alphabetical, matching tests/api/conftest.py's _TRUNCATE. These
         # two overlap on `audits` and `jobs`, and TRUNCATE locks in the
         # order written, so an inconsistent order between them is a

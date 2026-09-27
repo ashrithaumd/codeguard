@@ -157,27 +157,47 @@ everything through, so **authorization is this application's job**. The
 strips it from requests that arrive without it — which holds only for
 traffic through that ingress.
 
-> **OPEN DEFECT (2026-09-27), not yet fixed.** That header carries the
-> GitHub **display name**, not the login, whenever a display name is set.
-> Every access decision therefore asks GitHub about a collaborator who does
-> not exist, and the deployed dashboard shows **zero repositories to
-> everyone, including the owner**. Measured in production:
-> `installed_repositories()` returns 11, rows rendered are 0,
-> `_is_collaborator(…, 'ashrithaumd')` is true and
-> `_is_collaborator(…, 'Ashritha Pola')` is false.
+**The login comes from the claims blob, not from that header.**
+`X-MS-CLIENT-PRINCIPAL-NAME` is built from EasyAuth's `name_typ`, which for
+the GitHub provider is `claims/name` — the **display name**. Identity is
+read from `urn:github:login` in `X-MS-CLIENT-PRINCIPAL` instead, with the
+numeric id from `urn:github:id`. There is **no fallback** to the display
+name: a request whose login claim is missing is treated as anonymous.
+
+> **Why, because it was a real defect.** The dashboard did identify users by
+> the display name. Every access decision therefore asked GitHub about a
+> collaborator who does not exist, and the deployed dashboard showed **zero
+> repositories to everyone, including the owner**. Measured in production:
+> `installed_repositories()` returned 11, rows rendered 0,
+> `_is_collaborator(…, 'ashrithaumd')` true,
+> `_is_collaborator(…, 'Ashritha Pola')` false.
 >
-> It currently fails **closed** — nobody gains access they should not have,
-> and `may_trigger_audit` refuses everyone, so the audit button spends
-> nothing. The dangerous repair is the obvious one: putting a display name
-> into `DASHBOARD_AUDIT_PRINCIPALS` would make it fail **open**, because a
-> display name is free text, mutable, and not unique, so anyone could set
-> theirs to match and acquire the audit button. Identity must move to the
-> login (or the numeric user id), never the display name.
+> It was not only an outage. A display name is free text, mutable and **not
+> unique**, and the collision is not hypothetical — the two accounts this
+> deployment is tested with share one:
 >
-> Consequently no claim in this document about what a signed-in visitor can
-> see has been verified end-to-end on the deployed system. The access filter
-> is covered by tests that supply a principal directly, which bypasses this
-> step.
+> | account | id | display name |
+> | --- | --- | --- |
+> | `ashrithaumd` | 183667058 | Ashritha Pola |
+> | `AshrithaPola` | 60956648 | Ashritha Pola |
+>
+> Two different people, one identity string. It failed **closed**, because
+> the allow-list held a login that neither display name matched. The
+> tempting repair — putting the display name into
+> `DASHBOARD_AUDIT_PRINCIPALS` — would have made it fail **open**, handing
+> operator rights and the Anthropic bill to whoever else shared it.
+
+**The operator allow-list matches the numeric id, and a login in it is
+ignored rather than matched.** Repo access must use the login, because
+GitHub's collaborator endpoint is keyed on username — and that path is
+self-correcting, since after a rename EasyAuth reports the new login and
+GitHub answers for the new login. The allow-list is the only place a name
+is *stored*, so it is the only place a rename matters: renaming releases the
+old login for anyone to register, and they would inherit whatever the list
+still grants to that string. Accepting either form would reopen exactly
+that, so `DASHBOARD_AUDIT_PRINCIPALS` takes ids only. A non-numeric entry is
+dropped and named in a startup warning, because a silently ineffective
+allow-list is indistinguishable from an unconfigured one.
 
 **Every row is access-checked, public repositories included.** A review of
 public code may be public information; the *page* is not. Which
@@ -195,11 +215,12 @@ access alone is not enough: a report quotes source and is also a record of
 someone's activity. The operator is included because they pay for every
 audit and have to diagnose the failed ones.
 
-**Triggering an audit is gated to a named allow-list**
+**Triggering an audit is gated to an allow-list of numeric GitHub ids**
 (`DASHBOARD_AUDIT_PRINCIPALS`), which defaults to **nobody**. An audit
 clones a repository and spends Anthropic credit, so "any signed-in GitHub
 user" is not an acceptable gate. Unset means nobody, for the same reason
 `reviews.private` defaults to true: the unset case has to be the safe one.
+Ids rather than logins — see the identity note above.
 
 **CSRF**, on the one state-changing route, with two independent checks
 because each covers the other's weakness: an Origin/Referer check (script

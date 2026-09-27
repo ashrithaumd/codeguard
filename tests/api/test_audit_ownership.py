@@ -67,20 +67,11 @@ def _installed(*names):
     ]
 
 
-@pytest.fixture
-def as_principal(monkeypatch):
-    def _sign_in(login: str | None, *, audit_principals: str = ""):
-        base = get_settings().model_dump()
-        base.update({
-            "dashboard_dev_principal": login or "",
-            "dashboard_trust_dev_principal": bool(login),
-            "dashboard_audit_principals": audit_principals,
-        })
-        patched = Settings(**base)
-        monkeypatch.setattr("codeguard.api.auth.get_settings", lambda: patched)
-        monkeypatch.setattr("codeguard.api.routes.dashboard.get_settings", lambda: patched)
-        return patched
-    return _sign_in
+# as_principal now lives in tests/api/conftest.py. It was duplicated in
+# three files, and the operator allow-list moving to numeric GitHub ids
+# meant all three needed the same login -> id mapping -- three copies of
+# which is three chances for one file to mean "the operator" while
+# another means somebody else.
 
 
 async def _audit_by(pool, requested_by, repo=PUBLIC, status=None):
@@ -271,3 +262,71 @@ async def test_someone_elses_in_flight_audit_does_not_disable_my_button(
         resp = client.get("/dashboard/repos")
 
     assert f'action="/dashboard/repos/{OWNER}/{OTHER}/audit"' in resp.text
+
+
+# --------------------------------------------------------------------------
+# 4. Identity: the display name must not buy anything, end to end
+# --------------------------------------------------------------------------
+
+
+async def test_a_stranger_named_after_the_operator_gets_no_button(
+    client, pool, as_principal,
+):
+    """The route-level version of the identity regression.
+
+    A visitor whose GitHub DISPLAY NAME is the operator's login. Before the
+    fix the dashboard identified people by that display name, so this
+    visitor WAS the operator as far as every gate could tell. Now the login
+    decides repo access and the immutable numeric id decides operator
+    rights, and a display name buys neither.
+
+    Driven through the page rather than the helper, because the helper being
+    right is not the same as the page using it.
+    """
+    from codeguard.api.auth import Viewer
+
+    # Their own login and id; the operator's login as their display name.
+    impostor = Viewer(login=SOMEONE_ELSE, user_id="900000001", display_name=OPERATOR)
+    as_principal(OPERATOR, audit_principals=OPERATOR)  # the real operator is allowed
+
+    with patch.object(access, "installed_repositories", return_value=_installed()), \
+         patch.object(access, "_is_collaborator", return_value=True), \
+         patch("codeguard.api.routes.dashboard.client_viewer", return_value=impostor), \
+         patch("codeguard.api.routes.dashboard.client_principal",
+               return_value=impostor.login):
+        page = client.get("/dashboard/repos")
+        posted = client.post(
+            f"/dashboard/repos/{OWNER}/{PUBLIC}/audit", follow_redirects=False,
+        )
+
+    assert page.status_code == 200
+    assert f'action="/dashboard/repos/{OWNER}/{PUBLIC}/audit"' not in page.text, (
+        "a display name matching the operator's login drew an audit button"
+    )
+    # 404, not 403: this route hides its own existence from anyone who may
+    # not audit, and CSRF is checked only after that.
+    assert posted.status_code == 404
+    async with pool.connection() as conn:
+        cur = await conn.execute("SELECT count(*) AS n FROM audits")
+        assert (await cur.fetchone())["n"] == 0
+
+
+async def test_the_nav_shows_the_display_name_while_decisions_use_the_login(
+    client, pool, as_principal,
+):
+    """The display name keeps exactly one job. It appears in the nav, and the
+    login is what the page gated on — visible here as the row the login can
+    see."""
+    from codeguard.api.auth import Viewer
+
+    viewer = Viewer(login=OPERATOR, user_id="900000002", display_name="Ashritha Pola")
+    as_principal(OPERATOR)
+
+    with patch.object(access, "installed_repositories", return_value=_installed()), \
+         patch.object(access, "_is_collaborator", return_value=True), \
+         patch("codeguard.api.routes.dashboard.client_viewer", return_value=viewer), \
+         patch("codeguard.api.routes.dashboard.client_principal", return_value=OPERATOR):
+        resp = client.get("/dashboard/repos")
+
+    assert "Ashritha Pola" in resp.text, "the nav does not show the display name"
+    assert f"{OWNER}/{PUBLIC}" in resp.text, "the login did not gate the row in"

@@ -91,7 +91,7 @@ gates a specific feature.
 | `GITHUB_PRIVATE_KEY` | GitHub App path | The PEM contents. Takes precedence over the path; use where secrets are env-vars only. |
 | `GITHUB_TOKEN` | `audit --post-issue` | Never pass a token on the command line. |
 | `METRICS_AUTH_TOKEN` | Public deployments | Bearer token for `/metrics`. Unset means the endpoint is open — fine on a compose network, not on a public ingress. The api warns at startup when it is unset. |
-| `DASHBOARD_AUDIT_PRINCIPALS` | The dashboard's Run audit button | Comma-separated GitHub logins allowed to trigger an on-demand audit. **Unset means nobody**, deliberately: an audit clones a repository and spends your Anthropic credit, so "any signed-in user" is not a safe gate. Case-insensitive. |
+| `DASHBOARD_AUDIT_PRINCIPALS` | The dashboard's Run audit button | Comma-separated GitHub **numeric user ids** allowed to trigger an on-demand audit — not logins. `gh api users/<login> --jq .id` gives you one. **Unset means nobody**, deliberately: an audit clones a repository and spends your Anthropic credit, so "any signed-in user" is not a safe gate. A login here is *ignored*, not matched, and the api warns about it by name at startup — ids are used because a renamed login is released for anyone else to register, and would carry this grant with it. |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | Optional | Traces every real Anthropic call. |
 
 Per-agent model, timeout and budget settings are in `codeguard/config.py`.

@@ -54,26 +54,11 @@ def _installed(*entries):
     ]
 
 
-@pytest.fixture
-def as_principal(monkeypatch):
-    """Sign a visitor in without EasyAuth, via the existing dev override.
-
-    Uses the two-key form the setting already requires — a username AND
-    an explicit trust flag — rather than injecting the header directly,
-    so the test exercises the same path a local dev run does.
-    """
-    def _sign_in(login: str | None, *, audit_principals: str = ""):
-        base = get_settings().model_dump()
-        base.update({
-            "dashboard_dev_principal": login or "",
-            "dashboard_trust_dev_principal": bool(login),
-            "dashboard_audit_principals": audit_principals,
-        })
-        patched = Settings(**base)
-        monkeypatch.setattr("codeguard.api.auth.get_settings", lambda: patched)
-        monkeypatch.setattr("codeguard.api.routes.dashboard.get_settings", lambda: patched)
-        return patched
-    return _sign_in
+# as_principal now lives in tests/api/conftest.py. It was duplicated in
+# three files, and the operator allow-list moving to numeric GitHub ids
+# meant all three needed the same login -> id mapping -- three copies of
+# which is three chances for one file to mean "the operator" while
+# another means somebody else.
 
 
 @pytest.fixture

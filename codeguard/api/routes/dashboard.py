@@ -34,7 +34,7 @@ from fastapi.templating import Jinja2Templates
 
 from codeguard.api import access, audits, csrf, repo_url
 from codeguard.api import dashboard_queries as q
-from codeguard.api.auth import client_principal
+from codeguard.api.auth import client_principal, client_viewer
 from codeguard.config import get_settings
 from codeguard.queue.queue import enqueue
 from codeguard.redact import redact
@@ -111,9 +111,17 @@ def render_page(
     value is stable across tabs.
     """
     token = csrf.token(request)
+    # Read here rather than threaded through every route, so the nav says the
+    # same thing on all of them. The display name is the ONLY thing this is
+    # used for; `principal` (the login) is what every decision uses, and the
+    # nav's own `{% if principal %}` still governs whether an identity is
+    # shown at all — so an error page rendered with principal=None stays
+    # anonymous-looking even though a viewer exists.
+    viewer = client_viewer(request)
     response = templates.TemplateResponse(
         request=request, name=name, status_code=status_code,
         context={"principal": principal, "asset_version": asset_version(),
+                 "display_name": viewer.display_name if viewer else None,
                  "csrf_token": token,
                  # Minted by SecurityHeadersMiddleware, which runs before
                  # both the routes and the exception handler, so the header
@@ -369,7 +377,13 @@ async def repositories(request: Request) -> HTMLResponse:
     make the page disagree with GitHub's own installation settings.
     """
     pool = request.app.state.pool
-    principal = client_principal(request)
+    # The whole viewer, not just the login: may_audit is keyed on the
+    # immutable numeric id (see Settings.dashboard_audit_principals), while
+    # every repo-access decision is keyed on the login, and the nav shows
+    # the display name. One object so no caller has to remember which
+    # string is fit for which job.
+    viewer = client_viewer(request)
+    principal = viewer.login if viewer else None
     settings = get_settings()
 
     # Before any lookup. An anonymous visitor gets the sign-in prompt and
@@ -414,7 +428,7 @@ async def repositories(request: Request) -> HTMLResponse:
             for owner, name, private in known
         ]
 
-    may_audit = settings.may_trigger_audit(principal)
+    may_audit = settings.may_trigger_audit(viewer.user_id if viewer else None)
 
     # One concurrent pass, not a serial loop. Measured in production with
     # 11 repos installed: the loop took 11.79s and blocked the event loop
@@ -480,10 +494,11 @@ async def trigger_audit(request: Request, owner: str, repo: str):
     an audit facility is there to be found.
     """
     pool = request.app.state.pool
-    principal = client_principal(request)
+    viewer = client_viewer(request)
+    principal = viewer.login if viewer else None
     settings = get_settings()
 
-    if not settings.may_trigger_audit(principal):
+    if not settings.may_trigger_audit(viewer.user_id if viewer else None):
         logger.warning("audit refused for principal=%r on %s/%s", principal, owner, repo)
         raise HTTPException(status_code=404, detail="not found")
 
@@ -567,7 +582,7 @@ def _installed_or_empty() -> list[dict]:
         return []
 
 
-def _may_read_audit(audit: dict, principal: str | None, settings) -> bool:
+def _may_read_audit(audit: dict, viewer, settings) -> bool:
     """Whose audit is this, and may this person read it.
 
     REPO ACCESS IS NOT ENOUGH, which is what this used to check. An audit
@@ -587,13 +602,16 @@ def _may_read_audit(audit: dict, principal: str | None, settings) -> bool:
     unsupportable. It is the same allow-list that may trigger an audit,
     not a second concept.
     """
-    if not principal:
+    if viewer is None:
         return False
-    if not access.can_access_repo(audit["owner"], audit["repo"], principal):
+    if not access.can_access_repo(audit["owner"], audit["repo"], viewer.login):
         return False
-    if settings.may_trigger_audit(principal):
+    # Operator status is keyed on the immutable id, like every other
+    # operator check. Ownership is keyed on the login, because that is what
+    # request_audit stored in requested_by.
+    if settings.may_trigger_audit(viewer.user_id):
         return True
-    return (audit["requested_by"] or "").strip().lower() == principal.strip().lower()
+    return (audit["requested_by"] or "").strip().lower() == viewer.login.strip().lower()
 
 
 async def _audit_or_404(request: Request, audit_id: UUID) -> dict:
@@ -605,11 +623,11 @@ async def _audit_or_404(request: Request, audit_id: UUID) -> dict:
     repo is being audited.
     """
     pool = request.app.state.pool
-    principal = client_principal(request)
+    viewer = client_viewer(request)
     audit = await audits.get_audit(pool, audit_id)
     if audit is None:
         raise HTTPException(status_code=404, detail="audit not found")
-    if not _may_read_audit(audit, principal, get_settings()):
+    if not _may_read_audit(audit, viewer, get_settings()):
         raise HTTPException(status_code=404, detail="audit not found")
     return audit
 

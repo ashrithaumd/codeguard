@@ -58,18 +58,45 @@ class Settings(BaseSettings):
     # "open in production" is loud rather than silent.
     metrics_auth_token: str = ""
 
-    # Dev-only override for the identity EasyAuth injects
-    # (X-MS-CLIENT-PRINCIPAL-NAME). Lets the dashboard's signed-in paths
-    # be exercised locally, where no EasyAuth sits in front. Read ONLY
-    # when dashboard_trust_dev_principal is also true, so setting a
-    # username alone can never spoof identity in a deployment that
-    # forgot to unset it.
+    # Dev-only override for the identity EasyAuth injects. Lets the
+    # dashboard's signed-in paths be exercised locally, where no EasyAuth
+    # sits in front. Read ONLY when dashboard_trust_dev_principal is also
+    # true, so setting a username alone can never spoof identity in a
+    # deployment that forgot to unset it.
     dashboard_dev_principal: str = ""
     dashboard_trust_dev_principal: bool = False
+    # The numeric id for that dev identity, kept SEPARATE so a local run
+    # cannot acquire operator rights merely by naming a login: the
+    # allow-list matches ids, so a dev principal with no id set is a
+    # signed-in user who may not audit — which is the common case and the
+    # safe default.
+    dashboard_dev_principal_id: str = ""
 
     # Who may trigger an on-demand audit from the dashboard. Comma
-    # separated GitHub logins; comparison is case-insensitive because
-    # GitHub logins are.
+    # separated GitHub NUMERIC USER IDS — not logins.
+    #
+    # IDS, AND NO LOGIN FALLBACK, for two reasons that came from a real
+    # defect rather than from caution:
+    #
+    #  1. The dashboard once identified people by their GitHub DISPLAY
+    #     NAME, which is free text, mutable and not unique. Two accounts
+    #     used to test this deployment already collide on one
+    #     ("Ashritha Pola"), so the string that gated operator rights was
+    #     one a stranger could choose. See codeguard/api/auth.py.
+    #  2. A login is stable but not permanent. Renaming releases the old
+    #     one, and anybody may then register it — inheriting whatever an
+    #     allow-list still grants to that string. An id cannot be
+    #     transferred.
+    #
+    # Accepting either form would reopen (2), so a non-numeric entry is
+    # IGNORED rather than matched. It is never treated as a wildcard, and
+    # the api's lifespan warns about it by name at startup (see
+    # audit_principals_ignored) so a misconfiguration is loud rather than
+    # silently ineffective.
+    #
+    # The readability cost is real — `183667058` says nothing — and is paid
+    # in deploy/azure.sh, which records the id-to-login mapping in a
+    # comment beside the value.
     #
     # Defaults to EMPTY, meaning NOBODY, and that is the whole design.
     # An audit clones a repository, runs every scanner over it and
@@ -88,23 +115,48 @@ class Settings(BaseSettings):
 
     @property
     def audit_principals(self) -> frozenset[str]:
+        """The allow-listed numeric ids.
+
+        Non-numeric entries are dropped here, which is what makes a
+        login in this setting inert rather than matched.
+        """
         return frozenset(
-            entry.strip().lower()
+            entry.strip()
             for entry in self.dashboard_audit_principals.split(",")
-            if entry.strip()
+            if entry.strip().isdigit()
         )
 
-    def may_trigger_audit(self, principal: str | None) -> bool:
+    @property
+    def audit_principals_ignored(self) -> tuple[str, ...]:
+        """Entries dropped for not being numeric ids, so startup can say so.
+
+        A misconfigured allow-list fails closed, which means the symptom is
+        a button that is simply absent — indistinguishable from "not
+        configured yet". Naming the bad entries is the difference between a
+        five-minute fix and an afternoon.
+        """
+        return tuple(
+            entry.strip()
+            for entry in self.dashboard_audit_principals.split(",")
+            if entry.strip() and not entry.strip().isdigit()
+        )
+
+    def may_trigger_audit(self, user_id: str | None) -> bool:
         """Server-side authority for the audit button.
+
+        Takes the viewer's NUMERIC GITHUB ID, not their login — see
+        dashboard_audit_principals for why. A viewer whose claims carried no
+        id cannot be an operator: there is nothing immutable to match, and
+        guessing from the login is the class of mistake this replaced.
 
         Called on the POST, not only when deciding whether to render the
         button — a hidden button is a UI affordance, not an access
         control, and the route is reachable by curl regardless of what
         the template drew.
         """
-        if not principal:
+        if not user_id:
             return False
-        return principal.strip().lower() in self.audit_principals
+        return user_id.strip() in self.audit_principals
 
     # Global hard ceilings — operator-controlled, override-able via env
     # vars, but never per-repo. A repo's RepoConfig can only ask for

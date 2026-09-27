@@ -45,9 +45,32 @@ WORKER_APP_NAME="codeguard-worker"
 GITHUB_APP_ID="4934663"
 
 # Who may press the dashboard's "Run audit" button. A list of GitHub
-# logins, comma separated — NOT a secret, so a plain value rather than a
-# secretref: there is nothing to leak, and putting it in the secret store
-# would make a list of usernames harder to read than the thing it gates.
+# NUMERIC USER IDS, comma separated — NOT logins, and not a secret, so a
+# plain value rather than a secretref: there is nothing to leak, and putting
+# it in the secret store would make a list of ids harder to read than the
+# thing it gates.
+#
+#   183667058 = ashrithaumd   (the operator)
+#
+# The mapping lives here because the value alone says nothing, and the next
+# person to read this file will need it. `gh api users/<login> --jq .id`
+# produces one.
+#
+# WHY IDS AND NOT LOGINS, since a login would be far more readable:
+#
+#   * The dashboard once identified people by their GitHub DISPLAY NAME,
+#     which is free text, mutable and not unique. The two accounts this
+#     deployment is tested with already collide on one ("Ashritha Pola"),
+#     so the string gating operator rights was one a stranger could choose.
+#     It failed closed, and the tempting repair — putting the display name
+#     here — would have made it fail open.
+#   * A login is stable but not permanent. Renaming releases the old one for
+#     anybody to register, and they would inherit whatever this still grants
+#     to that string. An id cannot be transferred.
+#
+# A non-numeric entry is IGNORED rather than matched, and the api warns about
+# it at startup by name — a silently ineffective allow-list looks exactly
+# like an unconfigured one.
 #
 # Declared here and passed on every deploy, rather than set once by hand.
 # METRICS_AUTH_TOKEN taught us the difference: set manually it survived
@@ -60,7 +83,7 @@ GITHUB_APP_ID="4934663"
 # may trigger an audit. An audit clones a repository and spends this
 # deployment's own Anthropic credit, so "unset" must mean "no one", never
 # "everyone".
-DASHBOARD_AUDIT_PRINCIPALS="${DASHBOARD_AUDIT_PRINCIPALS:-ashrithaumd}"
+DASHBOARD_AUDIT_PRINCIPALS="${DASHBOARD_AUDIT_PRINCIPALS:-183667058}"
 BUILD_BRANCH="main"        # the whole point of this script's existence
                             # per its own commit message: image builds
                             # come from main, not from a feature branch.

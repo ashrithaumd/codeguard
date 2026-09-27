@@ -5,6 +5,60 @@ CodeGuard is marked **ACTION REQUIRED**.
 
 ## Unreleased
 
+### Fixed — identity was keyed on the GitHub display name
+
+**ACTION REQUIRED if you set `DASHBOARD_AUDIT_PRINCIPALS`: it now takes numeric
+GitHub user ids, not logins.** A login there is ignored rather than matched, so
+an unchanged value means the audit button disappears. `gh api users/<login> --jq
+.id` gives you the id; the api names any ignored entry in a startup warning.
+
+The dashboard read `X-MS-CLIENT-PRINCIPAL-NAME`, which Azure EasyAuth builds
+from the `claims/name` claim — the GitHub **display name**, not the login. Every
+access decision therefore asked GitHub about a collaborator who does not exist.
+Measured on the deployed build: 11 repositories installed, 11 fetched, **0
+rendered, for everyone including the owner**.
+
+It was not only an outage. A display name is free text, mutable and **not
+unique**, and the collision is not hypothetical — the two accounts this
+deployment is tested with share one:
+
+| account | id | display name |
+| --- | --- | --- |
+| `ashrithaumd` | 183667058 | Ashritha Pola |
+| `AshrithaPola` | 60956648 | Ashritha Pola |
+
+Two different people, one identity string. It failed **closed**, because the
+allow-list held a login that neither display name matched, so nobody gained
+access and no credit was spent. The tempting repair — putting the display name
+in the allow-list — would have made it fail **open**, handing operator rights
+and the Anthropic bill to whoever else shared it.
+
+Identity now comes from `urn:github:login` in the `X-MS-CLIENT-PRINCIPAL`
+claims blob, with the immutable numeric id from `urn:github:id`. There is no
+fallback to the display name: a request whose login claim is missing is treated
+as signed out. The display name is shown in the nav and used for nothing else.
+
+Repo access stays keyed on the login, because GitHub's collaborator endpoint is
+keyed on username — and that path is self-correcting, since after a rename
+EasyAuth reports the new login and GitHub answers for it. The allow-list is the
+only place a name is *stored*, so it is the only place a rename matters: a
+released login can be re-registered by somebody else, who would inherit the
+grant. Hence ids there, and only ids.
+
+The claim names were read off a live request rather than taken from
+documentation, via a temporary diagnostic that logged claim *types* and
+comparison booleans only, never values.
+
+### Fixed — the test fixtures bypassed the migration lock
+
+The three `pool` fixtures hand-rolled `bootstrap_schema`'s loop, which made
+them the only migration runners not taking the advisory lock added above — and
+the api's `TestClient` lifespan calls the real one against the same test
+database. An unlocked copy racing a locked one produced `DeadlockDetected`
+during fixture setup, reported against whichever unrelated test came next.
+Exactly the failure the lock exists to prevent, reached by writing a second
+implementation that opted out of it. All three now call `bootstrap_schema`.
+
 ### Added — SECURITY.md
 
 The trust boundaries, the control at each one, the risks accepted rather than
