@@ -144,3 +144,62 @@ def redact(text: str) -> str:
     out = _ASSIGNED.sub(lambda m: f"{m.group(1)}{m.group(2)}{MASK}{m.group(2)}", out)
     out = _OPAQUE.sub(lambda m: f"{m.group(1)}{MASK}{m.group(1)}", out)
     return out
+
+# A PEM body line: base64 with no separators. Matched per line so a key
+# spanning twenty lines stays twenty lines -- see redact_source.
+_PEM_BODY_LINE = re.compile(r"^\s*[A-Za-z0-9+/=]{32,}\s*$")
+_PEM_BEGIN = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
+_PEM_END = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
+
+
+def redact_source(text: str) -> str:
+    """redact(), but guaranteed not to change the number of lines.
+
+    WHY THIS EXISTS SEPARATELY. Findings are LINE-ANCHORED: every one
+    carries start_line/end_line, and the dashboard, the fix suggestions and
+    the inline PR comments all resolve those against the source. redact()
+    collapses a multi-line PEM block onto a single line (_PEM's replacement
+    spans the whole match), so redacting source with it would shift every
+    line below a hardcoded key and misplace every finding after it. A
+    test pins that difference rather than trusting this comment.
+
+    So: each line is redacted INDEPENDENTLY and rejoined. MASK contains no
+    newline, so per-line substitution cannot change the line count. PEM
+    bodies are masked line by line instead of as a block, which loses the
+    "this was one key" shape and keeps the geometry -- the right trade when
+    the alternative is every subsequent finding pointing at the wrong line.
+
+    Used for the content sent to the model. redact() remains correct for
+    prose -- messages, errors, reports -- where line geometry means nothing.
+    """
+    if not text:
+        return text
+
+    lines = text.splitlines(keepends=False)
+    out: list[str] = []
+    in_pem = False
+    for line in lines:
+        if _PEM_BEGIN.search(line):
+            in_pem = True
+            out.append(redact(line))
+            continue
+        if _PEM_END.search(line):
+            in_pem = False
+            out.append(redact(line))
+            continue
+        if in_pem or _PEM_BODY_LINE.match(line):
+            # Keep the indentation so the shape of the file survives; the
+            # payload is what matters and it goes.
+            leading = line[: len(line) - len(line.lstrip())]
+            out.append(f"{leading}{MASK}" if line.strip() else line)
+            continue
+        out.append(redact(line))
+
+    # splitlines() drops a trailing newline; rebuild it so the output is
+    # byte-identical to the input wherever nothing was masked. A source file
+    # that gained or lost its final newline would change every downstream
+    # hash that reads it.
+    joined = "\n".join(out)
+    if text.endswith("\n"):
+        joined += "\n"
+    return joined

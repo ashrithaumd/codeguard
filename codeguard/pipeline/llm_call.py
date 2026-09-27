@@ -23,6 +23,7 @@ import anthropic
 from langsmith.wrappers import wrap_anthropic
 
 from codeguard.pipeline import guardrails
+from codeguard.redact import redact_source
 from codeguard.pipeline.metrics import (
     agent_call_duration_seconds,
     agent_call_failures_total,
@@ -169,6 +170,23 @@ def call_agent(
     sent) skips the call entirely and returns an error result, the same
     shape as any other failure.
     """
+    # SECRETS OUT BEFORE ANYTHING ELSE LOOKS AT THE TEXT.
+    #
+    # user_content carries repository SOURCE, so a hardcoded key reaches
+    # Anthropic whether or not any scanner noticed it -- redacting
+    # Finding.message alone left this path wide open. This is the single
+    # chokepoint every agent call passes through, which is why it belongs
+    # here rather than in each caller.
+    #
+    # redact_source, not redact: findings are line-anchored, and redact()
+    # collapses a multi-line PEM block onto one line, which would shift
+    # every line below a hardcoded key and misplace every finding after it.
+    #
+    # First, before neutralize_injections and before the PII scan, so the
+    # secret is gone before any other pass can log, count or fingerprint
+    # the text it appears in.
+    user_content = redact_source(user_content)
+
     user_content, injection_attempts = guardrails.neutralize_injections(user_content)
     for attempt in injection_attempts:
         injection_attempts_total.labels(agent=agent, pattern=attempt.pattern).inc()
