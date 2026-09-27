@@ -29,6 +29,30 @@ RUN if [ "$INSTALL_DEV" = "true" ]; then \
 
 COPY . .
 
+# Drop root. An audit clones a repository somebody else wrote and hands it
+# to three parsers -- Bandit, Semgrep and Ruff -- each of which reads
+# attacker-authored files in this container's own process tree. Root was
+# buying nothing: the audit reads files, runs scanners that read files, and
+# writes one report.
+#
+# /app is deliberately NOT chowned. It stays root-owned and read-only to
+# this user, so a process reviewing untrusted code cannot modify the code
+# reviewing it. Python skips writing __pycache__ silently when it cannot,
+# and PYTHONDONTWRITEBYTECODE stops it trying.
+#
+# What the user DOES own is a home directory, because several things want
+# one and are not graceful without it: Semgrep caches under $HOME, and
+# tiktoken caches its downloaded encoding. A non-root image that forgets
+# this works right up until the first real audit, then fails on a
+# permissions error that reads like a code bug.
+#
+# Clones go to $TMPDIR (tempfile.mkdtemp), which is world-writable /tmp.
+RUN useradd --create-home --shell /usr/sbin/nologin --uid 10001 codeguard \
+    && chown -R codeguard:codeguard /home/codeguard
+ENV HOME=/home/codeguard \
+    PYTHONDONTWRITEBYTECODE=1
+USER codeguard
+
 # 8000: api's uvicorn (webhook receiver + /health + /metrics).
 # 9000: worker's own metrics server (see codeguard/worker/main.py) —
 # only relevant when this image runs as the worker service

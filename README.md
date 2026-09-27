@@ -146,6 +146,9 @@ nothing was re-measured.
 - **[evals/RESULTS.md](evals/RESULTS.md)** — every measurement, including the per-finding triage
   behind the langflow and simonw/llm numbers above, and a wrong finding CodeGuard produced about its
   own code.
+- **[SECURITY.md](SECURITY.md)** — the trust boundaries, the control at each one, the risks that are
+  accepted rather than fixed, and what is not implemented. Worth reading before pointing this at a
+  repository you did not write, since that is exactly what it is for.
 - **[CHANGELOG.md](CHANGELOG.md)** — notable changes, and anything that needs action from someone
   already running CodeGuard.
 

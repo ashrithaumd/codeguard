@@ -102,13 +102,31 @@
 (function () {
   var url = "/dashboard/audits/{{ audit.id }}.json";
   var delay = 2000;
+  function gone() {
+    // Says so in place of the spinner, and stops. Deliberately does not
+    // distinguish "deleted" from "no longer yours" -- the endpoint answers
+    // 404 for both on purpose, and the page must not undo that.
+    var el = document.getElementById("audit-status");
+    if (el) {
+      el.textContent = "This audit no longer exists.";
+      el.dataset.status = "gone";
+    }
+    var spinner = document.querySelector(".spinner");
+    if (spinner) { spinner.remove(); }
+  }
   function tick() {
     fetch(url, { headers: { "Accept": "application/json" } })
       .then(function (r) {
+        // A 404 is an ANSWER, not a blip: this audit is gone, or is no
+        // longer visible to whoever is looking. Backing off on it left the
+        // page spinning on "Running" forever for a row that had been
+        // deleted -- which happens, by hand. Issue #6.
+        if (r.status === 404) { gone(); return null; }
         if (!r.ok) throw new Error(r.status);
         return r.json();
       })
       .then(function (data) {
+        if (data === null) { return; }  // gone() already handled it
         if (data.terminal) { window.location.reload(); return; }
         var el = document.getElementById("audit-status");
         if (el && el.dataset.status !== data.status) { window.location.reload(); return; }
@@ -118,7 +136,8 @@
       .catch(function () {
         // Back off rather than stop: a transient blip should not leave
         // the page frozen on "running" forever with no way forward but
-        // a manual refresh.
+        // a manual refresh. Correct for a 5xx or a dropped connection,
+        // which is now all that reaches here.
         delay = Math.min(delay * 2, 30000);
         setTimeout(tick, delay);
       });

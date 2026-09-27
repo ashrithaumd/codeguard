@@ -5,6 +5,76 @@ CodeGuard is marked **ACTION REQUIRED**.
 
 ## Unreleased
 
+### Added — SECURITY.md
+
+The trust boundaries, the control at each one, the risks accepted rather than
+fixed, and what is not implemented. The last two sections are the ones worth
+reading: `style-src-attr 'unsafe-inline'`, the effectively single-tenant
+dashboard, unescaped Markdown in outbound comments, the `/metrics` fail-open,
+and the fact that the scanners themselves parse attacker-authored files in the
+worker's own process tree with nothing but an unprivileged user between a parser
+bug and the container.
+
+### Changed — the worker no longer runs as root
+
+**No action needed**, but worth knowing if you have customised the image. The
+container now runs as uid 10001 with its own home directory. `/app` is
+deliberately left root-owned and read-only to that user, so a process reviewing
+untrusted code cannot modify the code reviewing it; `$HOME` is writable because
+Semgrep and tiktoken both cache there and neither is graceful without it.
+
+Before this, an audit ran as root — and an audit hands three parsers a
+repository somebody else wrote.
+
+### Fixed — output posted to GitHub is now neutralised
+
+Every inbound path was guarded and the two biggest outbound ones were not: the
+inline review comment body and the review body's "additional findings" list
+interpolated finding text raw, as did the dismissed-findings block.
+
+That matters because a GitHub comment has effects a dashboard page does not.
+`@someone` in a finding message **notifies a real person from your App**, and
+it needs no cooperation from the model at all — Bandit's hardcoded-secret
+message quotes the matched string, so a payload in a string literal rides out
+on a deterministic tool. `#1234` cross-references someone else's issue.
+`</details>` escapes the collapsed block a dismissal sits in.
+
+If you have run CodeGuard against a repository you do not control, it was
+possible for that repository to make your App mention arbitrary GitHub users.
+Nothing needs rotating and no credential was exposed; the consequence was
+notifications sent in your name.
+
+### Fixed — an audit no longer reports "clean" when it did not look
+
+`No findings.` was printed whenever the finding list was empty, including when
+files had been dropped by the budget, every AI verdict call had failed, or **no
+scanner had run at all**. The last was invisible: the "tool unavailable"
+meta-finding was silently filtered out of the audit path, so an audit in an
+image without Bandit and Semgrep reported no findings over a repository full of
+SQL injection. A run with no scanners now stores as `failed`, not `done`.
+
+### Fixed — an audit is visible to its requester, not to anyone with repo access
+
+The audit page and its poll endpoint authorized on repository access, while the
+409-on-conflict path was written on the premise that an audit is visible only to
+its requester. Nothing leaked — every audit so far was the operator's own — but
+the rule is now what the code always claimed: requester, or an operator.
+
+### Added — CSRF protection and security headers on the dashboard
+
+The audit trigger was authorized by identity alone, and identity arrives in a
+cookie, so a form on any page you visited while signed in could spend your
+Anthropic credit and hold your one in-flight audit slot. Now Origin-checked and
+token-checked. Every browser-facing response carries a CSP with a per-response
+nonce, `frame-ancestors 'none'`, nosniff, `Referrer-Policy: no-referrer`, and
+HSTS over HTTPS.
+
+### Fixed — concurrent startup no longer deadlocks the schema migration
+
+The api and the worker both run migrations at startup and a deploy starts them
+together. Measured: six concurrent runs, four `DeadlockDetected` failures, each
+of which fails a container start. Now serialised on a Postgres advisory lock.
+
 ### Fixed — credential redaction in audit targets
 
 **ACTION REQUIRED — rotate the token if you have run `codeguard audit` with a

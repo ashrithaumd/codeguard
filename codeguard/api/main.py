@@ -120,16 +120,41 @@ app.include_router(dashboard_router)
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
+# Machine endpoints that live under /dashboard. A suffix and one exact
+# path, rather than a list of every endpoint: `.json` is the convention
+# this app already uses for "this is data", so a new poll endpoint is
+# covered by naming itself correctly instead of by editing this.
+_JSON_SUFFIX = ".json"
+_JSON_PATHS = frozenset({"/dashboard/search"})
+
+
+def _wants_json(path: str) -> bool:
+    """Whether an error on this path should be JSON rather than an HTML page.
+
+    Issue #6: the rule used to be the /dashboard prefix alone, so
+    /dashboard/audits/{id}.json -- a machine endpoint that happens to live
+    under the page prefix -- inherited the HTML branch and answered a 404
+    with a full error page. The status was right and nothing leaked; the
+    damage was in the poller, which treated it as a transient blip and
+    backed off forever, leaving a deleted audit's page spinning.
+
+    Still NOT content negotiation, for the original reason: /webhook is
+    called by GitHub, which sends no useful Accept header, and an HTML body
+    in a delivery log would be actively confusing. A path rule keeps that
+    property while fixing the endpoints that were on the wrong side of it.
+    """
+    if not path.startswith("/dashboard"):
+        return True
+    return path.endswith(_JSON_SUFFIX) or path in _JSON_PATHS
+
+
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
-    """HTML error pages for the dashboard, JSON everywhere else.
+    """HTML error pages for the dashboard's PAGES, JSON everywhere else.
 
-    Keyed on the path rather than on content negotiation: /webhook is
-    called by GitHub, which sends no useful Accept header, and a
-    browser-shaped HTML body in a webhook response would be actively
-    confusing in a delivery log.
+    See _wants_json for where the line is and why it is drawn on the path.
     """
-    if not request.url.path.startswith("/dashboard"):
+    if _wants_json(request.url.path):
         return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
 
     title, body = _ERROR_COPY.get(
