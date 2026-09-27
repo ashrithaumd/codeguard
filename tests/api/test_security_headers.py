@@ -18,9 +18,12 @@ WHAT THESE DEFEND, specifically, rather than as a checklist:
     notices.
   * nosniff: a stored report served as text must not be re-interpreted as
     HTML by a browser guessing at content type.
-  * Referrer-Policy no-referrer: dashboard URLs contain owner, repo and
+  * Referrer-Policy same-origin: dashboard URLs contain owner, repo and
     PR number. Following an external link from a report should not hand
-    those to the destination.
+    those to the destination -- and same-origin hands it nothing at all.
+    It was no-referrer, which broke the audit button: EasyAuth's own
+    anti-forgery check on authenticated POSTs is Referer-based. See
+    test_the_referrer_policy_leaves_a_same_origin_referer_intact.
   * HSTS: only on requests that arrived over HTTPS. Sending it over local
     http would be ignored by browsers, but gating it keeps the header
     honest about what it is asserting.
@@ -119,7 +122,7 @@ def test_script_src_has_a_nonce_and_no_unsafe_inline(client):
 def test_nosniff_and_referrer_policy_are_set(client):
     resp = _dashboard(client)
     assert resp.headers["x-content-type-options"] == "nosniff"
-    assert resp.headers["referrer-policy"] == "no-referrer"
+    assert resp.headers["referrer-policy"] == "same-origin"
 
 
 def test_hsts_is_sent_only_over_https(client):
@@ -405,3 +408,40 @@ async def test_every_page_carries_a_working_nonce(client, pool):
                 broken.append(f"{name} ({resp.status_code}): {tag}")
 
     assert broken == [], "scripts the CSP would block:\n  " + "\n  ".join(broken)
+
+
+def test_the_referrer_policy_leaves_a_same_origin_referer_intact(client):
+    """no-referrer broke the audit button in production, and this is why.
+
+    Azure Container Apps' EasyAuth runs its own anti-forgery check on an
+    AUTHENTICATED non-GET request, and that check is REFERER-BASED. Step 9
+    set Referrer-Policy: no-referrer, so the browser stopped sending one, so
+    every signed-in POST was refused with 403 and an empty body BEFORE
+    reaching this application. Measured on the deployed build, same session,
+    same route, only the Referer differing:
+
+        no Referer          -> 403, empty, never reaches the app
+        Referer, full URL   -> 405 (i.e. reaches the app)
+        Referer, origin only-> 405
+
+    And the history confirms the cause rather than merely fitting it: POSTs
+    to the audit route returned 404 on every revision BEFORE step 9 (they
+    reached the app and were refused by the identity bug) and 403 on every
+    revision after it. The button never worked, for two different reasons in
+    sequence.
+
+    same-origin, NOT strict-origin-when-cross-origin. Both satisfy EasyAuth,
+    because both send a Referer on a same-origin request. The difference is
+    what leaks: strict-origin-when-cross-origin still sends the ORIGIN to
+    third parties, which tells any site linked from a report that this
+    deployment exists. same-origin sends them nothing at all, which keeps
+    step 9's actual privacy goal -- dashboard URLs carry owner, repo and PR
+    number -- while restoring the header our own infrastructure depends on.
+    """
+    resp = _dashboard(client)
+
+    assert resp.headers["referrer-policy"] == "same-origin"
+    # The two that must not come back: one breaks the button, the other
+    # leaks the origin to every external link.
+    assert resp.headers["referrer-policy"] != "no-referrer"
+    assert resp.headers["referrer-policy"] != "strict-origin-when-cross-origin"

@@ -42,11 +42,31 @@ the kind of thing that gets "tidied up" later:
       Stored reports are served as escaped text. A browser guessing that
       one is HTML would undo that.
 
-  Referrer-Policy: no-referrer
-      Dashboard URLs carry owner, repo and PR number. Clicking a link in
-      a report should not hand those to the destination. no-referrer,
-      not strict-origin-when-cross-origin, because the origin alone would
-      still disclose that this deployment exists.
+  Referrer-Policy: same-origin
+      Dashboard URLs carry owner, repo and PR number. Clicking a link in a
+      report should not hand those to the destination, and same-origin sends
+      a cross-origin destination NOTHING AT ALL -- not even the origin,
+      which would disclose that this deployment exists.
+
+      It was no-referrer, WHICH BROKE THE AUDIT BUTTON. Azure Container
+      Apps' EasyAuth runs its own anti-forgery check on an authenticated
+      non-GET request, and that check is REFERER-BASED: with no Referer
+      every signed-in POST was refused with 403 and an empty body before
+      reaching this application. Measured, same session and route, only the
+      Referer differing:
+
+          no Referer            -> 403, empty, never reaches the app
+          Referer, full URL     -> 405, i.e. reaches the app
+          Referer, origin only  -> 405
+
+      And the history says cause rather than coincidence: audit POSTs
+      returned 404 on every revision before these headers shipped (reaching
+      the app, refused by the display-name identity bug) and 403 on every
+      revision after.
+
+      same-origin rather than strict-origin-when-cross-origin: both satisfy
+      EasyAuth, since both send a Referer same-origin. They differ in what
+      leaks outward, and only one of them leaks nothing.
 
   Strict-Transport-Security, on HTTPS requests only
       Sent over local plaintext http it would be ignored by browsers, but
@@ -79,7 +99,9 @@ HSTS = "max-age=31536000; includeSubDomains"
 _STATIC_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
-    "Referrer-Policy": "no-referrer",
+    # same-origin, not no-referrer: EasyAuth's own anti-forgery check needs
+    # a same-origin Referer on authenticated POSTs. See the module docstring.
+    "Referrer-Policy": "same-origin",
     "Cross-Origin-Opener-Policy": "same-origin",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
 }

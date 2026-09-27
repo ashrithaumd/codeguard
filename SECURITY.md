@@ -301,6 +301,27 @@ close, but the honest answer is that this product's value is the model).
 **The `metrics` fail-open above** is the one place in this codebase where
 an unset variable weakens a control rather than strengthening it.
 
+**EasyAuth honours `X-Forwarded-Host` in its login redirect.** A request
+carrying `X-Forwarded-Host: evil.example` produces a GitHub authorize URL
+whose `redirect_uri` points at that host rather than the real one. Verified
+with `--proxy-convention` set to both `Standard` and `NoProxy`, so it is
+pre-existing platform behaviour and not something this deployment
+configured.
+
+Low severity, and the reason is what matters: **a browser cannot be made to
+send `X-Forwarded-Host`** — it sends the real `Host`. No link, form or page
+causes a victim's browser to produce that request, so an attacker can only
+send it themselves and redirect their own browser, which gains them nothing.
+Anyone positioned to inject headers ahead of the ingress already has more
+than this.
+
+Whether GitHub rejects the forged `redirect_uri` is **unverified**. GitHub
+defers that validation until after sign-in, so an unauthenticated probe only
+reaches its login redirect, and it was not pursued further: this account has
+already authorized the App, so a signed-in visit to that authorize URL could
+have GitHub issue a code straight to the forged host instead of prompting.
+Confirming a mitigation is not worth that.
+
 **The worker runs as a non-root user, and did not until Stage 1.** Before
 that, an audit ran as root in the worker container. Nothing is known to
 have exploited it, but for most of this project's life the controls above
