@@ -201,6 +201,15 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 # 404 covers both "no such review" and "not yours" — routes/dashboard.py
 # answers 404 for both deliberately, so this copy must not hint at which.
 _ERROR_COPY = {
+    # A CSRF refusal is a page a person sees, so it gets copy of its own.
+    # Without this it fell through to "Something went wrong — the dashboard
+    # could not load this page", which is wrong twice over: nothing went
+    # wrong, and it is not about loading. The overwhelmingly likely cause for
+    # a real user is a page left open long enough for the cookie to expire,
+    # so the copy says what to do rather than what happened.
+    403: ("Couldn't verify that action",
+          "This action could not be verified, usually because the page had been "
+          "open for a while. Reload the page and try again."),
     409: ("Already running",
           "Someone is already auditing that repository. Please try again in a few minutes."),
     404: ("Not found",

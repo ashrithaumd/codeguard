@@ -106,3 +106,20 @@ def test_the_poller_stops_on_a_definitive_404():
     assert "no longer exists" in audit_html or "gone" in audit_html.lower(), (
         "a deleted audit leaves the page spinning with nothing said"
     )
+
+
+def test_a_403_gets_a_real_error_page(client):
+    """A CSRF refusal is a page a person sees, so it needs copy of its own.
+
+    _ERROR_COPY had 404, 409 and 500 but no 403, so our own CSRF refusal fell
+    through to "Something went wrong. The dashboard could not load this
+    page." — which is both wrong (nothing went wrong, and it is not about
+    loading) and useless (it does not say what to do).
+    """
+    from codeguard.api.main import _ERROR_COPY
+
+    assert 403 in _ERROR_COPY, "a 403 has no error copy of its own"
+    title, body = _ERROR_COPY[403]
+    assert "verif" in body.lower(), body
+    assert "reload" in body.lower(), "the copy does not say what to do"
+    assert "went wrong" not in title.lower()

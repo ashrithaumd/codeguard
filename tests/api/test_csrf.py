@@ -360,3 +360,83 @@ def test_every_state_changing_dashboard_route_verifies_csrf():
     assert missing == [], (
         f"these dashboard routes change state without verifying CSRF: {missing}"
     )
+
+
+# --------------------------------------------------------------------------
+# The shape production actually sends
+# --------------------------------------------------------------------------
+
+
+def test_the_origin_check_is_scheme_agnostic(client, pool):
+    """Behind Container Apps the browser's Origin and the app's own view of
+    the request DISAGREE ON SCHEME, and the check must not care.
+
+    TLS terminates at the ingress, so the app sees `http://<fqdn>` while the
+    browser sends `Origin: https://<fqdn>`. Every other test here uses
+    http://testserver, where the two agree, so this path was never
+    exercised — and a check written as a full-URL comparison would refuse
+    every genuine click in production while passing the whole suite.
+
+    It compares netloc, not the URL, so it already holds. This test exists
+    because that is a property worth pinning rather than rediscovering:
+    a future "tighten the Origin check" would break production and nothing
+    else would notice.
+
+    NOTE ON WHAT THIS IS NOT. A real 403 on this route in production came
+    from EasyAuth's own middleware (StatusCode 403, SubStatusCode 60,
+    Microsoft-Azure-AppService-Middleware), which refuses EVERY POST to a
+    non-excluded path before the app sees it — measured: POST /health, an
+    excluded path, reaches the app and 405s, while POST /dashboard/search
+    and POST /dashboard/repos both 403 with an empty body and no CSRF log
+    line. So this test did not fail before that was addressed, and it is
+    not a reproduction of it. It rules our layer out and keeps it ruled out.
+    """
+    from codeguard.api import csrf
+
+    client.get("/dashboard")
+    token = client.cookies[csrf.COOKIE_NAME]
+
+    resp = client.post(
+        AUDIT_URL, data={"csrf_token": token},
+        headers={
+            # What the browser sends: https, because that is what the user
+            # is talking to.
+            "Origin": "https://codeguard-api.ashyhill-c8f8312c.westus.azurecontainerapps.io",
+            # What the ingress tells us, and what the app itself sees.
+            "x-forwarded-proto": "https",
+            "x-forwarded-host": "codeguard-api.ashyhill-c8f8312c.westus.azurecontainerapps.io",
+            "host": "codeguard-api.ashyhill-c8f8312c.westus.azurecontainerapps.io",
+        },
+        follow_redirects=False,
+    )
+
+    # Not 403: the CSRF layer must be satisfied. 404 here because this
+    # signed-in test principal is not on the audit allow-list, which is the
+    # authorization gate running first and is not what this test is about.
+    assert resp.status_code != 403, (
+        "the Origin check refused a request that came from our own page"
+    )
+
+
+def test_a_foreign_origin_is_still_refused_with_forwarded_headers(
+    client, pool, as_principal, repo_is_public,
+):
+    """The other half, and the one that must not regress: making the check
+    scheme-agnostic must not make it origin-agnostic."""
+    as_principal(OWNER, audit_principals=OWNER)
+    token = _token_for(client)
+
+    with patch.object(access, "installed_repositories", return_value=_installed()):
+        resp = client.post(
+            AUDIT_URL, data={"csrf_token": token},
+            headers={
+                "Origin": "https://evil.example.com",
+                "x-forwarded-proto": "https",
+                "x-forwarded-host": "codeguard-api.ashyhill-c8f8312c.westus.azurecontainerapps.io",
+                "host": "codeguard-api.ashyhill-c8f8312c.westus.azurecontainerapps.io",
+            },
+            follow_redirects=False,
+        )
+
+    assert resp.status_code == 403
+
