@@ -162,6 +162,16 @@
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <button class="btn btn-sm" type="submit">Run audit</button>
               </form>
+            {% elif mine_in_flight and may_audit and not r.private %}
+              {# One audit per person at a time. Says so, and links to the
+                 one that is running — drawing a button here would post,
+                 be refused by the per-user index, and redirect the caller
+                 to a different repository's audit. See AUDIT_BUSY_NOTE. #}
+              <span class="hint" tabindex="0" data-tip="{{ busy_note }}">
+                <a class="last-audit" href="/dashboard/audits/{{ mine_in_flight.id }}">
+                  audit running…
+                </a>
+              </span>
             {% else %}
               {# Private. A capability limit, not a permission one, so it
                  says which — see PRIVATE_AUDIT_NOTE in routes. #}

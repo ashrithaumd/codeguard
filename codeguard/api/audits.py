@@ -318,21 +318,65 @@ async def fail_audit_for_dead_letter(pool: AsyncConnectionPool, dead_letter) -> 
     return changed
 
 
-async def latest_per_repo(pool: AsyncConnectionPool) -> dict[tuple[str, str], dict]:
+async def latest_per_repo(
+    pool: AsyncConnectionPool, *, requested_by: str | None = None,
+) -> dict[tuple[str, str], dict]:
     """The newest audit for every repo, keyed by (owner, repo).
 
-    One query with DISTINCT ON rather than one per row on the
-    repositories page -- the page already costs a GitHub call per repo
-    for the visibility gate and does not need a database round trip per
-    row on top.
+    SCOPED TO ONE REQUESTER unless `requested_by` is None. Unscoped was
+    the default and it was a disclosure: the repositories page renders this
+    row's audit id as a link and its status as text, so every viewer saw
+    whoever had audited that repo last. An audit is visible only to the
+    person who asked for it (or to an operator) — see _may_read_audit in
+    routes/dashboard.py — and a page that shows it anyway is the same leak
+    reached through the page instead of the URL.
+
+    requested_by=None is kept for the operator's own view and for callers
+    that are not rendering to a visitor. It is a keyword argument
+    specifically so that an unscoped read is something a caller has to ask
+    for by name.
+
+    One query with DISTINCT ON rather than one per row: the page already
+    costs a GitHub call per repo for the visibility gate and does not need
+    a database round trip per row on top.
     """
+    where = ""
+    params: list[Any] = []
+    if requested_by is not None:
+        # Case-insensitive, like every other comparison against a GitHub
+        # login in this codebase — the allow-list, can_access_repo's cache
+        # key and may_trigger_audit all lower-case first, and a row this
+        # query missed would silently show as "never audited".
+        where = "WHERE lower(requested_by) = lower(%s) "
+        params.append(requested_by)
     async with pool.connection() as conn:
         async with conn.cursor(row_factory=dict_row) as cur:
             await cur.execute(
                 f"SELECT DISTINCT ON (owner, repo) {_COLUMNS} FROM audits "
-                "ORDER BY owner, repo, created_at DESC"
+                f"{where}ORDER BY owner, repo, created_at DESC",
+                params,
             )
             return {(row["owner"], row["repo"]): row for row in await cur.fetchall()}
+
+
+async def in_flight_for_requester(
+    pool: AsyncConnectionPool, requested_by: str,
+) -> dict | None:
+    """This person's own queued-or-running audit, if they have one.
+
+    audits_one_in_flight_per_user (migration 010) allows exactly one, so
+    the repositories page needs to know about it for EVERY row, not just
+    the row it happens to be on: without this, every other repository
+    offers a live "Run audit" button whose click is silently redirected to
+    the audit already running somewhere else. The button is not dangerous
+    — the index holds and no second job is queued — it just does something
+    other than what it says.
+
+    A thin wrapper over _in_flight_for, named for what the page is asking
+    rather than leaving the page to pass the right combination of optional
+    arguments.
+    """
+    return await _in_flight_for(pool, requested_by=requested_by)
 
 
 async def repo_stats(pool: AsyncConnectionPool) -> dict[tuple[str, str], dict[str, Any]]:

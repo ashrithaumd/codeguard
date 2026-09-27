@@ -316,6 +316,17 @@ PRIVATE_AUDIT_NOTE = (
     "and the clone URL appears in logs and error messages."
 )
 
+# Why every other button is absent while one audit is running. The limit is
+# audits_one_in_flight_per_user (migration 010), and it exists so one person
+# cannot queue fifty audits and spend the operator's whole budget in a
+# minute. Said on the page rather than discovered by clicking: the database
+# would refuse the second one anyway, and the route would redirect to the
+# audit already running, which reads as a button doing the wrong thing.
+AUDIT_BUSY_NOTE = (
+    "You already have an audit running. Only one runs at a time — "
+    "open it to watch, and the other buttons come back when it finishes."
+)
+
 
 def _audit_target(owner: str, repo: str) -> str:
     return f"https://github.com/{owner}/{repo}"
@@ -386,7 +397,14 @@ async def repositories(request: Request) -> HTMLResponse:
         lookup_failed = True
 
     stats = await audits.repo_stats(pool)
-    latest_audits = await audits.latest_per_repo(pool)
+    # MY audits, not everyone's. An audit is visible only to the person who
+    # asked for it (_may_read_audit), and this page renders the row's audit
+    # id as a link and its status as text — unscoped, it disclosed whoever
+    # had last audited each repo.
+    latest_audits = await audits.latest_per_repo(pool, requested_by=principal)
+    # One audit in flight per person, so the answer is needed for every row
+    # rather than per row: while this is set, no OTHER repo may be started.
+    mine_in_flight = await audits.in_flight_for_requester(pool, principal)
 
     if lookup_failed:
         known = await q.distinct_repos(pool)
@@ -425,10 +443,14 @@ async def repositories(request: Request) -> HTMLResponse:
             "total_cost": float(stat.get("total_cost", 0) or 0),
             "audit": audit,
             "audit_in_flight": bool(audit and audit["status"] in ("queued", "running")),
-            # Both conditions, so the template never has to combine them
-            # and get it wrong. The POST re-checks may_trigger_audit
-            # regardless of what this said.
-            "can_audit": may_audit and not entry["private"],
+            # All three conditions, so the template never has to combine
+            # them and get it wrong: allowed to audit at all, the repo is
+            # public, and this person has nothing else running. The POST
+            # re-checks may_trigger_audit and the database re-checks the
+            # in-flight limit regardless of what this said.
+            "can_audit": (
+                may_audit and not entry["private"] and mine_in_flight is None
+            ),
         })
 
     rows.sort(key=lambda r: (r["last_reviewed"] is None, -(r["review_count"]), r["repo"]))
@@ -436,6 +458,7 @@ async def repositories(request: Request) -> HTMLResponse:
     return render_page(
         request, "repositories.html", principal,
         rows=rows, may_audit=may_audit, lookup_failed=lookup_failed,
+        mine_in_flight=mine_in_flight, busy_note=AUDIT_BUSY_NOTE,
         settings_url=access.installation_settings_url(
             next((r["installation_id"] for r in rows if r["installation_id"]), None)
         ),
@@ -544,20 +567,49 @@ def _installed_or_empty() -> list[dict]:
         return []
 
 
+def _may_read_audit(audit: dict, principal: str | None, settings) -> bool:
+    """Whose audit is this, and may this person read it.
+
+    REPO ACCESS IS NOT ENOUGH, which is what this used to check. An audit
+    report quotes the repository's source, and it is also a record of
+    somebody's activity — that they asked, when, what it cost, why it
+    failed. trigger_audit's AuditInFlightOther branch was already written
+    on this premise and says so in as many words ("an audit is visible only
+    to its requester, so the id alone would be a working URL to another
+    person's result"); it just was not true of the gate. Today every
+    requester is the operator so nothing leaked, but Stage 2 lets visitors
+    audit arbitrary PUBLIC repositories, where repo access is true for
+    every signed-in visitor. Fixed before that ships rather than after.
+
+    The operator is included deliberately: they pay for every audit and
+    they are the one who has to diagnose a failed one, so a rule that
+    locked them out of a visitor's audit would make the facility
+    unsupportable. It is the same allow-list that may trigger an audit,
+    not a second concept.
+    """
+    if not principal:
+        return False
+    if not access.can_access_repo(audit["owner"], audit["repo"], principal):
+        return False
+    if settings.may_trigger_audit(principal):
+        return True
+    return (audit["requested_by"] or "").strip().lower() == principal.strip().lower()
+
+
 async def _audit_or_404(request: Request, audit_id: UUID) -> dict:
     """Fetch an audit the visitor is allowed to see, or 404.
 
-    Same visibility rule as a review, from the flag recorded on the audit
-    row at request time — and the same deliberate conflation of "no such
-    audit" with "not yours", so the response cannot be used to discover
-    that a given repo is being audited.
+    Repo access AND ownership — see _may_read_audit. The same deliberate
+    conflation of "no such audit" with "not yours" as everywhere else in
+    this module, so the response cannot be used to discover that a given
+    repo is being audited.
     """
     pool = request.app.state.pool
     principal = client_principal(request)
     audit = await audits.get_audit(pool, audit_id)
     if audit is None:
         raise HTTPException(status_code=404, detail="audit not found")
-    if not access.can_access_repo(audit["owner"], audit["repo"], principal):
+    if not _may_read_audit(audit, principal, get_settings()):
         raise HTTPException(status_code=404, detail="audit not found")
     return audit
 
