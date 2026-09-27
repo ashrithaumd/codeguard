@@ -97,6 +97,20 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # Runs the image as the deployment will: no bind mount, its own USER,
+      # /app read-only. Every local check passed while ruff was silently
+      # missing from every audit in production, because docker compose
+      # bind-mounts the repository over /app and that mount is WRITABLE — so
+      # the one property under test was the one local runs did not share.
+      #
+      # AFTER the push, deliberately. A tag in the registry that nobody
+      # deployed costs nothing, and the digest is useful evidence when
+      # diagnosing a smoke failure. Deployment is a separate manual step
+      # (see deploy/azure.sh), so a red build still stops the image reaching
+      # production — by stopping the human, which is the actual gate here.
+      - name: smoke-test the built image with no bind mount
+        run: scripts/smoke_image.sh "$ACR_NAME.azurecr.io/$IMAGE:sha-${{ steps.tag.outputs.short }}"
+
       - name: report digest
         run: |
           echo "pushed $IMAGE:sha-${{ steps.tag.outputs.short }}"

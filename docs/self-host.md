@@ -36,6 +36,28 @@ The image already carries `semgrep`, `bandit`, `ruff` and `git`, and compose bui
 extras. The suite points itself at the separate `codeguard_test` database, so it is safe to run
 while the api and worker are up.
 
+### The suite does not cover the image's own permissions
+
+`docker compose exec worker pytest` runs inside a container whose `/app` is a **bind mount of your
+working tree**, and that mount is writable. The deployed image's `/app` is root-owned and read-only
+to the non-root user it runs as. So the tests cannot see a bug that only exists when `/app` cannot
+be written to — and one got through: `ruff` writes its cache to the working directory, failed with
+`Permission denied` in Azure, and was silently missing from every audit there while every local
+check passed, including a container audit run specifically to verify the non-root switch.
+
+```bash
+scripts/smoke_image.sh                       # whatever compose last built
+scripts/smoke_image.sh codeguardacr.azurecr.io/codeguard:sha-abc1234
+```
+
+It runs one real audit inside the image with **no volume of any kind** and no `--user` override, so
+the permissions are the deployed ones, and fails if any scanner reports "did not run" or if the
+expected `B608` and `F401` findings are missing. It needs no API key and spends nothing — the key it
+passes is deliberately invalid, so a verdict call fails with 401 before it can cost anything.
+
+CI runs it on every build (`.github/workflows/build-push.yml`). Run it by hand before deploying an
+image built any other way.
+
 On the host instead, install the dev extras and run the groups by what each needs:
 
 ```bash
