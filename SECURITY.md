@@ -157,6 +157,28 @@ everything through, so **authorization is this application's job**. The
 strips it from requests that arrive without it — which holds only for
 traffic through that ingress.
 
+> **OPEN DEFECT (2026-09-27), not yet fixed.** That header carries the
+> GitHub **display name**, not the login, whenever a display name is set.
+> Every access decision therefore asks GitHub about a collaborator who does
+> not exist, and the deployed dashboard shows **zero repositories to
+> everyone, including the owner**. Measured in production:
+> `installed_repositories()` returns 11, rows rendered are 0,
+> `_is_collaborator(…, 'ashrithaumd')` is true and
+> `_is_collaborator(…, 'Ashritha Pola')` is false.
+>
+> It currently fails **closed** — nobody gains access they should not have,
+> and `may_trigger_audit` refuses everyone, so the audit button spends
+> nothing. The dangerous repair is the obvious one: putting a display name
+> into `DASHBOARD_AUDIT_PRINCIPALS` would make it fail **open**, because a
+> display name is free text, mutable, and not unique, so anyone could set
+> theirs to match and acquire the audit button. Identity must move to the
+> login (or the numeric user id), never the display name.
+>
+> Consequently no claim in this document about what a signed-in visitor can
+> see has been verified end-to-end on the deployed system. The access filter
+> is covered by tests that supply a principal directly, which bypasses this
+> step.
+
 **Every row is access-checked, public repositories included.** A review of
 public code may be public information; the *page* is not. Which
 repositories someone chose to run a code reviewer over, with review counts

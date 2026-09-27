@@ -196,6 +196,21 @@ Meanwhile the hosted dashboard is **safe rather than merely undisclosed**: every
 row is access-checked per viewer, so a signed-in stranger sees nothing.
 Single-tenant is now a capability limit, not a disclosure.
 
+> **CORRECTION (2026-09-27).** That last sentence was presented as verified live
+> and it was not. The evidence offered was that a second account saw zero
+> repositories — but on the deployed build **every** account saw zero, including
+> the owner, because the dashboard identified users by their GitHub *display
+> name* rather than their login. A stranger seeing nothing and the owner seeing
+> nothing were the same failure, so the observation distinguished nothing.
+>
+> The in-process tests covering this pass `principal="ashrithaumd"` directly,
+> which **bypasses the header-to-principal step that was broken**. They are
+> evidence about the access filter, not about the identity feeding it.
+>
+> The access filter itself is unchanged and still believed correct. What is no
+> longer claimed is that the signed-in-stranger case has been verified
+> end-to-end on the deployed system.
+
 ## Notes for future work
 
 ### The GitHub Action must use the sanitized path
