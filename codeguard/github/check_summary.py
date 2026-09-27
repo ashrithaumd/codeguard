@@ -20,8 +20,7 @@ which is reason enough to neutralise it on the way out.
 
 from __future__ import annotations
 
-import html
-
+from codeguard.github.outbound import MAX_ONE_LINE_CHARS, escape_one_line
 from codeguard.pipeline.reviews import classify_findings
 from codeguard.severity import Severity
 from codeguard.tools.base import UNAVAILABLE_RULE_ID
@@ -30,7 +29,7 @@ from codeguard.tools.models import Finding
 # Long enough for any real rule_id or path, short enough that a finding
 # cannot push the fixed sections out of view. GitHub's own cap on
 # output.summary is 65535 characters; nothing here approaches it.
-MAX_FIELD_CHARS = 120
+MAX_FIELD_CHARS = MAX_ONE_LINE_CHARS
 
 _SEVERITY_ROWS = (Severity.CRITICAL, Severity.HIGH, Severity.MEDIUM, Severity.LOW)
 
@@ -49,17 +48,20 @@ _BUCKET_LABELS = (
 def escape_finding_text(text: str) -> str:
     """Neutralises one finding-derived string for markdown output.
 
-    Three separate jobs: HTML-escape (the sanitiser surface), replace
-    pipes with their entity (a raw `|` silently breaks a markdown table
-    row into extra cells), and flatten newlines (same reason — a table
-    cell cannot span lines). Truncated last, so the cap applies to what
-    is actually emitted.
+    Now a thin alias for github/outbound.escape_one_line, which does the
+    same three jobs this used to do itself — HTML-escape, pipes to
+    entities, flatten whitespace, truncate last — and one this did NOT:
+    defuse `@mention` and `#1234`, which have effects OUTSIDE this
+    comment. A mention in a finding message notifies a real person from
+    the operator's App.
+
+    Kept as a name rather than replaced at every call site: this module's
+    docstring and eleven call sites refer to it, and the two
+    implementations drifting apart is precisely how the inline comment
+    body ended up with no escaping at all while this file had careful
+    escaping throughout.
     """
-    flattened = " ".join(str(text).split())
-    escaped = html.escape(flattened, quote=False).replace("|", "&#124;")
-    if len(escaped) > MAX_FIELD_CHARS:
-        return escaped[:MAX_FIELD_CHARS] + "…"
-    return escaped
+    return escape_one_line(text)
 
 
 def unavailable_tools(tool_findings: list[Finding]) -> list[str]:

@@ -33,6 +33,7 @@ from langgraph.types import Send
 
 from codeguard.config import get_settings
 from codeguard.diff.parse import build_hunks, hash_content, parse_hunk_ranges
+from codeguard.github.outbound import escape_for_github, escape_one_line
 from codeguard.pipeline.eval_hygiene import review_eval_hygiene
 from codeguard.pipeline.llm_call import call_agent
 from codeguard.pipeline.metrics import fix_suggestions_dropped_total, hunk_cache_total, verdict_flip_total
@@ -609,6 +610,20 @@ def review_ai_aware(state: FileReviewState) -> dict:
 # carry it.
 _GENERATIVE_SOURCE_SUFFIX = "-agent"
 
+# Bounds on what a generative agent's own JSON may put into a Finding.
+#
+# `category` becomes part of rule_id (f"{agent}.{category}"), which is
+# stored, rendered, and hashed into the fingerprint — so it must look like
+# an identifier-sized thing, not a paragraph. `message` is prose and gets a
+# real allowance, but a bounded one: the review body and the dashboard both
+# render it, and a single finding should not be able to fill either.
+#
+# Both are generous relative to anything a well-behaved agent produces.
+# They exist so that the size of our stored data does not depend on a
+# model's cooperation.
+_MAX_CATEGORY_CHARS = 64
+_MAX_MESSAGE_CHARS = 2_000
+
 # Bumped when the direct-findings contract changes in a way that makes
 # an older cached result untrustworthy rather than merely stale.
 # hunk_findings is keyed on (path, content_hash, agent) and content_hash
@@ -787,8 +802,18 @@ def _parse_direct_findings(
                 hunk_lines=hunk_content.splitlines(), hunk_start=hunk_start, hunk_end=hunk_end,
                 agent=agent, path=path,
             )
-            category = str(item.get("category", agent))
-            message = str(item["message"])
+            # Bounded HERE as well as on the way out. github/outbound.py
+            # caps what reaches a GitHub comment, but these two strings
+            # also become a stored rule_id and message in reviews.findings_
+            # json, a row on the dashboard, and part of the fingerprint —
+            # so the bound belongs at the point the model's claim becomes
+            # our data, not only at the last surface before it leaves.
+            #
+            # "bounded by the agent's max_tokens" is not a bound:
+            # quality_agent_max_tokens is a setting, and raising it for
+            # better reviews should not silently raise this.
+            category = str(item.get("category", agent))[:_MAX_CATEGORY_CHARS]
+            message = str(item["message"])[:_MAX_MESSAGE_CHARS]
         except (KeyError, ValueError, TypeError):
             logger.warning("skipping malformed %s finding for %s: %r", agent, path, item)
             continue
@@ -1428,7 +1453,16 @@ def _append_dismissed_section(body_lines: list[str], grouped_dismissed: list[tup
     body_lines.append(f"<details><summary>{len(grouped_dismissed)} finding(s) checked by an AI agent, not flagged</summary>")
     body_lines.append("")
     for file, rule_id, reason, lines in grouped_dismissed:
-        body_lines.append(f"- {_format_grouped_location(file, lines)} [{rule_id}]: {reason}")
+        # `reason` is MODEL-AUTHORED prose, and it is being written inside a
+        # <details> block: a reason containing "</details>" would close the
+        # block early and put whatever followed at the top level of
+        # CodeGuard's own comment, which is how a dismissal gets to look
+        # like a verdict. escape_one_line also defuses an @mention, which
+        # would notify a real person. See github/outbound.py.
+        body_lines.append(
+            f"- {escape_one_line(_format_grouped_location(file, lines))} "
+            f"[{escape_one_line(rule_id)}]: {escape_one_line(reason)}"
+        )
     body_lines.append("")
     body_lines.append("</details>")
 
@@ -1471,7 +1505,14 @@ def _generate_summary_intro(*, owner: str, repo: str, file_count: int, deduped: 
     node_latency: NodeLatency = {"node": "summarize", "file": None, "seconds": result.latency_s}
     if not result.ok:
         return None, {"node_latencies": [node_latency]}
-    return result.raw_text.strip(), {
+    # Escaped like every other model-derived string on its way into a
+    # comment. The risk here is lower than for a finding message -- this
+    # agent is handed aggregate COUNTS, never finding text, so there is
+    # nothing attacker-controlled in its prompt to echo -- but "this
+    # particular prompt has no injection surface today" is not a property
+    # anyone will re-verify before widening the prompt. Multi-line, since
+    # an intro is allowed to be a short paragraph.
+    return escape_for_github(result.raw_text.strip()), {
         "tokens_in": result.tokens_in, "tokens_out": result.tokens_out,
         "estimated_cost_usd": result.estimated_cost_usd, "node_latencies": [node_latency],
     }
@@ -1719,7 +1760,17 @@ def summarize(state: ReviewState) -> dict:
         body_lines.append("")
         body_lines.append(f"{len(grouped_remainder)} additional finding(s) not shown inline:")
         for file, rule_id, message, source_tool, severity, lines in grouped_remainder:
-            body_lines.append(f"- {_format_grouped_location(file, lines)} [{source_tool}/{severity}] {rule_id}: {message}")
+            # escape_one_line on every interpolated field. This body is
+            # posted as a GitHub comment and rendered as Markdown, and
+            # `message` echoes the scanned code -- so an `@name` here would
+            # notify a real person from the operator's App, and a newline
+            # would break the list it sits in. One line per finding, so the
+            # one-line form. See github/outbound.py.
+            body_lines.append(
+                f"- {escape_one_line(_format_grouped_location(file, lines))} "
+                f"[{escape_one_line(source_tool)}/{escape_one_line(severity)}] "
+                f"{escape_one_line(rule_id)}: {escape_one_line(message)}"
+            )
     if quality_docs:
         body_lines.append(f"{len(quality_docs)} documentation ({_QUALITY_DOCS_RULE_ID}) finding(s) not shown individually.")
 

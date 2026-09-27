@@ -46,6 +46,7 @@ from codeguard.github.check_summary import render_check_summary
 from codeguard.github.checks import complete_check_run, start_check_run
 from codeguard.github.errors import extract_retry_after
 from codeguard.github.notifications import notify_dead_letter
+from codeguard.github.outbound import escape_for_github, escape_one_line
 from codeguard.github.repo_config import load_repo_config
 from codeguard.github.reviews import fetch_review_comments, post_review
 from codeguard.pipeline.feedback import FINGERPRINT_MARKER_RE, fetch_suppressed_fingerprints, fingerprint_marker, record_posted_finding_comments
@@ -235,7 +236,16 @@ def _findings_to_review_comments(findings, fix_suggestions) -> list[dict]:
     suggestions_by_fingerprint = {s.fingerprint: s for s in fix_suggestions}
     comments = []
     for f in findings:
-        body = f"**[{f.source_tool} / {f.severity.name}] {f.rule_id}**\n\n{f.message}"
+        # escape_for_github, not raw interpolation. rule_id and message are
+        # tool-generated but echo the scanned code, and for a generative
+        # agent the message is model prose about attacker-authored code --
+        # so an `@name` in it would notify a real person from the
+        # operator's App, and a `<details>` could forge CodeGuard's own
+        # verdict inside CodeGuard's own comment. See github/outbound.py.
+        body = (
+            f"**[{escape_one_line(f.source_tool)} / {f.severity.name}] "
+            f"{escape_one_line(f.rule_id)}**\n\n{escape_for_github(f.message)}"
+        )
         suggestion = suggestions_by_fingerprint.get(f.fingerprint)
         if suggestion is not None and not _suggestion_targets_finding(suggestion, f):
             FIX_SUGGESTIONS_DROPPED.inc()
