@@ -45,6 +45,7 @@ from codeguard.pipeline.models import (
     VerdictCallFailure,
 )
 from codeguard.pipeline.state import FileReviewState, HunkReviewState, NodeLatency, ReviewState
+from codeguard.redact import MASK, redact_source
 from codeguard.severity import Severity
 from codeguard.tools.diff_position import is_line_in_diff
 from codeguard.tools.models import Finding
@@ -829,6 +830,23 @@ def _run_generative_agent(
     hunk_cache_total.labels(agent=agent, outcome="miss").inc()
 
     settings = get_settings()
+
+    # ONE VIEW, used for the prompt AND for matching the model's echo.
+    #
+    # call_agent redacts what it sends, so the model sees
+    # `API_KEY = "[redacted]"` where the file holds the real key. Placement
+    # then works by the model ECHOING the line it means and
+    # _parse_direct_findings matching that echo against this content — so a
+    # redacted prompt with an unredacted matcher means the echo of a
+    # secret-bearing line matches NOTHING and the finding is demoted to the
+    # summary body. That is exactly the hardcoded-credential finding, the
+    # one most worth placing correctly.
+    #
+    # Redacting here, once, makes the two agree. redact_source is
+    # line-preserving, so a line number means the same thing in both views,
+    # and redacting again inside call_agent is idempotent.
+    hunk_content = redact_source(hunk_content)
+
     user_content = f'<hunk_content path="{path}" start_line="{hunk_start}" end_line="{hunk_end}">\n{hunk_content}\n</hunk_content>'
     result = call_agent(
         agent=agent, api_key=settings.anthropic_api_key, system_prompt=system_prompt,
@@ -957,6 +975,23 @@ def route_after_fanin(state: ReviewState) -> str | list[Send]:
         })
         for path, file_findings in by_file.items()
     ]
+
+
+def _replacement_is_safe(replacement: str) -> bool:
+    """A suggestion must never contain the redaction mask.
+
+    The fix agent writes its replacement from content that was REDACTED
+    before it was sent, so on a secret-bearing line it can only guess at
+    what it is replacing. A suggestion is a one-click commit into someone's
+    repository, and `API_KEY = "[redacted]"` committed there is worse than
+    no suggestion at all: it silently destroys the value while looking like
+    a fix.
+
+    A hard refusal rather than something to strip. If the model emitted the
+    mask, it was reasoning about text it could not see, and the whole
+    suggestion is suspect — not just the masked part.
+    """
+    return MASK not in (replacement or "")
 
 
 def _matched_replacement_range(original: str, file_lines: list[str], finding: Finding) -> int | None:
@@ -1151,7 +1186,17 @@ def propose_fix(state: FileReviewState) -> dict:
     if not findings:
         return {"should_fix": True}
 
-    user_content = f'<file_content path="{state["path"]}">\n{state["content"]}\n</file_content>\n\n{_build_findings_block(findings)}'
+    # ONE view of the file, shared by the prompt and by every check below.
+    # call_agent redacts what it sends, so the model's echo of a
+    # secret-bearing line comes back MASKED. Matching that echo against the
+    # unredacted file finds nothing and the suggestion is dropped as
+    # original_mismatch -- silently, for exactly the findings that matter
+    # most. Redacting once here means the prompt, _matched_replacement_range,
+    # _duplicates_the_lines_below and _breaks_a_file_that_parsed all reason
+    # about the same text the model actually saw. redact_source, not
+    # redact(): it is line-preserving, and all of this is line-anchored.
+    content = redact_source(state["content"])
+    user_content = f'<file_content path="{state["path"]}">\n{content}\n</file_content>\n\n{_build_findings_block(findings)}'
     result = call_agent(
         agent="fix", api_key=settings.anthropic_api_key, system_prompt=_FIX_SYSTEM_PROMPT,
         repo_context=_repo_context(state["owner"], state["repo"]), user_content=user_content,
@@ -1165,7 +1210,7 @@ def propose_fix(state: FileReviewState) -> dict:
 
     items = _parse_json_array(result.raw_text, state["path"], "fix")
     findings_by_fingerprint = {f.fingerprint: f for f in findings}
-    file_lines = state["content"].splitlines()
+    file_lines = content.splitlines()
     changed_ranges = parse_hunk_ranges(state.get("patch", ""))
     suggestions: list[FixSuggestion] = []
     for item in items:
@@ -1200,6 +1245,16 @@ def propose_fix(state: FileReviewState) -> dict:
             logger.warning(
                 "fix agent suggestion for %r at %s:%d falls outside the diff, ignoring",
                 fingerprint, finding.file, finding.start_line,
+            )
+            continue
+
+        if not _replacement_is_safe(replacement):
+            fix_suggestions_dropped_total.labels(reason="contains_redaction_mask").inc()
+            logger.error(
+                "dropping fix suggestion for %s at %s:%d -- the replacement contains the "
+                "redaction mask, so the model wrote it from text it was never shown. "
+                "Committing it would overwrite the real value with %r.",
+                fingerprint, finding.file, finding.start_line, MASK,
             )
             continue
 
@@ -1244,7 +1299,7 @@ def propose_fix(state: FileReviewState) -> dict:
             continue
 
         if _breaks_a_file_that_parsed(
-            path=state["path"], content=state["content"], file_lines=file_lines,
+            path=state["path"], content=content, file_lines=file_lines,
             start_line=finding.start_line, end_line=end_line, replacement=replacement,
         ):
             fix_suggestions_dropped_total.labels(reason="parse_break").inc()
@@ -1266,6 +1321,11 @@ def propose_fix(state: FileReviewState) -> dict:
             # that — and taking the file's copy means a future loosening
             # of the echo check cannot quietly turn this into "whatever
             # the model claimed was there".
+            #
+            # These are the REDACTED lines, which is also what we want
+            # stored: original_text is rendered as the "before" side of the
+            # dashboard's fix diff (_macros.html), so a secret on the
+            # replaced line is never persisted and never displayed.
             original_text="\n".join(file_lines[finding.start_line - 1:end_line]),
         ))
 

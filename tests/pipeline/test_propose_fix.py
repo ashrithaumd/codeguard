@@ -19,6 +19,7 @@ from langgraph.types import Send
 from codeguard.config import RepoConfig
 from codeguard.pipeline.llm_call import AgentCallResult
 from codeguard.pipeline.nodes import propose_fix, route_after_fanin
+from codeguard.redact import MASK
 from codeguard.severity import Severity
 from tests.pipeline.conftest import make_finding
 
@@ -59,10 +60,17 @@ def test_propose_fix_correlates_suggestion_by_fingerprint():
     finding = make_finding(file="a.py", rule_id="B105", line=3, message="hardcoded secret")
     # `original` must be the real text at the finding's line — propose_fix
     # now verifies the fix agent is replacing the code it claims to be.
+    #
+    # "the real text" means THE TEXT THE MODEL WAS SHOWN, which since the
+    # upstream-redaction change is the redacted view: this line holds a
+    # secret, so the agent received `PASSWORD = '[redacted]'` and can only
+    # echo that back. Echoing `hunter2` would mean the agent had seen a
+    # value we deliberately withheld. See
+    # tests/pipeline/test_redaction_vs_placement.py.
     content = "import os\n\nPASSWORD = 'hunter2'\n"
     items = [{
         "fingerprint": finding.fingerprint,
-        "original": "PASSWORD = 'hunter2'",
+        "original": f"PASSWORD = '{MASK}'",
         "replacement": 'PASSWORD = os.environ["PASSWORD"]',
     }]
 
@@ -78,6 +86,10 @@ def test_propose_fix_correlates_suggestion_by_fingerprint():
     assert suggestion.fingerprint == finding.fingerprint
     assert suggestion.suggestion_body.startswith("```suggestion\n")
     assert "PASSWORD" in suggestion.suggestion_body
+    # The "before" side is recorded from the redacted view, so the secret
+    # never reaches the stored record or the dashboard diff that renders it.
+    assert "hunter2" not in suggestion.original_text
+    assert MASK in suggestion.original_text
 
 
 def test_propose_fix_ignores_a_suggestion_for_an_unknown_fingerprint():

@@ -50,12 +50,45 @@ async def create_pool(settings: Settings | None = None) -> AsyncConnectionPool:
     return pool
 
 
+# Arbitrary but fixed: any two processes running migrations must pick the
+# same number for the lock to mean anything. Advisory locks live in their
+# own namespace, so this cannot collide with a table lock.
+_MIGRATION_LOCK_KEY = 0x0C0DE6DA
+
+
 async def bootstrap_schema(pool: AsyncConnectionPool) -> None:
-    """Apply every migrations/*.sql file in order. Migrations use
-    CREATE ... IF NOT EXISTS, so this is safe to run on every process
-    startup (api, worker) with no external migration runner needed.
+    """Apply every migrations/*.sql file in order, one process at a time.
+
+    Called at startup by BOTH the api (lifespan) and the worker (main), and
+    a deploy starts them simultaneously. Without serialisation that fails:
+    measured against this schema, SIX concurrent runs produced FOUR
+    DeadlockDetected failures. The whole run is one transaction touching
+    seven tables, so two runs acquire overlapping locks and Postgres breaks
+    the cycle by killing a victim -- whose migration rolls back and whose
+    container then fails to start. An intermittently failing deploy, which
+    is the worst kind to diagnose.
+
+    This docstring used to claim safety because "migrations use
+    CREATE ... IF NOT EXISTS". That was true of 001-009 and MIGRATION 010
+    BROKE IT: a CHECK constraint cannot be widened in place, so it drops and
+    re-adds. The deadlock is the more general problem though -- it does not
+    need 010 at all, only two runs and enough tables.
+
+    pg_advisory_xact_lock rather than per-statement idempotence:
+      * it protects EVERY migration, including ones not yet written, rather
+        than the one that happened to expose the gap
+      * it is released automatically at transaction end, so a crashed
+        process cannot leave the lock held
+      * the second process waits and then does a no-op run, which is the
+        behaviour we want anyway
+
+    The lock is taken INSIDE the same transaction as the migrations, so it
+    is held for the whole run and released by the commit.
     """
     sql_files = sorted(MIGRATIONS_DIR.glob("*.sql"))
     async with pool.connection() as conn:
+        # First, before any DDL: the point is to hold it for everything
+        # below, and an advisory lock in the same transaction does that.
+        await conn.execute("SELECT pg_advisory_xact_lock(%s)", (_MIGRATION_LOCK_KEY,))
         for path in sql_files:
             await conn.execute(path.read_text())
