@@ -5,6 +5,77 @@ CodeGuard is marked **ACTION REQUIRED**.
 
 ## Unreleased
 
+### Investigated — the dashboard's audit POST returns 403 in production
+
+**Still open.** Not a CodeGuard bug, and nothing is queued or spent when it
+happens: the request is refused before the application sees it.
+
+`POST /dashboard/repos/{owner}/{repo}/audit` from a signed-in browser returns a
+bare 403 with an empty body. The refusal comes from Azure's own auth
+middleware, not from CodeGuard's CSRF check:
+
+```
+StatusCode 403, SubStatusCode 60, provider Microsoft-Azure-AppService-Middleware
+1.17 ms, empty body, and no "CSRF:" line from the app at all
+```
+
+Characterised by probing, rather than reasoned about:
+
+| Request | Result |
+| --- | --- |
+| `POST /health` (an `excludedPath`) | 405 from FastAPI — reaches the app |
+| `POST /dashboard/search`, **signed in** | 403, empty — never reaches the app |
+| `POST /dashboard/repos`, **signed in** | 403, empty — never reaches the app |
+| `POST /dashboard/search`, **anonymous** | 405 — reaches the app |
+| …anonymous with same-origin, foreign, or absent `Origin` | 405 in all three |
+
+So the trigger is an **authenticated cookie session on a non-GET request**, not
+the route, the body, the token or the Origin. CodeGuard's own CSRF check is
+ruled out: it never runs, and it is scheme-agnostic by construction
+(`_cross_site` compares `urlsplit(origin).netloc`, not the URL), which
+`tests/api/test_csrf.py` now pins against production's header shape.
+
+**`--proxy-convention Standard` was tried and did not fix it.** Recorded so
+nobody tries it twice:
+
+```
+before:  httpSettings = null
+applied: az containerapp auth update -n codeguard-api -g codeguard-prod \
+             --proxy-convention Standard
+after:   httpSettings = {"forwardProxy": {"convention": "Standard"}}
+revert:  az containerapp auth update -n codeguard-api -g codeguard-prod \
+             --proxy-convention NoProxy
+```
+
+The revert is applied. `excludedPaths` and `unauthenticatedClientAction` were
+unchanged throughout. A revision restart was needed for the setting to be
+picked up at all, and it changed neither the 403 nor the behaviour below.
+
+### Noted — EasyAuth honours `X-Forwarded-Host` in the login redirect
+
+Pre-existing, **not** introduced by the setting above and **not** removed by
+reverting it — verified in both states:
+
+```
+$ curl -H 'X-Forwarded-Host: evil.example' .../.auth/login/github
+location: https://github.com/login/oauth/authorize?...
+          &redirect_uri=https%3A%2F%2Fevil.example%2F.auth%2Flogin%2Fgithub%2Fcallback
+```
+
+**Severity: low, and the reason matters.** A browser cannot be made to send
+`X-Forwarded-Host` — it sends the real `Host`. So there is no link, form or
+page that causes a victim's browser to produce this request; an attacker can
+only send it themselves, redirecting their own browser and gaining nothing.
+Anyone positioned to inject headers in front of the ingress already has more
+than this.
+
+Whether GitHub rejects the forged `redirect_uri` is **unverified**. GitHub
+defers that validation until after sign-in, so an unauthenticated probe only
+reaches its login redirect. It was not pursued further because this account has
+already authorized the App: a signed-in visit to that authorize URL could have
+GitHub issue a code straight to the forged host instead of prompting, which is
+not a risk worth taking to confirm a mitigation.
+
 ### Fixed — identity was keyed on the GitHub display name
 
 **ACTION REQUIRED if you set `DASHBOARD_AUDIT_PRINCIPALS`: it now takes numeric
