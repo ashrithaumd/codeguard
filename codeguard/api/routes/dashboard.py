@@ -32,7 +32,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from codeguard.api import access, audits, repo_url
+from codeguard.api import access, audits, csrf, repo_url
 from codeguard.api import dashboard_queries as q
 from codeguard.api.auth import client_principal
 from codeguard.config import get_settings
@@ -90,10 +90,21 @@ def asset_version() -> str:
 
 
 def _page(request: Request, name: str, principal: str | None, **context) -> HTMLResponse:
-    return templates.TemplateResponse(
+    """The single funnel every dashboard page is rendered through, which is
+    also why the CSRF cookie is issued here: a token that were set only by
+    the page holding the form would be missing for anyone who arrived at
+    that page from a link, and present-but-stale for anyone whose cookie
+    expired while reading. Issued on every render, reused when already
+    there (csrf.issue), so the value is stable across tabs.
+    """
+    token = csrf.token(request)
+    response = templates.TemplateResponse(
         request=request, name=name,
-        context={"principal": principal, "asset_version": asset_version(), **context},
+        context={"principal": principal, "asset_version": asset_version(),
+                 "csrf_token": token, **context},
     )
+    csrf.attach(request, response, token)
+    return response
 
 
 @router.get("", response_class=HTMLResponse)
@@ -431,6 +442,12 @@ async def trigger_audit(request: Request, owner: str, repo: str):
     if not settings.may_trigger_audit(principal):
         logger.warning("audit refused for principal=%r on %s/%s", principal, owner, repo)
         raise HTTPException(status_code=404, detail="not found")
+
+    # SECOND, not first. Identity is decided above and answers 404; a CSRF
+    # 403 ahead of it would tell a caller who may not audit that there is
+    # an audit facility here at all. And before the GitHub precheck below,
+    # so a forged POST cannot spend an API call either.
+    await csrf.verify(request)
 
     entry = next(
         (e for e in _installed_or_empty() if (e["owner"], e["repo"]) == (owner, repo)), None,

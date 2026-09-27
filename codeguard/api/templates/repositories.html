@@ -156,6 +156,10 @@
               </a>
             {% elif r.can_audit %}
               <form method="post" action="/dashboard/repos/{{ r.owner }}/{{ r.repo }}/audit">
+                {# The half of the double-submit pair an attacker's page
+                   cannot produce: it matches a SameSite=Strict cookie it
+                   cannot read. See codeguard/api/csrf.py. #}
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <button class="btn btn-sm" type="submit">Run audit</button>
               </form>
             {% else %}

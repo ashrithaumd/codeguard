@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-from codeguard.api import access, repo_url
+from codeguard.api import access, csrf, repo_url
 from codeguard.config import Settings, get_settings
 from tests.api.conftest import insert_review
 
@@ -25,6 +25,25 @@ PRIVATE = "secret-thing"
 
 OWNER_LOGIN = "ashrithaumd"
 STRANGER = "someone-else"
+
+
+def _audit_post(client, owner=OWNER, repo=PUBLIC):
+    """POST the audit form the way the page itself does.
+
+    A token read from our own cookie and a same-origin Origin, because the
+    route now refuses anything else (tests/api/test_csrf.py). Without this
+    every test below would be asserting against a 403 rather than the
+    behaviour it means to check -- which for the negative tests would
+    still PASS, vacuously, while testing nothing. The cookie is obtained
+    by loading a page, not by minting a token here, for the same reason.
+    """
+    client.get("/dashboard")
+    return client.post(
+        f"/dashboard/repos/{owner}/{repo}/audit",
+        data={"csrf_token": client.cookies.get(csrf.COOKIE_NAME, "")},
+        headers={"Origin": "http://testserver"},
+        follow_redirects=False,
+    )
 
 
 def _installed(*entries):
@@ -191,7 +210,7 @@ async def test_audit_is_refused_for_a_signed_in_stranger(client, pool, as_princi
     as_principal(STRANGER, audit_principals=OWNER_LOGIN)
     with patch.object(access, "installed_repositories",
                       return_value=_installed((OWNER, PUBLIC, False))):
-        resp = client.post(f"/dashboard/repos/{OWNER}/{PUBLIC}/audit", follow_redirects=False)
+        resp = _audit_post(client)
 
     assert resp.status_code == 404
 
@@ -202,14 +221,14 @@ async def test_audit_is_refused_when_nobody_is_allowed(client, pool, as_principa
     as_principal(OWNER_LOGIN, audit_principals="")
     with patch.object(access, "installed_repositories",
                       return_value=_installed((OWNER, PUBLIC, False))):
-        resp = client.post(f"/dashboard/repos/{OWNER}/{PUBLIC}/audit", follow_redirects=False)
+        resp = _audit_post(client)
 
     assert resp.status_code == 404
 
 
 async def test_audit_is_refused_for_an_anonymous_visitor(client, pool, as_principal):
     as_principal(None, audit_principals=OWNER_LOGIN)
-    resp = client.post(f"/dashboard/repos/{OWNER}/{PUBLIC}/audit", follow_redirects=False)
+    resp = _audit_post(client)
     assert resp.status_code == 404
 
 
@@ -251,7 +270,7 @@ async def test_the_allow_list_is_case_insensitive(client, pool, as_principal, re
     as_principal("AshrithaUMD", audit_principals="ashrithaumd")
     with patch.object(access, "installed_repositories",
                       return_value=_installed((OWNER, PUBLIC, False))):
-        resp = client.post(f"/dashboard/repos/{OWNER}/{PUBLIC}/audit", follow_redirects=False)
+        resp = _audit_post(client)
 
     assert resp.status_code == 303
 
@@ -264,7 +283,7 @@ async def test_a_private_repo_cannot_be_audited(client, pool, as_principal):
     with patch.object(access, "installed_repositories",
                       return_value=_installed((OWNER, PRIVATE, True))), \
          patch.object(access, "_is_collaborator", return_value=True):
-        resp = client.post(f"/dashboard/repos/{OWNER}/{PRIVATE}/audit", follow_redirects=False)
+        resp = _audit_post(client, repo=PRIVATE)
 
     assert resp.status_code == 400
     # The dashboard error handler renders HTML for /dashboard paths (see
@@ -285,8 +304,8 @@ async def test_a_second_audit_redirects_to_the_one_already_running(
     as_principal(OWNER_LOGIN, audit_principals=OWNER_LOGIN)
     with patch.object(access, "installed_repositories",
                       return_value=_installed((OWNER, PUBLIC, False))):
-        first = client.post(f"/dashboard/repos/{OWNER}/{PUBLIC}/audit", follow_redirects=False)
-        second = client.post(f"/dashboard/repos/{OWNER}/{PUBLIC}/audit", follow_redirects=False)
+        first = _audit_post(client)
+        second = _audit_post(client)
 
     assert first.status_code == 303
     assert second.status_code == 303
@@ -312,10 +331,10 @@ async def test_a_repo_can_be_audited_again_once_the_first_finishes(
     as_principal(OWNER_LOGIN, audit_principals=OWNER_LOGIN)
     with patch.object(access, "installed_repositories",
                       return_value=_installed((OWNER, PUBLIC, False))):
-        first = client.post(f"/dashboard/repos/{OWNER}/{PUBLIC}/audit", follow_redirects=False)
+        first = _audit_post(client)
         audit_id = first.headers["location"].rsplit("/", 1)[-1]
         await audits_mod.finish_audit(pool, audit_id, status="done", report_markdown="# ok")
-        second = client.post(f"/dashboard/repos/{OWNER}/{PUBLIC}/audit", follow_redirects=False)
+        second = _audit_post(client)
 
     assert second.headers["location"] != first.headers["location"]
     async with pool.connection() as conn:
@@ -330,7 +349,7 @@ async def test_the_enqueued_job_carries_what_the_worker_needs(
     as_principal(OWNER_LOGIN, audit_principals=OWNER_LOGIN)
     with patch.object(access, "installed_repositories",
                       return_value=_installed((OWNER, PUBLIC, False))):
-        client.post(f"/dashboard/repos/{OWNER}/{PUBLIC}/audit", follow_redirects=False)
+        _audit_post(client)
 
     async with pool.connection() as conn:
         async with conn.cursor() as cur:
@@ -353,7 +372,7 @@ async def test_the_poll_endpoint_reports_terminal_state(client, pool, as_princip
     as_principal(OWNER_LOGIN, audit_principals=OWNER_LOGIN)
     with patch.object(access, "installed_repositories",
                       return_value=_installed((OWNER, PUBLIC, False))):
-        resp = client.post(f"/dashboard/repos/{OWNER}/{PUBLIC}/audit", follow_redirects=False)
+        resp = _audit_post(client)
     audit_id = resp.headers["location"].rsplit("/", 1)[-1]
 
     queued = client.get(f"/dashboard/audits/{audit_id}.json").json()
@@ -374,7 +393,7 @@ async def test_the_poll_payload_excludes_the_report(client, pool, as_principal, 
     as_principal(OWNER_LOGIN, audit_principals=OWNER_LOGIN)
     with patch.object(access, "installed_repositories",
                       return_value=_installed((OWNER, PUBLIC, False))):
-        resp = client.post(f"/dashboard/repos/{OWNER}/{PUBLIC}/audit", follow_redirects=False)
+        resp = _audit_post(client)
     audit_id = resp.headers["location"].rsplit("/", 1)[-1]
     await audits_mod.finish_audit(pool, audit_id, status="done", report_markdown="SECRET-REPORT")
 
@@ -389,7 +408,7 @@ async def test_a_failed_audit_says_why(client, pool, as_principal, repo_is_publi
     as_principal(OWNER_LOGIN, audit_principals=OWNER_LOGIN)
     with patch.object(access, "installed_repositories",
                       return_value=_installed((OWNER, PUBLIC, False))):
-        resp = client.post(f"/dashboard/repos/{OWNER}/{PUBLIC}/audit", follow_redirects=False)
+        resp = _audit_post(client)
     audit_id = resp.headers["location"].rsplit("/", 1)[-1]
     await audits_mod.finish_audit(
         pool, audit_id, status="failed", exit_code=1,
@@ -408,7 +427,7 @@ async def test_the_audit_page_says_there_are_no_fix_suggestions(
     as_principal(OWNER_LOGIN, audit_principals=OWNER_LOGIN)
     with patch.object(access, "installed_repositories",
                       return_value=_installed((OWNER, PUBLIC, False))):
-        resp = client.post(f"/dashboard/repos/{OWNER}/{PUBLIC}/audit", follow_redirects=False)
+        resp = _audit_post(client)
     audit_id = resp.headers["location"].rsplit("/", 1)[-1]
 
     page = client.get(f"/dashboard/audits/{audit_id}")
@@ -423,7 +442,7 @@ async def test_a_report_is_escaped_not_rendered_as_html(client, pool, as_princip
     as_principal(OWNER_LOGIN, audit_principals=OWNER_LOGIN)
     with patch.object(access, "installed_repositories",
                       return_value=_installed((OWNER, PUBLIC, False))):
-        resp = client.post(f"/dashboard/repos/{OWNER}/{PUBLIC}/audit", follow_redirects=False)
+        resp = _audit_post(client)
     audit_id = resp.headers["location"].rsplit("/", 1)[-1]
     await audits_mod.finish_audit(
         pool, audit_id, status="done",
@@ -601,8 +620,7 @@ async def test_a_second_requester_is_not_redirected_to_the_first_audit(
     with patch.object(access, "installed_repositories",
                       return_value=_installed((OWNER, PUBLIC, False))), \
          patch.object(access, "_is_collaborator", return_value=True):
-        resp = client.post(f"/dashboard/repos/{OWNER}/{PUBLIC}/audit",
-                           follow_redirects=False)
+        resp = _audit_post(client)
 
     assert resp.status_code == 409, "must refuse, not redirect"
     assert str(first["id"]) not in resp.text, "must not leak the other audit's id"
@@ -623,8 +641,7 @@ async def test_the_public_repo_gate_is_enforced_on_the_post(client, pool, as_pri
          patch("codeguard.api.repo_url.verify_public_and_sized",
                side_effect=repo_url.RepoRejected(
                    "This repository is too large to audit (900 MB; the limit is 244 MB).")):
-        resp = client.post(f"/dashboard/repos/{OWNER}/{PUBLIC}/audit",
-                           follow_redirects=False)
+        resp = _audit_post(client)
 
     assert resp.status_code == 400
     assert "too large" in resp.text
