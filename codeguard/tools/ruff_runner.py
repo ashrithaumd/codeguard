@@ -11,7 +11,26 @@ DEFAULT_TIMEOUT = 20
 
 
 def _build_cmd(tmp_dir: str) -> list[str]:
-    return resolve_tool_command(TOOL_NAME) + ["check", "--output-format=json", "--exit-zero", tmp_dir]
+    # --no-cache, because ruff writes its cache to the CURRENT WORKING
+    # DIRECTORY and the worker's is /app, which is root-owned and read-only
+    # to the non-root user on purpose. Measured in the deployed container:
+    #
+    #   error: Failed to initialize cache at /app/.ruff_cache:
+    #          Permission denied (os error 13)
+    #   returncode 2, stdout ''
+    #
+    # Empty stdout means _parse's json.loads raises, which surfaces as
+    # "ruff unavailable" -- so a whole scanner was missing from every audit
+    # in production. It passed locally because docker compose bind-mounts the
+    # repository over /app and that mount IS writable.
+    #
+    # The cache buys nothing here regardless: every run scans a fresh
+    # temporary directory, so nothing can hit an entry another run left.
+    # Preferred over pointing RUFF_CACHE_DIR at /tmp, which is an env var a
+    # future deployment can drop, and whose absence fails silently.
+    return resolve_tool_command(TOOL_NAME) + [
+        "check", "--output-format=json", "--exit-zero", "--no-cache", tmp_dir,
+    ]
 
 
 def _severity_for(code: str) -> Severity:
