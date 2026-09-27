@@ -118,7 +118,7 @@ def test_render_report_groups_by_severity_and_includes_all_sections():
         dismissed=[DismissedFinding(file="c.py", start_line=2, rule_id="B105", reason="hardcoded but a test fixture")],
         eval_hygiene_findings=[_finding(file="d.py", tool="eval-hygiene", rule_id="no-eval-harness", message="no eval suite found")],
         osv_findings=[_finding(file="requirements.txt", tool="osv", rule_id="GHSA-xxx", severity=Severity.HIGH)],
-        skipped_files=[], verdict_call_failures=[], tokens_in=100, tokens_out=50, estimated_cost_usd=0.01, elapsed_s=1.5,
+        skipped_files=[], verdict_call_failures=[], unavailable_tools=[], tokens_in=100, tokens_out=50, estimated_cost_usd=0.01, elapsed_s=1.5,
     )
 
     assert "# CodeGuard audit: foo/bar" in report
@@ -134,10 +134,17 @@ def test_render_report_notes_skipped_files():
     report = render_report(
         target="x", files_scanned=1, files_ai_aware=0, ai_reviewed_findings=[], passthrough_findings=[],
         dismissed=[], eval_hygiene_findings=[], osv_findings=[],
-        skipped_files=[("big.py", "dropped by audit_max_tokens_ceiling")], verdict_call_failures=[],
+        skipped_files=[("big.py", "dropped by audit_max_tokens_ceiling")], verdict_call_failures=[], unavailable_tools=[],
         tokens_in=0, tokens_out=0, estimated_cost_usd=0.0, elapsed_s=0.1,
     )
-    assert "dropped before review by the audit budget ceiling" in report
+    # Was "dropped before review by the audit budget ceiling", a **Note**
+    # that sat ABOVE an unconditional "No findings.". The note is now a
+    # warning that says what the finding count actually means, and the
+    # clean phrase is withheld -- see tests/cli/test_audit_no_false_clean.py
+    # for why the old shape was a false clean.
+    assert "not a clean result" in report.lower()
+    assert "never scanned" in report
+    assert "No findings." not in report
     assert "## Skipped" in report
     assert "big.py" in report
     assert "dropped by audit_max_tokens_ceiling" in report
@@ -147,7 +154,7 @@ def test_render_report_notes_verdict_call_failures():
     report = render_report(
         target="x", files_scanned=1, files_ai_aware=1, ai_reviewed_findings=[], passthrough_findings=[],
         dismissed=[], eval_hygiene_findings=[], osv_findings=[],
-        skipped_files=[], verdict_call_failures=[("huge.py", "lines 1-5000: agent call failed, raw finding(s) reported unverified")],
+        skipped_files=[], verdict_call_failures=[("huge.py", "lines 1-5000: agent call failed, raw finding(s) reported unverified")], unavailable_tools=[],
         tokens_in=0, tokens_out=0, estimated_cost_usd=0.0, elapsed_s=0.1,
     )
     assert "AI-verdict call(s) failed" in report
@@ -157,7 +164,7 @@ def test_render_report_notes_verdict_call_failures():
 def test_render_report_zero_findings_says_so():
     report = render_report(
         target="x", files_scanned=2, files_ai_aware=0, ai_reviewed_findings=[], passthrough_findings=[],
-        dismissed=[], eval_hygiene_findings=[], osv_findings=[], skipped_files=[], verdict_call_failures=[],
+        dismissed=[], eval_hygiene_findings=[], osv_findings=[], skipped_files=[], verdict_call_failures=[], unavailable_tools=[],
         tokens_in=0, tokens_out=0, estimated_cost_usd=0.0, elapsed_s=0.1,
     )
     assert "No findings." in report

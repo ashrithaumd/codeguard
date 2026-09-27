@@ -54,6 +54,7 @@ from codeguard.pipeline.nodes import _build_findings_block, _file_touches_ai_mar
 from codeguard.pipeline.state import FileReviewState
 from codeguard.redact import redact
 from codeguard.severity import Severity
+from codeguard.tools.base import UNAVAILABLE_RULE_ID
 from codeguard.tools.models import Finding
 from codeguard.tools.osv_runner import check_dependency_updates
 from codeguard.tools.run_all import run_tools_on_files
@@ -528,12 +529,95 @@ def _severity_label(sev: Severity) -> str:
     return sev.name.capitalize()
 
 
+# The deterministic scanners tools/run_all.RUNNERS provides. Named here
+# because "every scanner failed" is otherwise unexpressible, and kept in
+# step with RUNNERS by a test — a fourth tool added there without adding it
+# here would make the check below silently unreachable.
+ALL_SCANNERS = frozenset({"semgrep", "bandit", "ruff"})
+
+NO_SCANNER_MESSAGE = (
+    "The audit could not run any of its code scanners, so nothing was "
+    "actually examined for security issues. This is an environment problem "
+    "rather than a result — please retry, and report it if it persists."
+)
+
+
+def _scanner_coverage_lost(unavailable: list[str]) -> bool:
+    """True when NO deterministic scanner ran.
+
+    The verdict agents only ever review findings a scanner produced, so
+    this is the case where the audit's entire security coverage is zero.
+    The report's warning text is not enough on its own: `status` is what
+    the repositories page shows and what anything querying the audits table
+    reads, and "done" there would be a lie told in a machine-readable
+    field, where no prose reaches.
+    """
+    return bool(unavailable) and set(unavailable) >= ALL_SCANNERS
+
+
+def _audit_unavailable_tools(tool_findings: list[Finding]) -> list[str]:
+    """Tools that did not run, read from the RAW tool findings.
+
+    It has to be the raw list, and in the audit path that is the only place
+    this information exists at all. run_tools_on_files emits one
+    meta-finding per unavailable tool with file="<pr>", and the audit's
+    passthrough filter drops it:
+
+        claimed_bandit_files = {f.file for f in tool_findings
+                                if f.source_tool == "bandit"}
+
+    "<pr>" is in that set — the meta-finding put it there itself — so a
+    bandit-unavailable meta-finding was treated as claimed by the verdict
+    layer and filtered out, while the verdict layer never saw it either,
+    because security_findings_by_file is keyed by real paths. It vanished,
+    and an audit in an image without bandit and semgrep reported "No
+    findings." over a repository full of SQL injection.
+
+    The same shape as check_summary.unavailable_tools, which the PR path
+    has used all along; the audit path simply never called anything like
+    it.
+    """
+    return sorted({f.source_tool for f in tool_findings if f.rule_id == UNAVAILABLE_RULE_ID})
+
+
+def _incompleteness(
+    *, skipped_files: list[tuple[str, str]],
+    verdict_call_failures: list[tuple[str, str]],
+    unavailable_tools: list[str],
+) -> list[str]:
+    """Reasons this audit did not examine everything, in reader's terms.
+
+    Empty means the run was complete, which is the ONLY state in which a
+    report may say "No findings.": a clean result has to mean every tool
+    ran, every file was scanned and every verdict call answered. Anything
+    less is a partial result.
+    """
+    reasons = []
+    if unavailable_tools:
+        reasons.append(
+            f"{', '.join(unavailable_tools)} did not run, so the rules "
+            "that tool owns were never applied to any file"
+        )
+    if skipped_files:
+        reasons.append(
+            f"{len(skipped_files)} file(s) were never scanned — dropped by the "
+            "audit budget ceiling before any tool ran"
+        )
+    if verdict_call_failures:
+        reasons.append(
+            f"{len(verdict_call_failures)} AI-verdict call(s) failed, so their "
+            "findings were not reviewed in context"
+        )
+    return reasons
+
+
 def render_report(
     *, target: str, files_scanned: int, files_ai_aware: int,
     ai_reviewed_findings: list[Finding], passthrough_findings: list[Finding],
     dismissed: list[DismissedFinding], eval_hygiene_findings: list[Finding],
     osv_findings: list[Finding], skipped_files: list[tuple[str, str]],
     verdict_call_failures: list[tuple[str, str]],
+    unavailable_tools: list[str],
     tokens_in: int, tokens_out: int, estimated_cost_usd: float, elapsed_s: float,
 ) -> str:
     all_findings = ai_reviewed_findings + passthrough_findings + eval_hygiene_findings + osv_findings
@@ -547,13 +631,21 @@ def render_report(
         f"({files_ai_aware} with an LLM SDK import, reviewed for AI-aware issues). "
         f"{len(dismissed)} tool finding(s) reviewed and dismissed by an AI agent as false positives."
     )
-    if skipped_files:
+    # Directly under the finding count, because the count is the claim
+    # being corrected. This used to be a **Note** about dropped files only,
+    # sitting above a "No findings." that a reader remembers instead.
+    incomplete = _incompleteness(
+        skipped_files=skipped_files, verdict_call_failures=verdict_call_failures,
+        unavailable_tools=unavailable_tools,
+    )
+    if incomplete:
         lines.append("")
-        lines.append(
-            f"**Note:** {len(skipped_files)} file(s) were dropped before review by the audit budget "
-            "ceiling — see Skipped below for exactly which ones and why. Findings above are only for "
-            "what was actually scanned."
-        )
+        lines.append("> [!WARNING]")
+        lines.append("> **This is not a clean result — the audit did not examine everything.**")
+        for reason in incomplete:
+            lines.append(f"> - {reason}")
+        lines.append(">")
+        lines.append("> Findings below describe only what was actually examined.")
     lines.append("")
 
     lines.append("## Findings by severity")
@@ -567,7 +659,13 @@ def render_report(
         lines.append("")
 
     if not all_findings:
-        lines.append("No findings.")
+        # "No findings." ONLY when the run was actually complete. Zero
+        # findings from a partial run is not a clean bill of health, and
+        # this line is the one somebody screenshots.
+        lines.append(
+            "No findings." if not incomplete
+            else "No findings in the portion that was examined — see the warning above."
+        )
         lines.append("")
 
     if dismissed:
@@ -971,11 +1069,13 @@ def run_audit(
             stats.estimated_cost_usd = estimated_cost_usd
             stats.duration_s = elapsed_s
 
+        unavailable = _audit_unavailable_tools(tool_findings)
         report = render_report(
             target=safe_target, files_scanned=len(files), files_ai_aware=files_ai_aware,
             ai_reviewed_findings=ai_reviewed_findings, passthrough_findings=passthrough_findings,
             dismissed=dismissed, eval_hygiene_findings=eval_hygiene_findings, osv_findings=osv_findings,
             skipped_files=skipped_files, verdict_call_failures=sec.call_failures + aa.call_failures,
+            unavailable_tools=unavailable,
             tokens_in=tokens_in, tokens_out=tokens_out,
             estimated_cost_usd=estimated_cost_usd, elapsed_s=elapsed_s,
         )
@@ -996,6 +1096,19 @@ def run_audit(
                     owner, repo = owner_repo
                     url = post_issue(token, owner, repo, report)
                     print(f"Issue posted: {url}", file=sys.stderr)
+
+        # AFTER the report is written, deliberately. The report is the
+        # evidence for why this failed, and it names the missing tools; a
+        # return before writing it would leave someone with a status and
+        # nothing to diagnose. Exit code 0 too, for the same reason: the
+        # worker reads `outcome`, and a non-zero code here would make the
+        # CLI look like it crashed when it produced a complete, correct
+        # report about a broken environment.
+        if _scanner_coverage_lost(unavailable):
+            logger.error("audit of %s ran no scanners: %s", safe_target, unavailable)
+            print(NO_SCANNER_MESSAGE, file=sys.stderr)
+            _record(stats, AuditOutcome.FAILED, NO_SCANNER_MESSAGE)
+            return 0, NO_SCANNER_MESSAGE
 
         _record(stats, AuditOutcome.COMPLETED, None)
         return 0, None

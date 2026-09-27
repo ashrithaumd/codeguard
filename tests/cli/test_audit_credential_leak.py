@@ -111,7 +111,7 @@ def test_the_report_title_does_not_carry_the_credential():
         target=CREDENTIALED, files_scanned=0, files_ai_aware=0,
         ai_reviewed_findings=[], passthrough_findings=[], dismissed=[],
         eval_hygiene_findings=[], osv_findings=[], skipped_files=[],
-        verdict_call_failures=[], tokens_in=0, tokens_out=0,
+        verdict_call_failures=[], unavailable_tools=[], tokens_in=0, tokens_out=0,
         estimated_cost_usd=0.0, elapsed_s=0.0,
     )
 
