@@ -13,9 +13,8 @@ from codeguard.api.auth import require_metrics_token
 from codeguard.api.headers import SecurityHeadersMiddleware
 from codeguard.api.routes.dashboard import (
     STATIC_DIR,
-    asset_version,
+    render_page,
     router as dashboard_router,
-    templates,
 )
 from codeguard.api.routes.health import router as health_router
 from codeguard.api.routes.webhooks import router as webhooks_router
@@ -147,10 +146,14 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     # "something went wrong" and nothing to do about it.
     if exc.status_code == 400 and exc.detail:
         body = exc.detail
-    return templates.TemplateResponse(
-        request=request, name="error.html", status_code=exc.status_code,
-        context={"status": exc.status_code, "title": title, "body": body,
-                 "principal": None, "asset_version": asset_version()},
+    # render_page, NOT a TemplateResponse of our own. This handler used to
+    # assemble its own context, which meant it silently missed csp_nonce
+    # when that was added: every error page rendered nonce="" and had all
+    # its scripts blocked by our own CSP. Anything else added to the page
+    # contract in future would have gone the same way.
+    return render_page(
+        request, "error.html", None, status_code=exc.status_code,
+        status=exc.status_code, title=title, body=body,
     )
 
 

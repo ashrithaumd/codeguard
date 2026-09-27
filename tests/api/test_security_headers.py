@@ -268,3 +268,140 @@ def test_the_policy_allows_no_external_source_the_templates_do_not_use():
     assert used, "no external resource found -- has base.html changed?"
     assert used <= allowed, f"templates load from hosts the CSP forbids: {used - allowed}"
     assert allowed <= used, f"the CSP allows hosts nothing loads from: {allowed - used}"
+
+
+# --------------------------------------------------------------------------
+# Coverage: every HTML page, not just the ones a header test happened to
+# load. The nonce is per RENDER PATH, and a page that does not go through
+# dashboard._page gets an empty one -- which is invisible, because the
+# page still renders and only its scripts stop working.
+# --------------------------------------------------------------------------
+
+
+def _inline_script_templates() -> set[str]:
+    """Page templates whose OUTPUT contains an inline <script>.
+
+    Follows {% extends %}, because base.html holds two of the three inline
+    blocks: matching on a template's own text would say error.html has no
+    script when every error page it renders has two.
+    """
+    import re
+    from pathlib import Path
+
+    directory = Path("codeguard/api/templates")
+    own: dict[str, bool] = {}
+    parent: dict[str, str] = {}
+    for path in sorted(directory.glob("*.html")):
+        text = path.read_text(encoding="utf-8")
+        own[path.name] = any(
+            "src=" not in tag for tag in re.findall(r"<script\b[^>]*>", text)
+        )
+        found = re.search(r'{%\s*extends\s*"([^"]+)"', text)
+        if found:
+            parent[path.name] = found.group(1)
+
+    def inherits_a_script(name: str) -> bool:
+        seen = set()
+        while name and name not in seen:
+            if own.get(name):
+                return True
+            seen.add(name)
+            name = parent.get(name, "")
+        return False
+
+    # Pages only. _macros.html is included rather than rendered, and a
+    # template something else extends is a layout -- base.html is never a
+    # response on its own, so requiring a request that renders it would be
+    # asking for a URL that does not exist.
+    layouts = set(parent.values())
+    return {
+        n for n in own
+        if not n.startswith("_") and n not in layouts and inherits_a_script(n)
+    }
+
+
+async def _render_every_page(client, pool) -> dict[str, object]:
+    """One response per page template, keyed by template name.
+
+    Real requests rather than direct template calls: the thing under test
+    is which RENDER PATH a page takes, and calling the template directly
+    would supply a context the route does not.
+    """
+    from codeguard.api import audits as audits_mod
+    from tests.api.conftest import insert_review
+
+    job_id = await insert_review(pool, owner=OWNER, repo=PUBLIC, private=False, pr_number=7)
+    audit = await audits_mod.request_audit(
+        pool, owner=OWNER, repo=PUBLIC, requested_by="test-user", private=False,
+    )
+    await audits_mod.finish_audit(pool, audit["id"], status="done", report_markdown="# report")
+
+    with patch.object(access, "installed_repositories", return_value=[]), \
+         patch.object(access, "_is_collaborator", return_value=True):
+        return {
+            # /dashboard redirects to /dashboard/repos when signed in, so
+            # index.html needs a filtered URL to be the page that renders.
+            "index.html": client.get(f"/dashboard?repo={PUBLIC}"),
+            "repositories.html": client.get("/dashboard/repos"),
+            "repo.html": client.get(f"/dashboard/repos/{OWNER}/{PUBLIC}"),
+            "pr.html": client.get(f"/dashboard/repos/{OWNER}/{PUBLIC}/pulls/7"),
+            "review.html": client.get(f"/dashboard/reviews/{job_id}"),
+            "audit.html": client.get(f"/dashboard/audits/{audit['id']}"),
+            # The handler in api/main.py, not a route. This is the page the
+            # coverage gap was hiding in.
+            "error.html": client.get("/dashboard/reviews/" + "0" * 8 + "-0000-0000-0000-" + "0" * 12),
+        }
+
+
+async def test_every_page_with_an_inline_script_is_covered_here(client, pool):
+    """The guard on the guard.
+
+    Asserts the mapping below is complete, so a new page template cannot
+    be added without either carrying a nonce test or failing this.
+    """
+    rendered = await _render_every_page(client, pool)
+    expected = _inline_script_templates()
+    assert expected, "no page template has an inline script -- has base.html changed?"
+    assert expected <= set(rendered), (
+        f"these page templates render an inline script but are not checked "
+        f"for a nonce: {sorted(expected - set(rendered))}"
+    )
+
+
+async def test_every_page_carries_a_working_nonce(client, pool):
+    """The regression this was written for.
+
+    The error handler in api/main.py builds its own TemplateResponse
+    instead of going through dashboard._page, so it supplied no csp_nonce
+    -- and base.html rendered `nonce=""` while the header carried a real
+    value. Every script on every 404, 409 and 400 page was blocked, and
+    nothing failed: the page looked right, the theme toggle just did
+    nothing and a dark-mode reader got a flash of white on every error.
+    """
+    import re
+
+    rendered = await _render_every_page(client, pool)
+
+    # FIRST, or this test is vacuous: a page that 404s renders error.html,
+    # which has a correct nonce, so every assertion below would pass while
+    # six of the seven templates went unrendered. 404 is expected for
+    # error.html alone.
+    statuses = {name: resp.status_code for name, resp in rendered.items()}
+    assert statuses == {
+        "index.html": 200, "repositories.html": 200, "repo.html": 200,
+        "pr.html": 200, "review.html": 200, "audit.html": 200,
+        "error.html": 404,
+    }, statuses
+
+    broken = []
+    for name, resp in rendered.items():
+        nonce = _csp(resp)["script-src"].split("'nonce-")[1].split("'")[0]
+        tags = re.findall(r"<script\b[^>]*>", resp.text)
+        if not tags:
+            broken.append(f"{name}: rendered no script tag at all ({resp.status_code})")
+            continue
+        for tag in tags:
+            if f'nonce="{nonce}"' not in tag:
+                broken.append(f"{name} ({resp.status_code}): {tag}")
+
+    assert broken == [], "scripts the CSP would block:\n  " + "\n  ".join(broken)

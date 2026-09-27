@@ -89,25 +89,38 @@ def asset_version() -> str:
         return "0"
 
 
-def _page(request: Request, name: str, principal: str | None, **context) -> HTMLResponse:
-    """The single funnel every dashboard page is rendered through, which is
-    also why the CSRF cookie is issued here: a token that were set only by
-    the page holding the form would be missing for anyone who arrived at
-    that page from a link, and present-but-stale for anyone whose cookie
-    expired while reading. Issued on every render, reused when already
-    there (csrf.issue), so the value is stable across tabs.
+def render_page(
+    request: Request, name: str, principal: str | None,
+    *, status_code: int = 200, **context,
+) -> HTMLResponse:
+    """The single funnel EVERY dashboard page is rendered through.
+
+    Public, and taking a status_code, because api/main.py's error handler
+    renders through it too. It used to build its own TemplateResponse with
+    its own hand-assembled context, and when csp_nonce was added it simply
+    did not have it: every 404, 409 and 400 page rendered `nonce=""` while
+    the header carried a real value, so every script on every error page
+    was silently blocked. The page looked fine -- the theme toggle just
+    did nothing, and a dark-mode reader got a flash of white. Two places
+    assembling the same context is the bug; one funnel is the fix.
+
+    It is also why the CSRF cookie is issued here: a token set only by the
+    page holding the form would be missing for anyone who arrived at that
+    page from a link, and stale for anyone whose cookie expired while
+    reading. Issued on every render, reused when already present, so the
+    value is stable across tabs.
     """
     token = csrf.token(request)
     response = templates.TemplateResponse(
-        request=request, name=name,
+        request=request, name=name, status_code=status_code,
         context={"principal": principal, "asset_version": asset_version(),
                  "csrf_token": token,
                  # Minted by SecurityHeadersMiddleware, which runs before
-                 # this route, so the header and every inline <script>
-                 # carry the same value. Empty default rather than a
-                 # KeyError: a page rendered with no nonce is a page whose
-                 # scripts do not run, which is bad, but a 500 on a route
-                 # the middleware somehow missed would be worse.
+                 # both the routes and the exception handler, so the header
+                 # and every inline <script> carry one value. The default
+                 # stays as a guard against a 500 on some path the
+                 # middleware misses; tests/api/test_security_headers.py
+                 # asserts no real page relies on it.
                  "csp_nonce": getattr(request.state, "csp_nonce", ""),
                  **context},
     )
@@ -161,7 +174,7 @@ async def index(
     all_repos = await q.list_repos(pool, principal_repos=allowed)
     repos = await q.list_repos(pool, principal_repos=allowed, filters=filters)
 
-    return _page(
+    return render_page(
         request, "index.html", principal,
         reviews=reviews, repos=repos, all_repos=all_repos, total=total, totals=agg,
         page=page, page_size=PAGE_SIZE, has_next=offset + len(reviews) < total,
@@ -231,7 +244,7 @@ async def review_detail(request: Request, job_id: UUID) -> HTMLResponse:
     newer = siblings[here - 1] if here > 0 else None
     older = siblings[here + 1] if 0 <= here < len(siblings) - 1 else None
 
-    return _page(request, "review.html", principal, review=review,
+    return render_page(request, "review.html", principal, review=review,
                  newer=newer, older=older, sibling_count=len(siblings),
                  position=(here + 1) if here >= 0 else None)
 
@@ -259,7 +272,7 @@ async def repo_detail(request: Request, owner: str, repo: str) -> HTMLResponse:
         raise HTTPException(status_code=404, detail="repo not found")
 
     pulls = await q.pr_summaries(pool, owner=owner, repo=repo)
-    return _page(request, "repo.html", principal,
+    return render_page(request, "repo.html", principal,
                  owner=owner, repo=repo, reviews=reviews, pulls=pulls)
 
 
@@ -278,7 +291,7 @@ async def pr_detail(request: Request, owner: str, repo: str, pr_number: int) -> 
     if not reviews or not access.can_access_repo(owner, repo, principal):
         raise HTTPException(status_code=404, detail="pull request not found")
 
-    return _page(request, "pr.html", principal,
+    return render_page(request, "pr.html", principal,
                  owner=owner, repo=repo, pr_number=pr_number, reviews=reviews)
 
 
@@ -352,7 +365,7 @@ async def repositories(request: Request) -> HTMLResponse:
     # no data of any kind, so this returns before the installation list is
     # fetched rather than fetching it and filtering to nothing.
     if not principal:
-        return _page(
+        return render_page(
             request, "repositories.html", principal,
             rows=[], may_audit=False, lookup_failed=False, signed_out=True,
             settings_url=access.installation_settings_url(None),
@@ -420,7 +433,7 @@ async def repositories(request: Request) -> HTMLResponse:
 
     rows.sort(key=lambda r: (r["last_reviewed"] is None, -(r["review_count"]), r["repo"]))
 
-    return _page(
+    return render_page(
         request, "repositories.html", principal,
         rows=rows, may_audit=may_audit, lookup_failed=lookup_failed,
         settings_url=access.installation_settings_url(
@@ -579,5 +592,5 @@ async def audit_status(request: Request, audit_id: UUID) -> JSONResponse:
 async def audit_detail(request: Request, audit_id: UUID) -> HTMLResponse:
     audit = await _audit_or_404(request, audit_id)
     principal = client_principal(request)
-    return _page(request, "audit.html", principal, audit=audit,
+    return render_page(request, "audit.html", principal, audit=audit,
                  audit_note=AUDIT_NO_FIXES_NOTE)

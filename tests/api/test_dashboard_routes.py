@@ -12,6 +12,7 @@ Two things are being pinned that nothing else can pin:
 
 from __future__ import annotations
 
+import re
 import uuid
 from unittest.mock import patch
 
@@ -110,6 +111,14 @@ async def test_a_private_review_is_404_for_an_anonymous_visitor(pool, anon_clien
     assert "secret plans" not in resp.text
 
 
+def _normalise(body: str, own_id) -> str:
+    """The response with its per-request noise removed: the caller's own
+    id, and the CSP nonce (random per response, derived from nothing --
+    see codeguard/api/headers.py).
+    """
+    return re.sub(r'nonce="[^"]*"', 'nonce="N"', body).replace(str(own_id), "ID")
+
+
 @pytest.mark.asyncio
 async def test_a_missing_review_is_indistinguishable_from_a_forbidden_one(pool, anon_client):
     """Both answer 404 with the same body. A different status or a
@@ -128,7 +137,12 @@ async def test_a_missing_review_is_indistinguishable_from_a_forbidden_one(pool, 
     # bodies differ by the URL the caller themselves supplied — which
     # tells them nothing. The property under test is that nothing ELSE
     # differs, i.e. the response never reveals whether the review exists.
-    assert missing.text.replace(str(missing_id), "ID") == forbidden.text.replace(str(private_id), "ID")
+    #
+    # The CSP nonce is normalised for the same reason: it is
+    # secrets.token_urlsafe, drawn fresh per response and derived from
+    # nothing about the request, so two bodies differing by it disclose
+    # nothing. Anything else that starts differing here is a leak.
+    assert _normalise(missing.text, missing_id) == _normalise(forbidden.text, private_id)
 
 
 @pytest.mark.asyncio
