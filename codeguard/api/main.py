@@ -9,7 +9,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from codeguard.api import audits
-from codeguard.api.auth import require_metrics_token
+from codeguard.api.auth import client_principal, require_metrics_token
 from codeguard.api.headers import SecurityHeadersMiddleware
 from codeguard.api.routes.dashboard import (
     STATIC_DIR,
@@ -192,8 +192,24 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     # when that was added: every error page rendered nonce="" and had all
     # its scripts blocked by our own CSP. Anything else added to the page
     # contract in future would have gone the same way.
+    # The REAL principal, not None. Passing None rendered every error page
+    # with the signed-out nav, so a signed-in visitor hitting a legitimate
+    # 404 — a review in a repository they cannot access — saw "Sign in with
+    # GitHub" and read it as "my session did not stick". That cost real
+    # diagnostic time on a session that was working perfectly.
+    #
+    # It looked deliberate, because the 404 copy advises signing in with an
+    # account that can access the review, which is good advice for an
+    # anonymous visitor. It is actively misleading for a signed-in one: it
+    # names the wrong cause. The copy still appears for anonymous visitors,
+    # who are the people it was written for.
+    #
+    # Indistinguishability is unaffected: one viewer asking about a missing
+    # review and a forbidden one gets the same principal in both, so the two
+    # bodies still match byte for byte.
     return render_page(
-        request, "error.html", None, status_code=exc.status_code,
+        request, "error.html", client_principal(request),
+        status_code=exc.status_code,
         status=exc.status_code, title=title, body=body,
     )
 

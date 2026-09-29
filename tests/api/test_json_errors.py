@@ -123,3 +123,40 @@ def test_a_403_gets_a_real_error_page(client):
     assert "verif" in body.lower(), body
     assert "reload" in body.lower(), "the copy does not say what to do"
     assert "went wrong" not in title.lower()
+
+
+def test_an_error_page_shows_a_signed_in_visitor_as_signed_in(client, pool):
+    """An error page must not claim the visitor is signed out.
+
+    THE DEFECT THIS REPRODUCES, and it cost real diagnostic time. The
+    handler rendered every error page with principal=None, so a signed-in
+    visitor hitting a 404 saw "Sign in with GitHub" in the nav. Combined with
+    a legitimate 404 -- a review belonging to a repository they cannot access
+    -- that reads exactly like "my session did not stick", and it was
+    reported as such. The session was fine; the nav was lying.
+
+    It looked deliberate: the 404 copy says "sign in with a GitHub account
+    that can access it", which is useful advice for an anonymous visitor. But
+    showing a signed-in person a sign-in button to explain why THEY cannot
+    see something tells them the wrong thing about the cause.
+
+    The indistinguishability property is unaffected: the principal is the
+    same for both "no such review" and "not yours" when one viewer asks, so
+    the two bodies still match.
+    """
+    resp = client.get("/dashboard/reviews/00000000-0000-0000-0000-000000000000")
+
+    assert resp.status_code == 404
+    assert "Sign in with GitHub" not in resp.text, (
+        "the error page tells a signed-in visitor they are signed out"
+    )
+    assert "Sign out" in resp.text
+
+
+def test_an_error_page_still_offers_sign_in_to_an_anonymous_visitor(anon_client):
+    """The other half. The advice in the 404 copy is genuinely useful when
+    the visitor really is anonymous, so it must stay for them."""
+    resp = anon_client.get("/dashboard/reviews/00000000-0000-0000-0000-000000000000")
+
+    assert resp.status_code == 404
+    assert "Sign in with GitHub" in resp.text
