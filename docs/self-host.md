@@ -115,8 +115,68 @@ gates a specific feature.
 | `METRICS_AUTH_TOKEN` | Public deployments | Bearer token for `/metrics`. Unset means the endpoint is open — fine on a compose network, not on a public ingress. The api warns at startup when it is unset. |
 | `DASHBOARD_AUDIT_PRINCIPALS` | The dashboard's Run audit button | Comma-separated GitHub **numeric user ids** allowed to trigger an on-demand audit — not logins. `gh api users/<login> --jq .id` gives you one. **Unset means nobody**, deliberately: an audit clones a repository and spends your Anthropic credit, so "any signed-in user" is not a safe gate. A login here is *ignored*, not matched, and the api warns about it by name at startup — ids are used because a renamed login is released for anyone else to register, and would carry this grant with it. |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | Optional | Traces every real Anthropic call. |
+| `DASHBOARD_AUTH_MODE` | Which sign-in the dashboard uses | `easyauth` (default) or `app`. `easyauth` is the Azure Container Apps built-in; `app` is CodeGuard's own GitHub OAuth flow. Anything else signs everyone out and warns at startup, rather than trusting an unrecognised value. |
+| `GITHUB_OAUTH_CLIENT_ID` | `app` mode | The **GitHub App's** client id (`Iv2…`), not an OAuth App's. Not a secret — it travels in a redirect URL the browser follows. |
+| `GITHUB_OAUTH_CLIENT_SECRET` | `app` mode | The App's client secret. Sign-in refuses to start without it rather than bouncing someone to GitHub for a flow that cannot finish. |
+| `SESSION_SECRET` | `app` mode | HMAC key for the session cookie, **32 characters minimum** — shorter is refused. Generate with `python -c "import secrets; print(secrets.token_urlsafe(32))"`. Changing it signs everyone out, which is the intended rotation behaviour. |
 
 Per-agent model, timeout and budget settings are in `codeguard/config.py`.
+
+## Sign-in: EasyAuth or the app's own OAuth
+
+Two modes, switched by `DASHBOARD_AUTH_MODE`, because this is the one subsystem
+where a mistake locks everyone out — including whoever would fix it. Rollback is
+one environment variable, with no image rebuild and no Azure auth-config edit.
+
+`easyauth` (the default) uses Azure Container Apps' built-in authentication.
+`app` uses CodeGuard's own GitHub OAuth flow, which exists because EasyAuth
+cannot do three things:
+
+- **Show GitHub's account picker.** `prompt=select_account` is documented by
+  GitHub, and EasyAuth drops it — verified: unknown query parameters never reach
+  the authorize URL, and the GitHub provider exposes no `loginParameters`. With
+  two accounts on one machine GitHub silently reuses whichever session it holds,
+  which presents as "I signed in and the dashboard thinks I'm someone else".
+- **End a session.** There is no session of ours to end, so nothing we do makes
+  the next sign-in ask which account.
+- **Provide a user-to-server token**, which phase 2 needs to list a visitor's own
+  repositories.
+
+### Turning `app` mode on
+
+1. On the **GitHub App** settings page, add the callback URL:
+   `https://<your-api-fqdn>/auth/callback`. Keep the EasyAuth one
+   (`/.auth/login/github/callback`) alongside it until the new mode is proven —
+   a GitHub App accepts several, and removing the old one is what makes rollback
+   impossible.
+2. Generate a client secret on that page if there isn't one.
+3. Set `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET` and
+   `SESSION_SECRET`, then set `DASHBOARD_AUTH_MODE=app`.
+4. Azure EasyAuth can be left **enabled** in allow-anonymous mode: in `app` mode
+   the `X-MS-CLIENT-PRINCIPAL` header is ignored outright, so leaving it on
+   changes nothing and keeps the rollback one variable away.
+
+### Rolling back
+
+```bash
+az containerapp update -n codeguard-api -g codeguard-prod     --set-env-vars DASHBOARD_AUTH_MODE=easyauth
+```
+
+That is the whole rollback. No rebuild, no auth-config change, no GitHub App
+edit. Everyone signed in through the app flow is signed out, because their
+cookie stops being read; EasyAuth's own session is untouched and takes over
+again. Leave `SESSION_SECRET` in place — removing it is not part of rolling
+back, and a missing secret means the app flow cannot be turned on again without
+re-generating one.
+
+### Why the header is ignored in `app` mode
+
+Under EasyAuth, identity is trustworthy because the Azure ingress **strips**
+`X-MS-CLIENT-PRINCIPAL` from any request that arrives carrying one — verified
+live, not assumed. That property is Azure's. Once sign-in is ours, nothing
+strips it, so the header becomes attacker-controlled like any other and reading
+it would hand anyone any identity. In `app` mode the only source of identity is
+the signed session cookie.
 
 ## Azure
 

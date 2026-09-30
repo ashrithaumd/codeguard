@@ -63,7 +63,8 @@ os.environ["DATABASE_URL"] = _test_database_url()
 # This is the same failure mode the comment in tests/queue/conftest.py
 # describes against the shared dev database — same lock, different
 # reason for the contention.
-_TRUNCATE = "TRUNCATE audits, jobs, reviews"
+# Alphabetical, one statement — see the comment above.
+_TRUNCATE = "TRUNCATE audits, github_user_tokens, jobs, reviews"
 
 # Windows-only: psycopg3's async mode cannot use ProactorEventLoop, and
 # it is the default there. Must run before pytest-asyncio builds its

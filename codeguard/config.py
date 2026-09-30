@@ -58,6 +58,39 @@ class Settings(BaseSettings):
     # "open in production" is loud rather than silent.
     metrics_auth_token: str = ""
 
+    # WHICH SIGN-IN THE DASHBOARD USES. "easyauth" is the Azure Container
+    # Apps built-in, which is what has been deployed and verified; "app" is
+    # this application's own GitHub OAuth flow.
+    #
+    # A switch rather than a replacement, and it defaults to the OLD one on
+    # purpose: rollback is then one env var, with no image rebuild and no
+    # auth-config edit, which matters because this is the one subsystem where
+    # a mistake locks everybody out — including whoever would fix it.
+    #
+    # Why move at all: EasyAuth cannot pass prompt=select_account (measured —
+    # it drops unknown query parameters and exposes no loginParameters for
+    # the GitHub provider), so an account picker is impossible, sign-out
+    # cannot be complete, and there is no user-to-server token for a visitor
+    # to connect their own repositories with.
+    dashboard_auth_mode: str = "easyauth"
+
+    # The GitHub App's OAuth credentials, used only in "app" mode. The client
+    # id is not a secret (it ships in a redirect URL a browser follows); the
+    # secret is, and comes from the environment like every other one here.
+    #
+    # The APP's client id (Iv2… prefix), not an OAuth App's (Ov2…): a GitHub
+    # App's user-to-server token is what phase 2 needs to list a visitor's
+    # own repositories, and it inherits the App's installed-repository scope
+    # rather than asking for blanket `repo` access.
+    github_oauth_client_id: str = ""
+    github_oauth_client_secret: str = ""
+
+    # HMAC key for the session cookie. Unset means no sessions at all in
+    # "app" mode — see codeguard/api/session.py, which refuses to issue one
+    # rather than falling back to something unsigned. Generate with
+    #   python -c "import secrets; print(secrets.token_urlsafe(32))"
+    session_secret: str = ""
+
     # Dev-only override for the identity EasyAuth injects. Lets the
     # dashboard's signed-in paths be exercised locally, where no EasyAuth
     # sits in front. Read ONLY when dashboard_trust_dev_principal is also

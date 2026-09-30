@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
+from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -118,10 +119,26 @@ def render_page(
     # shown at all — so an error page rendered with principal=None stays
     # anonymous-looking even though a viewer exists.
     viewer = client_viewer(request)
+    # The sign-in and sign-out URLs come from the mode, not from the
+    # template. Three templates used to hardcode EasyAuth's /.auth/* paths,
+    # which would have left the nav pointing at a flow that no longer exists
+    # the moment DASHBOARD_AUTH_MODE changed -- and a dashboard you cannot
+    # sign in to is indistinguishable from one that is down.
+    settings = get_settings()
+    auth_mode = (settings.dashboard_auth_mode or "").strip().lower()
+    here = request.url.path
+    if auth_mode == "app":
+        login_url = f"/auth/login?next={quote(here, safe='')}"
+        logout_url = f"/auth/logout?next={quote(here, safe='')}"
+    else:
+        login_url = f"/.auth/login/github?post_login_redirect_uri={quote(here, safe='')}"
+        logout_url = f"/.auth/logout?post_logout_redirect_uri={quote(here, safe='')}"
     response = templates.TemplateResponse(
         request=request, name=name, status_code=status_code,
         context={"principal": principal, "asset_version": asset_version(),
                  "display_name": viewer.display_name if viewer else None,
+                 "auth_mode": auth_mode,
+                 "login_url": login_url, "logout_url": logout_url,
                  "csrf_token": token,
                  # Minted by SecurityHeadersMiddleware, which runs before
                  # both the routes and the exception handler, so the header

@@ -187,6 +187,33 @@ def client_viewer(request: Request) -> Viewer | None:
             display_name=login,
         )
 
+    # EXACTLY ONE SOURCE PER MODE, and an unknown mode trusts nothing.
+    #
+    # In "app" mode the EasyAuth header is IGNORED even when present. That is
+    # the whole security argument for the switch: once sign-in is ours, Azure
+    # no longer strips X-MS-CLIENT-PRINCIPAL, so it becomes attacker-
+    # controlled like any other header. Reading whichever source answered
+    # first would hand anyone any identity — the forged-blob attack that is
+    # impossible today only because the platform blocks it.
+    #
+    # A typo in the env var falls through to None: nobody is signed in, which
+    # is loud and safe rather than quiet and dangerous.
+    mode = (settings.dashboard_auth_mode or "").strip().lower()
+    if mode == "app":
+        # Imported here, not at module scope: session.py imports Viewer from
+        # this module, and a top-level import would be circular.
+        from codeguard.api import session
+
+        return session.verify(
+            request.cookies.get(session.COOKIE_NAME), secret=settings.session_secret,
+        )
+    if mode != "easyauth":
+        logger.warning(
+            "DASHBOARD_AUTH_MODE is %r, which is not 'easyauth' or 'app' — "
+            "treating every request as signed out", settings.dashboard_auth_mode,
+        )
+        return None
+
     claims = _claims(request)
     if not claims:
         return None
