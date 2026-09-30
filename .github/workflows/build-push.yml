@@ -109,7 +109,11 @@ jobs:
       # (see deploy/azure.sh), so a red build still stops the image reaching
       # production — by stopping the human, which is the actual gate here.
       - name: smoke-test the built image with no bind mount
-        run: scripts/smoke_image.sh "$ACR_NAME.azurecr.io/$IMAGE:sha-${{ steps.tag.outputs.short }}"
+        # `bash scripts/...`, not `scripts/...`: the executable bit does not
+        # survive a Windows checkout, so relying on it made this step fail
+        # with "Permission denied" the first time CI ran it. The bit is set
+        # in the index as well, but the invocation is what makes it robust.
+        run: bash scripts/smoke_image.sh "$ACR_NAME.azurecr.io/$IMAGE:sha-${{ steps.tag.outputs.short }}"
 
       - name: report digest
         run: |
