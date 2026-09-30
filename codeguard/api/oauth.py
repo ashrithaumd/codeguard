@@ -12,9 +12,11 @@ one has already cost real time:
     broken session.
   * END A SESSION. EasyAuth's logout clears its own cookie; there is no
     session of ours to end, so nothing we do can make the next sign-in ask.
-  * GET A USER-TO-SERVER TOKEN, which phase 2 needs to list a visitor's own
-    repositories. Under EasyAuth there is no token at all unless the token
-    store is enabled, which was deliberately rejected.
+  * OBTAIN A USER-TO-SERVER TOKEN AT ALL. Under EasyAuth there is none
+    unless the token store is enabled, which was deliberately rejected.
+    This flow gets one, uses it once to identify the signer, and DISCARDS
+    it -- phase 2 will need one kept, and that storage gets designed when
+    something actually reads it rather than now.
 
 WHAT IS DELIBERATELY NOT DONE HERE: no PKCE. It protects a public client from
 an intercepted authorization code, and this is a confidential client — the
@@ -47,7 +49,7 @@ import requests
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
-from codeguard.api import session, user_tokens
+from codeguard.api import session
 from codeguard.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -225,18 +227,18 @@ async def callback(request: Request):
         secret=settings.session_secret,
     )
 
-    # Keep the token server-side for phase 2. Best-effort: a storage failure
-    # must not stop somebody signing in, because the session does not depend
-    # on it and nothing consumes it yet. Logged as a warning so it does not
-    # become a silent gap later, when something does.
-    pool = getattr(request.app.state, "pool", None)
-    if pool is not None and user_id:
-        try:
-            await user_tokens.store(
-                pool, user_id=user_id, login=login_name, access_token=token,
-            )
-        except Exception as exc:  # noqa: BLE001 - never block a sign-in
-            logger.warning("could not store the GitHub user token: %s", type(exc).__name__)
+    # THE TOKEN IS NOT KEPT. It is used once, just above, to ask GitHub who
+    # this is, and then goes out of scope with this function.
+    #
+    # An earlier draft stored it for phase 2. Storing a credential before
+    # anything reads it is a liability with no benefit: it would sit in a
+    # table needing encryption-at-rest reasoning, refresh handling and a
+    # deletion policy, all to serve a feature that does not exist yet. When
+    # phase 2 needs one, it gets designed then -- with a live consumer to
+    # design against.
+    #
+    # tests/api/test_oauth_routes.py asserts it reaches no cookie, body,
+    # header or database column.
 
     response = RedirectResponse(url=safe_next(target), status_code=303)
     response.set_cookie(

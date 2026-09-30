@@ -1,0 +1,17 @@
+-- Removes a table that a superseded commit on the app-oauth branch created.
+--
+-- That commit stored the GitHub user-to-server token for phase 2. Storing a
+-- credential before anything reads it is a liability with no benefit: it
+-- needs encryption-at-rest reasoning, refresh handling and a deletion policy,
+-- all to serve a feature that does not exist yet. The OAuth flow now uses the
+-- token once to identify the signer and discards it; phase 2 will design
+-- storage when there is a live consumer to design it against.
+--
+-- A no-op in production, which never ran that commit. It exists so the schema
+-- is deterministic for anyone who DID check it out — without this, whether
+-- the table is present depends on which commits a given database happened to
+-- pass through, and tests/api/test_oauth_routes.py asserts it is absent.
+--
+-- IF EXISTS, like everything else here: bootstrap_schema() re-runs every
+-- migration on every api and worker startup.
+DROP TABLE IF EXISTS github_user_tokens;

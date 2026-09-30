@@ -145,14 +145,28 @@ cannot do three things:
 ### Turning `app` mode on
 
 1. On the **GitHub App** settings page, add the callback URL:
-   `https://<your-api-fqdn>/auth/callback`. Keep the EasyAuth one
-   (`/.auth/login/github/callback`) alongside it until the new mode is proven —
-   a GitHub App accepts several, and removing the old one is what makes rollback
-   impossible.
+   `https://<your-api-fqdn>/auth/callback`, and generate a client secret.
+
+   Note these are the **GitHub App's** (client id `Iv2…`). EasyAuth's
+   `/.auth/login/github/callback` belongs to a *separate OAuth App*
+   (`Ov23…`) and is configured on that registration — nothing here touches
+   it, which is exactly why rolling back works: the EasyAuth registration is
+   left intact and untouched throughout.
 2. Generate a client secret on that page if there isn't one.
-3. Set `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET` and
-   `SESSION_SECRET`, then set `DASHBOARD_AUTH_MODE=app`.
-4. Azure EasyAuth can be left **enabled** in allow-anonymous mode: in `app` mode
+3. Store the two secrets as Container Apps **secrets**, not plain env vars:
+
+   ```bash
+   az containerapp secret set -n codeguard-api -g codeguard-prod        --secrets github-oauth-client-secret=<value> session-secret=<value>
+   ```
+
+   `deploy/azure.sh` references them as
+   `GITHUB_OAUTH_CLIENT_SECRET=secretref:github-oauth-client-secret` and
+   `SESSION_SECRET=secretref:session-secret`. Only `GITHUB_OAUTH_CLIENT_ID`
+   and `DASHBOARD_AUTH_MODE` are plain values — the id is not a secret, since
+   it travels in a redirect URL the browser follows.
+
+4. Set `DASHBOARD_AUTH_MODE=app`.
+5. Azure EasyAuth can be left **enabled** in allow-anonymous mode: in `app` mode
    the `X-MS-CLIENT-PRINCIPAL` header is ignored outright, so leaving it on
    changes nothing and keeps the rollback one variable away.
 

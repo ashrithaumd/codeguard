@@ -281,32 +281,66 @@ def test_logout_is_not_a_get(client, app_mode):
     assert client.get("/auth/logout", follow_redirects=False).status_code in (404, 405)
 
 
-# --- the token reaches the database and nothing else ---------------------
+# --- the token is used once and kept nowhere ----------------------------
 
 
-async def test_the_token_is_stored_server_side(client, pool, app_mode, github_accepts):
-    """Phase 2's prerequisite. The session does not depend on it, but it has
-    to actually be there."""
-    from codeguard.api import user_tokens
+async def test_the_token_is_written_to_no_database_column(
+    client, pool, app_mode, github_accepts,
+):
+    """It identifies the signer and is then discarded.
 
+    An earlier draft stored it for phase 2. Storing a credential before
+    anything reads it is a liability with no benefit -- it would need
+    encryption-at-rest reasoning, refresh handling and a deletion policy, to
+    serve a feature that does not exist. Phase 2 designs that with a live
+    consumer to design against.
+
+    Searches EVERY text-ish column of EVERY table rather than naming one, so
+    this keeps holding when a later change adds a table that looks like a
+    convenient place to put it.
+    """
     _resp, _location, state = _start_login(client)
     client.get(f"/auth/callback?code=abc&state={state}", follow_redirects=False)
 
-    assert await user_tokens.get(pool, str(USER_ID)) == TOKEN
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            """
+            SELECT table_name, column_name FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND data_type IN ('text', 'character varying', 'json', 'jsonb')
+            """
+        )
+        columns = [(r["table_name"], r["column_name"]) for r in await cur.fetchall()]
+        assert columns, "no columns inspected -- the search proved nothing"
+
+        found = []
+        for table, column in columns:
+            cur = await conn.execute(
+                f'SELECT count(*) AS n FROM "{table}" WHERE "{column}"::text LIKE %s',
+                (f"%{TOKEN}%",),
+            )
+            if (await cur.fetchone())["n"]:
+                found.append(f"{table}.{column}")
+
+    assert found == [], f"the GitHub token was written to {found}"
 
 
-async def test_a_storage_failure_does_not_block_sign_in(
-    client, pool, app_mode, github_accepts, monkeypatch,
+async def test_no_token_table_exists(pool):
+    """The table itself is gone, not merely unused."""
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT to_regclass('public.github_user_tokens') AS t"
+        )
+        assert (await cur.fetchone())["t"] is None
+
+
+async def test_sign_in_still_works_without_any_token_storage(
+    client, app_mode, github_accepts,
 ):
-    """The token is for later; the session is for now. Somebody must not be
-    locked out because a write failed."""
-    async def _boom(*a, **k):
-        raise RuntimeError("database unavailable")
-
-    monkeypatch.setattr("codeguard.api.user_tokens.store", _boom)
-
+    """The precision guard: removing storage must not remove sign-in."""
     _resp, _location, state = _start_login(client)
     resp = client.get(f"/auth/callback?code=abc&state={state}", follow_redirects=False)
 
     assert resp.status_code in (302, 303, 307)
-    assert session.COOKIE_NAME in resp.cookies
+    viewer = session.verify(resp.cookies[session.COOKIE_NAME], secret=SECRET)
+    assert viewer.login == LOGIN
