@@ -84,6 +84,34 @@ GITHUB_APP_ID="4934663"
 # deployment's own Anthropic credit, so "unset" must mean "no one", never
 # "everyone".
 DASHBOARD_AUDIT_PRINCIPALS="${DASHBOARD_AUDIT_PRINCIPALS:-183667058}"
+
+# Which sign-in the dashboard uses: "easyauth" (Azure Container Apps'
+# built-in) or "app" (CodeGuard's own GitHub OAuth flow). Declared here and
+# passed on every deploy for the same reason as the line above -- an
+# undeclared env var is one a future deploy can silently drop, and dropping
+# THIS one changes who can sign in.
+#
+# Defaults to easyauth, the mode verified live. Rolling back is this one
+# variable:
+#   az containerapp update -n codeguard-api -g codeguard-prod \
+#       --set-env-vars DASHBOARD_AUTH_MODE=easyauth
+DASHBOARD_AUTH_MODE="${DASHBOARD_AUTH_MODE:-easyauth}"
+
+# The GitHub App's OAuth client id, used only in "app" mode. NOT a secret --
+# it travels in a redirect URL the browser follows -- so a plain value, like
+# DASHBOARD_AUDIT_PRINCIPALS and for the same reason: putting a non-secret in
+# the secret store makes it harder to read than the thing it configures.
+#
+# The APP's client id (Iv2... prefix), NOT the EasyAuth OAuth App's
+# (Ov23liii...). Two different registrations with different callback URLs;
+# mixing them up gives a redirect_uri_mismatch that reads like a typo.
+GITHUB_OAUTH_CLIENT_ID="${GITHUB_OAUTH_CLIENT_ID:-Iv23liMt21lUXpodO0tx}"
+
+# GITHUB_OAUTH_CLIENT_SECRET and SESSION_SECRET are Container Apps SECRETS,
+# referenced as secretref: below, never held in this file or in a shell
+# variable. Create them once with:
+#   az containerapp secret set -n codeguard-api -g codeguard-prod \
+#       --secrets github-oauth-client-secret=... session-secret=...
 BUILD_BRANCH="main"        # the whole point of this script's existence
                             # per its own commit message: image builds
                             # come from main, not from a feature branch.
@@ -415,6 +443,10 @@ if az containerapp revision show --name "$API_APP_NAME" --resource-group "$RESOU
                 "DB_SSLMODE=require" \
                 "METRICS_AUTH_TOKEN=secretref:metrics-auth-token" \
                 "DASHBOARD_AUDIT_PRINCIPALS=$DASHBOARD_AUDIT_PRINCIPALS" \
+                "DASHBOARD_AUTH_MODE=$DASHBOARD_AUTH_MODE" \
+                "GITHUB_OAUTH_CLIENT_ID=$GITHUB_OAUTH_CLIENT_ID" \
+                "GITHUB_OAUTH_CLIENT_SECRET=secretref:github-oauth-client-secret" \
+                "SESSION_SECRET=secretref:session-secret" \
             --output none
     fi
 else
@@ -430,6 +462,10 @@ else
             "DB_SSLMODE=require" \
             "METRICS_AUTH_TOKEN=secretref:metrics-auth-token" \
             "DASHBOARD_AUDIT_PRINCIPALS=$DASHBOARD_AUDIT_PRINCIPALS" \
+            "DASHBOARD_AUTH_MODE=$DASHBOARD_AUTH_MODE" \
+            "GITHUB_OAUTH_CLIENT_ID=$GITHUB_OAUTH_CLIENT_ID" \
+            "GITHUB_OAUTH_CLIENT_SECRET=secretref:github-oauth-client-secret" \
+            "SESSION_SECRET=secretref:session-secret" \
         --output none
 fi
 
