@@ -41,18 +41,56 @@ rules:
       data. Delimit untrusted content explicitly (e.g. XML-ish tags) or
       pass it as a separate, clearly-labeled section instead of
       splicing it into the instruction text itself.
-    patterns:
-      - pattern-either:
-          # Anthropic Messages API
-          - pattern: '$CLIENT.messages.create(..., messages=[..., {"role": "user", "content": $A + $B}, ...], ...)'
-          - pattern: '$CLIENT.messages.create(..., messages=[..., {"role": "user", "content": f"..."}, ...], ...)'
-          # OpenAI Chat Completions API
-          - pattern: '$CLIENT.chat.completions.create(..., messages=[..., {"role": "user", "content": $A + $B}, ...], ...)'
-          - pattern: '$CLIENT.chat.completions.create(..., messages=[..., {"role": "user", "content": f"..."}, ...], ...)'
-          # OpenAI Responses API — one `input` string rather than a
-          # messages list, so the whole prompt is the injection surface.
-          - pattern: '$CLIENT.responses.create(..., input=$A + $B, ...)'
-          - pattern: '$CLIENT.responses.create(..., input=f"...", ...)'
+    # TAINT MODE, 2026-10-08. This was a set of search patterns that
+    # required the concatenation to be written INLINE in the content
+    # value, so the most ordinary shape there is --
+    #
+    #     prompt = "Classify the following support ticket:\n" + user_input
+    #     client.messages.create(..., messages=[{"role": "user", "content": prompt}])
+    #
+    # -- matched nothing (codeguard-playground assistant.py:44). The source
+    # is now the act of splicing a non-literal into a string, and the sink
+    # is the prompt-bearing argument, so the built string is followed
+    # through variables and into a messages list assembled elsewhere.
+    #
+    # Every source requires a string LITERAL on one side of the splice.
+    # `history + [new_turn]` is how a conversation is extended, not prompt
+    # splicing, and a bare `$A + $B` source fired on it. And a literal that
+    # is spliced with another literal is not a source at all: the
+    # metavariable-regex reads the operand's SOURCE TEXT, rather than
+    # leaning on constant propagation, because the propagation would also
+    # fold a module-level `user_input = "x"` -- which is how every older
+    # test case in llm-security.py is written.
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: '"..." + $X'
+              - pattern: '$X + "..."'
+              - pattern: '"..." % $X'
+              - pattern: '"...".format(..., $X, ...)'
+              - pattern: '$T.format(..., $K=$X, ...)'
+              - pattern: '$T.format(..., $X, ...)'
+          - metavariable-regex:
+              metavariable: $X
+              # Not a string literal (optionally r/b/u/f-prefixed).
+              regex: '^(?![rRbBuUfF]{0,2}["''])'
+      # An f-string with at least one placeholder. One without is a plain
+      # constant and matches nothing here.
+      - pattern: 'f"...{$X}..."'
+    # focus-metavariable, as in llm-secret-into-prompt: the sink is the
+    # prompt-bearing ARGUMENT, not the call. A spliced string that only
+    # reaches `model=` is not prompt content.
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: $CLIENT.messages.create(..., messages=$P, ...)
+              - pattern: $CLIENT.messages.create(..., system=$P, ...)
+              - pattern: $CLIENT.chat.completions.create(..., messages=$P, ...)
+              - pattern: $CLIENT.responses.create(..., input=$P, ...)
+              - pattern: $CLIENT.responses.create(..., instructions=$P, ...)
+              - pattern: $CLIENT.completions.create(..., prompt=$P, ...)
+          - focus-metavariable: $P
 
   - id: llm-missing-system-user-separation
     languages: [python]

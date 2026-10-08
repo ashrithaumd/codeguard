@@ -639,3 +639,108 @@ bare_client = OpenAI(api_key="sk-" + "notarealkeyatallxxxx")
 
 # ok: llm-hardcoded-api-key
 bare_client_ok = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+
+
+# --- llm-prompt-injection-concatenation: through a variable (taint) -------
+# The playground's exact shape (codeguard-playground assistant.py:44), which
+# matched nothing while every pattern required the concatenation INLINE in
+# the content value. Taint matches are reported at the sink, so each
+# annotation sits above the line where the built prompt is used.
+
+def classify(user_input):
+    prompt = "Classify the following support ticket:\n" + user_input
+    c = anthropic.Anthropic()
+    return c.messages.create(
+        model="claude-3-5-sonnet-20241022",
+        max_tokens=1024,
+        system=SYSTEM,
+        timeout=5,
+        # ruleid: llm-prompt-injection-concatenation
+        messages=[{"role": "user", "content": prompt}],
+    )
+
+
+def classify_fstring(ticket):
+    prompt = f"Classify this ticket: {ticket}"
+    # ruleid: llm-prompt-injection-concatenation
+    return client.messages.create(model="x", max_tokens=10, system=SYSTEM, timeout=5, messages=[{"role": "user", "content": prompt}])
+
+
+def classify_format(ticket):
+    prompt = "Classify this ticket: {}".format(ticket)
+    # ruleid: llm-prompt-injection-concatenation
+    return client.messages.create(model="x", max_tokens=10, system=SYSTEM, timeout=5, messages=[{"role": "user", "content": prompt}])
+
+
+TEMPLATE = "Classify this ticket: {ticket}"
+
+
+def classify_format_kw(ticket):
+    prompt = TEMPLATE.format(ticket=ticket)
+    # ruleid: llm-prompt-injection-concatenation
+    return client.messages.create(model="x", max_tokens=10, system=SYSTEM, timeout=5, messages=[{"role": "user", "content": prompt}])
+
+
+def classify_percent(ticket):
+    prompt = "Classify this ticket: %s" % ticket
+    # ruleid: llm-prompt-injection-concatenation
+    return client.messages.create(model="x", max_tokens=10, system=SYSTEM, timeout=5, messages=[{"role": "user", "content": prompt}])
+
+
+def system_from_input(persona):
+    system_prompt = f"You are {persona}."
+    # ruleid: llm-prompt-injection-concatenation
+    return client.messages.create(model="x", max_tokens=10, timeout=5, system=system_prompt, messages=[{"role": "user", "content": "hi"}])
+
+
+def openai_via_variable(question):
+    content = "Answer briefly: " + question
+    msgs = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": content}]
+    # ruleid: llm-prompt-injection-concatenation
+    return oai.chat.completions.create(model="gpt-4o", max_tokens=10, timeout=5, messages=msgs)
+
+
+def responses_via_variable(question):
+    text = "Answer briefly: " + question
+    # ruleid: llm-prompt-injection-concatenation
+    return oai.responses.create(model="gpt-4o", instructions=SYSTEM, max_output_tokens=10, timeout=5, input=text)
+
+
+def legacy_completion_prompt(question):
+    text = "Q: " + question + "\nA:"
+    # ruleid: llm-prompt-injection-concatenation
+    return oai.completions.create(model="gpt-3.5-turbo-instruct", max_tokens=10, timeout=5, prompt=text)
+
+
+# Constant-only prompts. Nothing an attacker controls reaches the call.
+
+def constant_concatenation():
+    prompt = "Classify the following support ticket:\n" + "Printer is on fire."
+    # ok: llm-prompt-injection-concatenation
+    return client.messages.create(model="x", max_tokens=10, system=SYSTEM, timeout=5, messages=[{"role": "user", "content": prompt}])
+
+
+def constant_variable():
+    prompt = "Classify the following support ticket: printer is on fire."
+    # ok: llm-prompt-injection-concatenation
+    return client.messages.create(model="x", max_tokens=10, system=SYSTEM, timeout=5, messages=[{"role": "user", "content": prompt}])
+
+
+def constant_fstring_without_placeholders():
+    prompt = f"Classify the following support ticket."  # noqa: F541 -- the case under test
+    # ok: llm-prompt-injection-concatenation
+    return client.messages.create(model="x", max_tokens=10, system=SYSTEM, timeout=5, messages=[{"role": "user", "content": prompt}])
+
+
+def history_list_concatenation(history, question):
+    """List concatenation is how a conversation is extended, not prompt
+    splicing -- the new turn is its own message. Must not fire."""
+    messages = history + [{"role": "user", "content": question}]
+    # ok: llm-prompt-injection-concatenation
+    return client.messages.create(model="x", max_tokens=10, system=SYSTEM, timeout=5, messages=messages)
+
+
+def built_prompt_only_used_for_the_model_name(suffix):
+    model_name = "claude-3-5-sonnet-" + suffix
+    # ok: llm-prompt-injection-concatenation
+    return client.messages.create(model=model_name, max_tokens=10, system=SYSTEM, timeout=5, messages=[{"role": "user", "content": "hi"}])
