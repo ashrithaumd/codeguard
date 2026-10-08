@@ -415,7 +415,7 @@ async def test_the_audit_page_says_there_are_no_fix_suggestions(
     audit_id = resp.headers["location"].rsplit("/", 1)[-1]
 
     page = client.get(f"/dashboard/audits/{audit_id}")
-    assert "no fix suggestions" in page.text.lower()
+    assert "no code patches (audits have no diff)" in page.text.lower()
 
 
 async def test_a_report_is_escaped_not_rendered_as_html(client, pool, as_principal, repo_is_public):

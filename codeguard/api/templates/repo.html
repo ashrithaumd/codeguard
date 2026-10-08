@@ -9,17 +9,26 @@
 {% endblock %}
 
 {% block content %}
-{% set agg = namespace(cost=0, findings=0, tokens=0) %}
+{#
+  EVERY tile is reviews plus the viewer's own audits, with the split shown
+  under it. Total cost already included audits while Findings and Tokens in
+  did not, so an audited repo read "$0.0892 spent, 0 findings, 0 tokens".
+  `audits` is already scoped to the viewer (audits.for_repo). An audit with
+  no recorded counts (a failed one) adds no findings.
+#}
+{% set rv = namespace(cost=0, findings=0, tokens=0) %}
+{% set au = namespace(cost=0, findings=0, tokens=0) %}
 {% for r in reviews %}
-  {% set agg.cost = agg.cost + (r.estimated_cost_usd or 0) %}
-  {% set agg.findings = agg.findings + (r.findings_total or 0) %}
-  {% set agg.tokens = agg.tokens + (r.tokens_in or 0) %}
+  {% set rv.cost = rv.cost + (r.estimated_cost_usd or 0) %}
+  {% set rv.findings = rv.findings + (r.findings_total or 0) %}
+  {% set rv.tokens = rv.tokens + (r.tokens_in or 0) %}
 {% endfor %}
-{# Total cost is reviews plus the viewer's own audits, the same sum as the
-   Repositories row; `audits` is already scoped to the viewer. #}
 {% for a in audits %}
-  {% set agg.cost = agg.cost + (a.estimated_cost_usd or 0) %}
+  {% set au.cost = au.cost + (a.estimated_cost_usd or 0) %}
+  {% set au.findings = au.findings + (a.counts.total if a.counts else 0) %}
+  {% set au.tokens = au.tokens + (a.tokens_in or 0) %}
 {% endfor %}
+{% set split_label = reviews|length ~ " review" ~ ("" if reviews|length == 1 else "s") ~ " · " ~ audits|length ~ " audit" ~ ("" if audits|length == 1 else "s") %}
 {#
   COST PER REVIEWED FILE, not cost per review. The raw-cost chart was
   removed on Sept 22 because a repo-wide series mixes pull requests: two
@@ -48,10 +57,10 @@
 </div>
 
 <div class="stats">
-  <div class="stat"><div class="k">Reviews</div><div class="v">{{ reviews|length }}</div></div>
-  <div class="stat"><div class="k">{{ m.term("Findings") }}</div><div class="v">{{ agg.findings }}</div></div>
-  <div class="stat"><div class="k">Tokens in</div><div class="v">{{ "{:,}".format(agg.tokens) }}</div></div>
-  <div class="stat"><div class="k">Total {{ m.term("Cost", "cost") }}</div><div class="v">{{ m.cost(agg.cost) }}</div></div>
+  <div class="stat"><div class="k">Activity</div><div class="v">{{ reviews|length + audits|length }}</div><div class="split">{{ split_label }}</div></div>
+  <div class="stat"><div class="k">{{ m.term("Findings") }}</div><div class="v">{{ rv.findings + au.findings }}</div><div class="split">{{ rv.findings }} in reviews · {{ au.findings }} in audits</div></div>
+  <div class="stat"><div class="k">Tokens in</div><div class="v">{{ "{:,}".format(rv.tokens + au.tokens) }}</div><div class="split">{{ "{:,}".format(rv.tokens) }} reviews · {{ "{:,}".format(au.tokens) }} audits</div></div>
+  <div class="stat"><div class="k">Total {{ m.term("Cost", "cost") }}</div><div class="v">{{ m.cost(rv.cost + au.cost) }}</div><div class="split">{{ split_label }}</div></div>
 </div>
 
 {% if series %}
@@ -197,6 +206,7 @@
       <thead>
         <tr>
           <th>Status</th>
+          <th>{{ m.term("Findings") }}</th>
           <th class="num">Duration</th>
           <th class="num">{{ m.term("Cost") }}</th>
           <th class="num">Requested</th>
@@ -206,7 +216,11 @@
       <tbody>
         {% for a in audits %}
         <tr class="row-link" data-href="/dashboard/audits/{{ a.id }}">
-          <td><a href="/dashboard/audits/{{ a.id }}">{{ a.status|replace("_", " ")|capitalize }}</a></td>
+          <td>
+            <a href="/dashboard/audits/{{ a.id }}">{{ a.status|replace("_", " ")|capitalize }}</a>
+            {% if loop.first %}<span class="pill ok">Latest</span>{% endif %}
+          </td>
+          <td>{% if a.counts %}{{ a.counts.label }}{% else %}<span class="dim">—</span>{% endif %}</td>
           <td class="num dim">{% if a.duration_s %}{{ "%.1f"|format(a.duration_s) }}s{% else %}—{% endif %}</td>
           <td class="num">{{ m.cost(a.estimated_cost_usd) }}</td>
           <td class="num dim nowrap">{{ m.when(a.created_at) }}</td>

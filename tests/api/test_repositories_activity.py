@@ -135,8 +135,8 @@ async def test_the_audit_note_is_a_tooltip_on_the_button_not_a_banner(client, po
     as_principal(VIEWER, audit_principals=VIEWER)
     html = _get(client, PUBLIC).text
 
-    assert html.lower().count("audit mode reports findings only") == 1
+    assert html.lower().count("audit mode: findings and how to fix them") == 1
     assert '<div class="banner" role="note">' not in html
     row = _row(html, PUBLIC)
-    assert re.search(r'data-tip="Audit mode reports findings only[^"]*"[^>]*>\s*<form', row) or \
-        re.search(r'data-tip="Audit mode reports findings only', row)
+    assert re.search(r'data-tip="Audit mode: findings and how to fix them[^"]*"[^>]*>\s*<form', row) or \
+        re.search(r'data-tip="Audit mode: findings and how to fix them', row)

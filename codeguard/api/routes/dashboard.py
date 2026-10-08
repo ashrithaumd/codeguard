@@ -37,6 +37,7 @@ from fastapi.templating import Jinja2Templates
 from codeguard.api import access, audits, csrf, repo_url
 from codeguard.api import dashboard_queries as q
 from codeguard.api.auth import client_principal, client_viewer
+from codeguard.api.display import blob_url, finding_counts, sentence_case
 from codeguard.config import get_settings
 from codeguard.queue.queue import enqueue
 from codeguard.redact import redact
@@ -69,6 +70,10 @@ def _utc(ts: datetime) -> datetime:
 
 
 templates.env.filters["utc"] = _utc
+# Titles arrive in whatever case the model chose; links are built from file
+# names a repository's authors chose. Both handled in code -- see display.py.
+templates.env.filters["sentence_case"] = sentence_case
+templates.env.globals["blob_url"] = blob_url
 
 PAGE_SIZE = 50
 
@@ -312,8 +317,13 @@ async def repo_detail(request: Request, owner: str, repo: str) -> HTMLResponse:
 
     reviews = await q.repo_history(pool, owner=owner, repo=repo)
     pulls = await q.pr_summaries(pool, owner=owner, repo=repo)
-    # The viewer's OWN audits only -- see audits.for_repo.
-    repo_audits = await audits.for_repo(pool, owner, repo, requested_by=principal)
+    # The viewer's OWN audits only -- see audits.for_repo. Each carries its
+    # finding counts (display.finding_counts: report_json, or the markdown
+    # of an audit that predates it) for the Findings column and the tiles.
+    repo_audits = [
+        {**a, "counts": finding_counts(a)}
+        for a in await audits.for_repo(pool, owner, repo, requested_by=principal)
+    ]
     return render_page(request, "repo.html", principal,
                  owner=owner, repo=repo, reviews=reviews, pulls=pulls, audits=repo_audits)
 
@@ -347,11 +357,7 @@ async def pr_detail(request: Request, owner: str, repo: str, pr_number: int) -> 
 # "No fix suggestions" means no committable suggestion block. Each finding
 # still says how to fix it in words, so the note says which is missing
 # rather than appearing to contradict the "How to fix" on every card.
-AUDIT_NO_FIXES_NOTE = (
-    "Audit mode reports findings only — no fix suggestions to commit. Each finding says "
-    "how to fix it, but code suggestions are anchored to a pull request's diff, and an "
-    "audit has no diff."
-)
+AUDIT_NO_FIXES_NOTE = "Audit mode: findings and how to fix them; no code patches (audits have no diff)."
 
 # Why the button is absent on a private repository. run_audit clones over
 # HTTPS and would need a credential in the URL to reach a private repo;

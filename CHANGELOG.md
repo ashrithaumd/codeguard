@@ -155,6 +155,26 @@ Container Apps instead of warning.
 - The per-delivery footnote appears only on the Reviews list.
 - `GET /` redirects (302) to `/dashboard`.
 
+#### Audit and repo pages, third pass
+
+- Repo page tiles (Activity, Findings, Tokens in, Total cost) all include
+  the viewer's own audits, with a reviews/audits split under each. Total
+  cost included audits while the others did not.
+- The repo page's Audits table has a Findings column ("12 · 1 Critical,
+  4 High") and marks the latest audit. Audits written before report_json
+  take their counts from their own stored report.
+- Audit cards show the location under the title at a readable size, linked
+  to the line on GitHub at the audited commit (`blob/<sha>/<path>#L<n>`,
+  `#L<a>-L<b>` for ranges; `rel="noopener noreferrer"`). The commit is now
+  recorded per audit (migration 013, `audits.commit_sha`); older audits show
+  plain text. Paths are percent-encoded and anything that is not a full
+  commit hash or a clean path is not linked.
+- Finding titles are sentence case at render time, in code; acronyms
+  (SQL, LLM, API), code (`eval()`, `max_tokens`) and product names
+  (OpenAI, Anthropic) are kept.
+- The audit-mode note is one line: "Audit mode: findings and how to fix
+  them; no code patches (audits have no diff)."
+
 #### Measured
 
 **Pending: API credit exhausted.** The eval comparison (HEAD vs this branch,

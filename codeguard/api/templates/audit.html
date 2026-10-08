@@ -118,11 +118,24 @@
     <li class="finding-card sev-edge-{{ f.severity }}">
       <div class="finding-head">
         {{ m.severity(f.severity|upper) }}
-        <span class="finding-title">{{ f.title|redact }}</span>
+        {#
+          The location sits UNDER the title, at a readable size; it was small
+          grey text at the far right. Linked to the line on GitHub at the
+          commit that was audited, when that commit was recorded (audits
+          from before migration 013 show plain text). A taint finding shows
+          where the value was built, then where it reached the model, and
+          links the whole span. blob_url returns None for anything it will
+          not vouch for, and the plain text is shown instead.
+        #}
+        <div class="finding-titles">
+          <span class="finding-title">{{ f.title|sentence_case|redact }}</span>
+          {%- set first = [f.source_line, f.start_line]|select|min if f.source_line else f.start_line %}
+          {%- set last = [f.end_line, f.start_line]|max %}
+          {%- set url = blob_url(audit.owner, audit.repo, audit.commit_sha, f.file, first, last) %}
+          {%- set loc %}{{ f.file }}:{% if f.source_line %}{{ f.source_line }} → {% endif %}{{ f.start_line }}{% if f.end_line > f.start_line %}–{{ f.end_line }}{% endif %}{% endset %}
+          {% if url %}<a class="finding-loc" href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ loc }}</a>{% else %}<code class="finding-loc">{{ loc }}</code>{% endif %}
+        </div>
         {% if f.unreviewed %}<span class="pill warn">Unreviewed</span>{% endif %}
-        {# A taint finding: where the value was built, then where it reached
-           the model. `source_line` is absent in reports written before it. #}
-        <code class="finding-loc">{{ f.file }}:{% if f.source_line %}{{ f.source_line }} → {% endif %}{{ f.start_line }}{% if f.end_line > f.start_line %}–{{ f.end_line }}{% endif %}</code>
       </div>
       <dl class="finding-body">
         <dt>What</dt><dd>{{ f.what|redact }}</dd>
@@ -152,7 +165,7 @@
     <li class="finding-card sev-edge-{{ f.severity }}">
       <div class="finding-head">
         {{ m.severity(f.severity|upper) }}
-        <span class="finding-title">{{ f.title|redact }}</span>
+        <span class="finding-title">{{ f.title|sentence_case|redact }}</span>
       </div>
       <p class="finding-text">{{ f.message|redact }}</p>
       <div class="finding-rules">{% for rule in f.rules %}<span class="tag rule">{{ rule }}</span>{% endfor %}</div>

@@ -140,7 +140,7 @@ async def test_skipped_test_asserts_and_repo_level_findings_are_shown(client, po
 async def test_the_audit_note_appears_exactly_once(client, pool, as_principal):
     as_principal(VIEWER)
     page = client.get(f"/dashboard/audits/{await _audit(pool, report_json=_report())}").text
-    assert page.lower().count("no fix suggestions") == 1
+    assert page.lower().count("no code patches") == 1
 
 
 async def test_an_audit_from_before_report_json_falls_back_to_the_raw_report(client, pool, as_principal):

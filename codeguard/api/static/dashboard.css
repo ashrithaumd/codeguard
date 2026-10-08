@@ -745,10 +745,15 @@ details.fold > summary:focus-visible { outline: 2px solid var(--accent); outline
 .sev-edge-low      { border-left-color: var(--sev-low); }
 .finding-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; }
 .finding-title { font-weight: 600; font-size: 17px; }
+/* The title block: title, then its location UNDER it at a readable size.
+ * The location was small grey text pushed to the far right of the row. */
+.finding-titles { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
 .finding-loc {
-  font-family: var(--mono); font-size: 13.5px; color: var(--text-mute);
-  margin-left: auto; overflow-wrap: anywhere;
+  font-family: var(--mono); font-size: 15px; color: var(--text);
+  overflow-wrap: anywhere; align-self: flex-start;
 }
+a.finding-loc { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+a.finding-loc:hover { text-decoration-thickness: 2px; }
 .finding-body {
   display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px;
   margin: 10px 0 0; max-width: 90ch;
@@ -761,7 +766,6 @@ details.fold > summary:focus-visible { outline: 2px solid var(--accent); outline
 @media (max-width: 640px) {
   .finding-body { grid-template-columns: 1fr; }
   .finding-body dt { margin-top: 4px; }
-  .finding-loc { margin-left: 0; }
 }
 
 .tech { display: grid; grid-template-columns: max-content 1fr; gap: 8px 16px; margin: 0; padding: 12px 18px 16px; }
@@ -795,3 +799,6 @@ details.fold > summary:focus-visible { outline: 2px solid var(--accent); outline
  * muted text, so nothing said it could be clicked. */
 .last-audit.link { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 .last-audit.link:hover { text-decoration-thickness: 2px; }
+
+/* Repo page tiles: the reviews/audits split under each figure. */
+.stat .split { font-size: 13px; color: var(--text-mute); margin-top: 2px; }
