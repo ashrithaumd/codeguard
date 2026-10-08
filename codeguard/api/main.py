@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import os
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request
@@ -33,6 +35,31 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname
 logger = logging.getLogger("codeguard.api")
 
 
+class DevPrincipalInAzure(RuntimeError):
+    """DASHBOARD_TRUST_DEV_PRINCIPAL is on inside Azure Container Apps."""
+
+
+def refuse_dev_principal_in_azure(settings, environ: Mapping[str, str]) -> None:
+    """Refuse to start with the dev-principal override inside Azure.
+
+    The override forces every dashboard visitor's identity to one login and
+    ignores the EasyAuth header -- locally, how the dashboard is driven
+    without GitHub; deployed, the operator's identity and audit button for
+    anyone who can reach the URL. It was a startup warning. In Azure it is
+    now a refusal, because a crash-looping revision is noticed and a log
+    line is not.
+
+    CONTAINER_APP_NAME is set by the Container Apps runtime in every
+    container it runs, and by nothing on a developer machine.
+    """
+    if settings.dashboard_trust_dev_principal and environ.get("CONTAINER_APP_NAME"):
+        raise DevPrincipalInAzure(
+            "DASHBOARD_TRUST_DEV_PRINCIPAL is set, and this is running in Azure Container Apps "
+            f"({environ['CONTAINER_APP_NAME']!r}). It forces every dashboard visitor's identity "
+            "and must never be enabled in a deployment. Remove it from the app's environment."
+        )
+
+
 async def _on_sweep(pool, result) -> None:
     """Reaper callback: best-effort dead-letter notice for every job the
     reaper itself dead-lettered (a crash-looping worker that never called
@@ -61,6 +88,8 @@ async def lifespan(app: FastAPI):
     # webhooks it cannot review.
     verify_required_settings()
     settings = get_settings()
+    # Before the pool, before anything is served.
+    refuse_dev_principal_in_azure(settings, os.environ)
     pool = await create_pool(settings)
     await bootstrap_schema(pool)
     app.state.pool = pool

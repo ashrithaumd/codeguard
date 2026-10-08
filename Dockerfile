@@ -29,6 +29,17 @@ RUN if [ "$INSTALL_DEV" = "true" ]; then \
 
 COPY . .
 
+# The tokenizer, bundled. tiktoken downloads cl100k_base on first use, so
+# every new container used to fetch it at runtime -- a cold-start cost on
+# every scale-from-zero worker, and a failed first audit on any network
+# that blocks the download. Fetched once here instead, into a directory
+# outside $HOME (which belongs to the runtime user, created below) and
+# made world-readable, and TIKTOKEN_CACHE_DIR points tiktoken at it.
+# scripts/smoke_image.sh proves it with --network none.
+ENV TIKTOKEN_CACHE_DIR=/opt/tiktoken
+RUN python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')" \
+    && chmod -R a+rX /opt/tiktoken
+
 # Drop root. An audit clones a repository somebody else wrote and hands it
 # to three parsers -- Bandit, Semgrep and Ruff -- each of which reads
 # attacker-authored files in this container's own process tree. Root was
@@ -41,8 +52,8 @@ COPY . .
 # and PYTHONDONTWRITEBYTECODE stops it trying.
 #
 # What the user DOES own is a home directory, because several things want
-# one and are not graceful without it: Semgrep caches under $HOME, and
-# tiktoken caches its downloaded encoding. A non-root image that forgets
+# one and are not graceful without it: Semgrep caches under $HOME. (So did
+# tiktoken, until its encoding was bundled above.) A non-root image that forgets
 # this works right up until the first real audit, then fails on a
 # permissions error that reads like a code bug.
 #
