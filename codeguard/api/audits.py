@@ -383,6 +383,24 @@ async def in_flight_for_requester(
     return await _in_flight_for(pool, requested_by=requested_by)
 
 
+async def for_repo(
+    pool: AsyncConnectionPool, owner: str, repo: str, *, requested_by: str,
+) -> list[dict]:
+    """This viewer's audits of one repository, newest first -- the repo
+    page's Audits section. requested_by is required for the same reason as
+    audit_stats': an audit is visible only to the person who asked for it.
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"SELECT {_COLUMNS} FROM audits "
+                "WHERE owner = %s AND repo = %s AND lower(requested_by) = lower(%s) "
+                "ORDER BY created_at DESC LIMIT 50",
+                (owner, repo, requested_by),
+            )
+            return await cur.fetchall()
+
+
 async def audit_stats(
     pool: AsyncConnectionPool, *, requested_by: str,
 ) -> dict[tuple[str, str], dict[str, Any]]:

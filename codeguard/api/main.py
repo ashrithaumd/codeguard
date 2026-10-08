@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -218,6 +218,10 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     # "something went wrong" and nothing to do about it.
     if exc.status_code == 400 and exc.detail:
         body = exc.detail
+    back_href, back_label = "/dashboard", "Back to reviews"
+    if exc.status_code == 404:
+        thing, back_href, back_label = _not_found_subject(request.url.path)
+        body = _NOT_FOUND_BODY.format(thing=thing)
     # render_page, NOT a TemplateResponse of our own. This handler used to
     # assemble its own context, which meant it silently missed csp_nonce
     # when that was added: every error page rendered nonce="" and had all
@@ -242,6 +246,7 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
         request, "error.html", client_principal(request),
         status_code=exc.status_code,
         status=exc.status_code, title=title, body=body,
+        back_href=back_href, back_label=back_label,
     )
 
 
@@ -265,6 +270,33 @@ _ERROR_COPY = {
     500: ("Something went wrong",
           "The dashboard could not load this page. The error has been logged."),
 }
+
+
+# The 404 names what the ROUTE was for and links back to the list it came
+# from. It said "This review..." / "Back to reviews" on a repository's page
+# too. Still deliberately silent on WHICH of the two it is: routes answer
+# 404 for "does not exist" and "not yours" alike.
+_NOT_FOUND_BODY = (
+    "This {thing} either does not exist or is not visible to you. "
+    "If it belongs to a private repository, sign in with a GitHub account that can access it."
+)
+
+
+def _not_found_subject(path: str) -> tuple[str, str, str]:
+    """(what the page was, where to go back to, the link text)."""
+    if path.startswith("/dashboard/repos/") and "/pulls/" in path:
+        return "pull request", "/dashboard/repos", "Back to repositories"
+    if path.startswith("/dashboard/repos"):
+        return "repository", "/dashboard/repos", "Back to repositories"
+    if path.startswith("/dashboard/audits"):
+        return "audit", "/dashboard/repos", "Back to repositories"
+    return "review", "/dashboard", "Back to reviews"
+
+
+@app.get("/", include_in_schema=False)
+async def root() -> RedirectResponse:
+    """The bare origin lands on the dashboard rather than a 404."""
+    return RedirectResponse(url="/dashboard", status_code=302)
 
 
 @app.get("/metrics", dependencies=[Depends(require_metrics_token)])

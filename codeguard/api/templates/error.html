@@ -14,7 +14,7 @@
     </svg>
     <div class="title">{{ title }}</div>
     <div class="body">{{ body }}</div>
-    <div class="actions"><a class="btn primary" href="/dashboard">Back to reviews</a></div>
+    <div class="actions"><a class="btn primary" href="{{ back_href or '/dashboard' }}">{{ back_label or "Back to reviews" }}</a></div>
   </div>
 </div>
 {% endblock %}

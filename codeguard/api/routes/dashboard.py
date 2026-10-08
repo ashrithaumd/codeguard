@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 from uuid import UUID
@@ -58,6 +59,16 @@ templates.env.filters["redact"] = redact
 # One wording for "the verdict call failed, these are raw findings", shared
 # with the audit report and the PR summary (see report_format).
 templates.env.globals["unreviewed_notice"] = UNREVIEWED_NOTICE_TEXT
+
+
+def _utc(ts: datetime) -> datetime:
+    """For m.when(): the instant in UTC. Every column is timestamptz, so
+    rows arrive aware; a naive value (a fixture, a hand-built row) is taken
+    to be UTC already rather than guessed at."""
+    return ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts.astimezone(timezone.utc)
+
+
+templates.env.filters["utc"] = _utc
 
 PAGE_SIZE = 50
 
@@ -282,26 +293,29 @@ async def repo_detail(request: Request, owner: str, repo: str) -> HTMLResponse:
     pool = request.app.state.pool
     principal = client_principal(request)
 
+    # ACCESS FIRST, and access is the whole question. This used to 404
+    # whenever the repo had no review rows -- before asking anything else --
+    # so an installed, accessible repository with only audits (or with no
+    # activity yet) read "Not found", from a row the Repositories page had
+    # just linked. Now the rule is exactly that page's: can_access_repo,
+    # which also requires the App to be installed on the repo (no
+    # installation, no collaborator check, no access). Anonymous visitors
+    # and non-collaborators get the same 404 as before, for a repo that
+    # exists or not.
+    #
+    # The per-row `any(private)` rule stays subsumed by this: the question
+    # is "may this person see this repository at all", which is strictly
+    # stronger than anything the rows say and does not depend on there
+    # being rows.
+    if not principal or not access.can_access_repo(owner, repo, principal):
+        raise HTTPException(status_code=404, detail="repo not found")
+
     reviews = await q.repo_history(pool, owner=owner, repo=repo)
-    if not reviews:
-        raise HTTPException(status_code=404, detail="repo not found")
-
-    # ANY private row in the history gates the whole page, not just the
-    # newest one. This page lists every review it fetched, so asking only
-    # the newest row would publish a repo's entire private history the
-    # moment it was made public — the rows recorded while it was private
-    # included. Visibility is per-row because it is recorded per-row
-    # (migrations/007), so the strictest row is the one that answers.
-    # The per-row `any(private)` rule is gone because it is subsumed: the
-    # question is no longer "is any row private" but "may this person see
-    # this repository at all", which is strictly stronger and does not
-    # depend on what the rows happen to say.
-    if not access.can_access_repo(owner, repo, principal):
-        raise HTTPException(status_code=404, detail="repo not found")
-
     pulls = await q.pr_summaries(pool, owner=owner, repo=repo)
+    # The viewer's OWN audits only -- see audits.for_repo.
+    repo_audits = await audits.for_repo(pool, owner, repo, requested_by=principal)
     return render_page(request, "repo.html", principal,
-                 owner=owner, repo=repo, reviews=reviews, pulls=pulls)
+                 owner=owner, repo=repo, reviews=reviews, pulls=pulls, audits=repo_audits)
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{pr_number}", response_class=HTMLResponse)

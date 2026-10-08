@@ -15,6 +15,11 @@
   {% set agg.findings = agg.findings + (r.findings_total or 0) %}
   {% set agg.tokens = agg.tokens + (r.tokens_in or 0) %}
 {% endfor %}
+{# Total cost is reviews plus the viewer's own audits, the same sum as the
+   Repositories row; `audits` is already scoped to the viewer. #}
+{% for a in audits %}
+  {% set agg.cost = agg.cost + (a.estimated_cost_usd or 0) %}
+{% endfor %}
 {#
   COST PER REVIEWED FILE, not cost per review. The raw-cost chart was
   removed on Sept 22 because a repo-wide series mixes pull requests: two
@@ -38,7 +43,7 @@
 <div class="page-head">
   <div>
     <h1>{{ owner }}/{{ repo }}</h1>
-    <div class="sub">{{ reviews|length }} review{{ "" if reviews|length == 1 else "s" }} recorded{% if reviews and reviews[0].private %} · private repository{% endif %}</div>
+    <div class="sub">{{ reviews|length }} review{{ "" if reviews|length == 1 else "s" }} · {{ audits|length }} audit{{ "" if audits|length == 1 else "s" }} by you{% if reviews and reviews[0].private %} · private repository{% endif %}</div>
   </div>
 </div>
 
@@ -122,10 +127,20 @@
 
 <div class="panel">
   <div class="panel-head">
-    <h2>All reviews</h2>
+    <h2>Reviews</h2>
     <span class="count">{{ reviews|length }}</span>
     <span class="spacer"></span>
   </div>
+  {#
+    A repository with no PR review is a real state -- installed, no pull
+    request opened yet, or only audited -- and renders, with this empty
+    state. It used to be a 404.
+  #}
+  {% if not reviews %}
+    {{ m.empty_state("No reviews yet",
+       "CodeGuard reviews each new pull request on this repository automatically. None has been reviewed yet.",
+       "inbox") }}
+  {% else %}
   <div class="table-wrap">
     <table>
       <thead>
@@ -162,5 +177,45 @@
       </tbody>
     </table>
   </div>
+  {% endif %}
+</div>
+
+{# Your own audits only: an audit is visible only to the person who asked
+   for it (audits.for_repo). #}
+<div class="panel">
+  <div class="panel-head">
+    <h2>Audits</h2>
+    <span class="count">{{ audits|length }}</span>
+  </div>
+  {% if not audits %}
+    {{ m.empty_state("No audits yet",
+       "Audits you run on this repository from the Repositories page are listed here.",
+       "search") }}
+  {% else %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Status</th>
+          <th class="num">Duration</th>
+          <th class="num">{{ m.term("Cost") }}</th>
+          <th class="num">Requested</th>
+          <th class="chev"><span class="visually-hidden">Open</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for a in audits %}
+        <tr class="row-link" data-href="/dashboard/audits/{{ a.id }}">
+          <td><a href="/dashboard/audits/{{ a.id }}">{{ a.status|replace("_", " ")|capitalize }}</a></td>
+          <td class="num dim">{% if a.duration_s %}{{ "%.1f"|format(a.duration_s) }}s{% else %}—{% endif %}</td>
+          <td class="num">{{ m.cost(a.estimated_cost_usd) }}</td>
+          <td class="num dim nowrap">{{ m.when(a.created_at) }}</td>
+          {{ m.chevron() }}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
 </div>
 {% endblock %}
