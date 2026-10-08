@@ -187,7 +187,8 @@
               </span>
             {% endif %}
             {% if r.audit and not r.audit_in_flight %}
-              <a class="last-audit" href="/dashboard/audits/{{ r.audit.id }}">
+              {# A link that looks like one: it was styled as grey text. #}
+              <a class="last-audit link" href="/dashboard/audits/{{ r.audit.id }}" title="Open this audit">
                 last: {{ r.audit.status }}
               </a>
             {% endif %}

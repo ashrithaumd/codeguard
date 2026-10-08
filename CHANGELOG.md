@@ -138,6 +138,23 @@ Container Apps instead of warning.
 - `tests/tooling/` is now in `testpaths`; two test files written at the top
   of `tests/` had not been collected by a bare `pytest`.
 
+#### Dashboard fixes, second pass
+
+- **The repo page no longer 404s for a repository with no PR review.** It
+  answered 404 whenever there were no review rows, before checking access,
+  so an installed repo with only audits (or no activity) read "Not found"
+  from a link on the Repositories page. Present on main too. It now renders
+  for any repo the viewer can access (the Repositories page's rule), with a
+  Reviews section (empty state when none) and an Audits section listing the
+  viewer's own audits; Total cost includes them. Inaccessible repos still 404.
+- 404 pages name what was not found (repository / pull request / audit /
+  review) and link back to the right list.
+- "last: done" under Run audit is styled as the link it always was.
+- Timestamps are `<time datetime="…Z">` elements labelled UTC, rewritten to
+  the viewer's local time by a nonce'd script; the CSP is unchanged.
+- The per-delivery footnote appears only on the Reviews list.
+- `GET /` redirects (302) to `/dashboard`.
+
 #### Measured
 
 **Pending: API credit exhausted.** The eval comparison (HEAD vs this branch,

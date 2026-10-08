@@ -48,8 +48,15 @@
   ${{ "%.4f"|format(v or 0) }}
 {%- endmacro %}
 
+{#
+  A timestamp: a <time> element carrying the instant in ISO-8601 UTC, whose
+  text is the UTC time LABELLED as UTC. base.html's script rewrites it to the
+  viewer's local time; with scripts off, the label is what keeps "16:39"
+  from being read as local.
+#}
 {% macro when(ts) -%}
-  <span title="{{ ts }}">{{ ts.strftime("%b %d, %H:%M") }}</span>
+  {%- set u = ts|utc -%}
+  <time datetime="{{ u.strftime('%Y-%m-%dT%H:%M:%SZ') }}" data-local-time>{{ u.strftime("%b %d, %H:%M") }} UTC</time>
 {%- endmacro %}
 
 {% macro empty_state(title, body, glyph="inbox") -%}

@@ -790,3 +790,8 @@ details.fold > summary:focus-visible { outline: 2px solid var(--accent); outline
   font-size: 12px; color: var(--text-mute); white-space: nowrap; font-variant-numeric: tabular-nums;
 }
 .chart .bars:has(.bar-label) { margin-bottom: 22px; }
+
+/* "last: done" under Run audit is a link to that audit; it was styled as
+ * muted text, so nothing said it could be clicked. */
+.last-audit.link { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+.last-audit.link:hover { text-decoration-thickness: 2px; }
