@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 from codeguard.config import RepoConfig, get_settings
 from codeguard.pipeline.llm_call import AgentCallResult
-from codeguard.pipeline.nodes import review_ai_aware, route_to_ai_aware_reviews, route_to_file_reviews
+from codeguard.pipeline.nodes import review_ai_aware, route_to_ai_aware_reviews, route_to_file_reviews, verdict_cache_agent
 from codeguard.severity import Severity
 from tests.pipeline.conftest import make_finding
 
@@ -62,7 +62,7 @@ def test_review_ai_aware_confirmed_verdict_produces_a_finding_and_tracks_cost():
     assert result["estimated_cost_usd"] > 0
     assert result["node_latencies"][0]["node"] == "review_ai_aware"
     assert len(result["cache_writes"]) == 1
-    assert result["cache_writes"][0].agent == "ai_aware"
+    assert result["cache_writes"][0].agent == verdict_cache_agent("ai_aware")
 
 
 def test_review_ai_aware_confirmed_verdict_with_dismissal_language_is_flipped_to_dismissed():
@@ -185,7 +185,7 @@ def test_review_ai_aware_falls_back_to_raw_findings_on_api_failure():
     with patch("codeguard.pipeline.nodes.call_agent", return_value=AgentCallResult(raw_text=None, error="boom")):
         result = review_ai_aware(_file_state(findings=[finding]))
 
-    assert result["findings"] == [finding]
+    assert result["findings"] == [finding.model_copy(update={"unreviewed": True})]
     assert "tokens_in" not in result
     assert "dismissed_findings" not in result
 
@@ -197,7 +197,7 @@ def test_review_ai_aware_uses_hunk_cache_hit_and_skips_the_call():
     finding = make_finding(file="app/assistant.py", rule_id="llm-unpinned-model-alias", tool="semgrep")
     content = "import anthropic\n"
     cached_finding = make_finding(file="app/assistant.py", rule_id="llm-unpinned-model-alias", tool="ai_aware", message="cached verdict")
-    hits = {("app/assistant.py", hash_content(content), "ai_aware"): CachedAgentResult(findings=[cached_finding])}
+    hits = {("app/assistant.py", hash_content(content), verdict_cache_agent("ai_aware")): CachedAgentResult(findings=[cached_finding])}
 
     with patch("codeguard.pipeline.nodes.call_agent") as mock_call:
         result = review_ai_aware(_file_state(content=content, findings=[finding]) | {"hunk_cache_hits": hits})

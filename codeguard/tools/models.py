@@ -37,11 +37,41 @@ class Finding(BaseModel):
     # default, since there's no model self-rating involved. Not part of
     # the fingerprint — it's a noise-budget signal, not identity.
     confidence: float = 1.0
+    # Optional structure a verdict agent MAY return alongside `message`
+    # (see nodes._VERDICT_CONTRACT): a short title, what is wrong on THIS
+    # line, why it matters, and how to fix it. Empty when the agent gave
+    # none, and always for tool passthrough -- every reader falls back to
+    # `message`. Not part of the fingerprint, for the same reason as
+    # confidence: presentation, not identity. Defaulted, so every
+    # findings_json row and hunk_findings entry written before these
+    # existed still loads.
+    title: str = ""
+    what: str = ""
+    why: str = ""
+    fix: str = ""
+    # Every rule that reported this same bug at this location, when
+    # findings from two tools were merged into one (see
+    # pipeline/merge.py). Empty for an unmerged finding, whose only
+    # source is rule_id.
+    sources: list[str] = []
+    # For a taint finding: the line where the tainted value was BUILT,
+    # when the tool traced it from somewhere other than the line it reports
+    # (the sink). 0 when there is no such line. Not part of the
+    # fingerprint, and the tool's message is never rewritten to include it
+    # -- the fingerprint hashes the message, and suppressions key on that.
+    source_line: int = 0
+    # True when the verdict call that should have judged this finding
+    # FAILED and it is the scanner's raw finding, reported unreviewed
+    # (nodes._run_verdict_agent's fallback). Every surface that shows a
+    # finding says so: a fallback that looks exactly like a reviewed
+    # result is how an exhausted API credit went unnoticed mid-eval.
+    unreviewed: bool = False
 
     @classmethod
     def create(
         cls, *, file: str, start_line: int, end_line: int, severity: Severity,
         source_tool: str, rule_id: str, message: str, confidence: float = 1.0,
+        title: str = "", what: str = "", why: str = "", fix: str = "",
     ) -> "Finding":
         """fingerprint is derived, not caller-supplied, so two runs
         that produce the same logical finding always dedupe the same
@@ -78,4 +108,5 @@ class Finding(BaseModel):
             file=file, start_line=start_line, end_line=end_line, severity=severity,
             source_tool=source_tool, rule_id=rule_id, message=redact(message),
             fingerprint=fingerprint, confidence=confidence,
+            title=redact(title), what=redact(what), why=redact(why), fix=redact(fix),
         )

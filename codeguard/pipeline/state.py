@@ -61,6 +61,12 @@ class FileReviewState(TypedDict):
     # verdict-contract agents read it. Declaring it required would make
     # this type a description of two call sites rather than all four.
     hunk_cache_hits: NotRequired[dict[CacheKey, CachedAgentResult]]  # copied in by the router, same dict every branch shares
+    # The absolute line number of `content`'s first line. 1, and absent,
+    # everywhere but audit mode, which sends a verdict agent one AST chunk
+    # of a large file while its findings keep their whole-file line
+    # numbers. The credential guard reads a finding's own line out of
+    # `content`, so it needs the offset (see nodes._occurrence_values).
+    content_first_line: NotRequired[int]
 
 
 class HunkReviewState(TypedDict):
@@ -100,6 +106,10 @@ class ReviewState(TypedDict):
     # health for a PR most of which was never looked at.
     budget_exceeded: bool
     tool_findings: list[Finding]  # deterministic tool runners' pre-computed findings for the whole PR, set once
+    # Bandit B101 in test files, taken out of tool_findings before the graph
+    # (diff/filters.split_test_asserts) -- counted here so summarize can
+    # say so. NotRequired: absent means none were skipped.
+    skipped_test_asserts: NotRequired[int]
 
     # Fingerprints a repo maintainer has marked false_positive
     # via a reply on a past PR (codeguard/pipeline/feedback.py) — fetched
