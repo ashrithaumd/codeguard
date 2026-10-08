@@ -330,3 +330,36 @@ async def test_a_terminal_outcome_frees_the_repo_and_the_requester(pool, monkeyp
         pool, owner=OWNER, repo=REPO, requested_by="tester", private=False,
     )
     assert again["id"] != audit["id"]
+
+
+async def test_the_structured_report_is_stored_beside_the_markdown(pool, monkeypatch):
+    """The audit page renders audits.report_json. run_audit hands it over
+    on AuditStats, the same out-parameter the economics travel on."""
+    audit = await _queued(pool)
+    data = {"version": 1, "summary": {"total": 1}, "findings": [{"file": "a.py", "start_line": 3}]}
+
+    def fake_run_audit(target, output_path, post_issue, stats=None, deadline_s=None):
+        with open(output_path, "w", encoding="utf-8") as fh:
+            fh.write("# report\n")
+        if stats is not None:
+            stats.report = data
+        return 0, None
+
+    monkeypatch.setattr("codeguard.worker.main.run_audit", fake_run_audit)
+    await handle_repo_audit(_job(audit["id"]), pool, asyncio.Event())
+
+    row = await get_audit(pool, audit["id"])
+    assert row["report_json"] == data
+    assert row["report_markdown"] == "# report\n"
+
+
+async def test_an_audit_without_structured_data_stores_null(pool, monkeypatch):
+    audit = await _queued(pool)
+    monkeypatch.setattr(
+        "codeguard.worker.main.run_audit",
+        lambda target, output_path, post_issue, stats=None, deadline_s=None: (1, "clone failed"),
+    )
+    await handle_repo_audit(_job(audit["id"]), pool, asyncio.Event())
+
+    row = await get_audit(pool, audit["id"])
+    assert row["report_json"] is None

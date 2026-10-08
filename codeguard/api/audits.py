@@ -23,6 +23,7 @@ from typing import Any
 
 from psycopg import errors
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 
 logger = logging.getLogger(__name__)
@@ -49,7 +50,7 @@ OUTCOME_TO_STATUS = {
 
 _COLUMNS = """
     id, owner, repo, requested_by, private, status, job_id,
-    report_markdown, exit_code, error,
+    report_markdown, report_json, exit_code, error,
     tokens_in, tokens_out, estimated_cost_usd, duration_s,
     created_at, started_at, finished_at
 """
@@ -235,6 +236,7 @@ async def finish_audit(
     report_markdown: str | None = None, exit_code: int | None = None,
     error: str | None = None, tokens_in: int = 0, tokens_out: int = 0,
     estimated_cost_usd: float = 0.0, duration_s: float = 0.0,
+    report_json: dict | None = None,
 ) -> None:
     """Write the terminal state. Releases the in-flight index entry, so
     this is also what makes the repo auditable again."""
@@ -245,11 +247,13 @@ async def finish_audit(
             """
             UPDATE audits SET status = %s, report_markdown = %s, exit_code = %s,
                    error = %s, tokens_in = %s, tokens_out = %s,
-                   estimated_cost_usd = %s, duration_s = %s, finished_at = now()
+                   estimated_cost_usd = %s, duration_s = %s, finished_at = now(),
+                   report_json = %s
             WHERE id = %s
             """,
             (status, report_markdown, exit_code, error, tokens_in, tokens_out,
-             estimated_cost_usd, duration_s, audit_id),
+             estimated_cost_usd, duration_s,
+             Jsonb(report_json) if report_json is not None else None, audit_id),
         )
 
 
@@ -377,6 +381,35 @@ async def in_flight_for_requester(
     arguments.
     """
     return await _in_flight_for(pool, requested_by=requested_by)
+
+
+async def audit_stats(
+    pool: AsyncConnectionPool, *, requested_by: str,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Audit count, last audit and total audit cost per repo, for ONE
+    requester -- the Repositories page's Activity columns.
+
+    requested_by is required, not optional as in latest_per_repo. An audit
+    is visible only to the person who asked for it, so an unscoped total
+    would disclose that somebody else audited a repository, when, and what
+    it cost them. There is no caller for which the unscoped sum is right.
+
+    Every status counts, as a row on the page does: a failed audit still
+    happened, and a timed-out one still spent money.
+    """
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                """
+                SELECT owner, repo, count(*) AS audit_count,
+                       max(created_at) AS last_audited,
+                       coalesce(sum(estimated_cost_usd), 0) AS total_cost
+                FROM audits WHERE lower(requested_by) = lower(%s)
+                GROUP BY owner, repo
+                """,
+                (requested_by,),
+            )
+            return {(row["owner"], row["repo"]): row for row in await cur.fetchall()}
 
 
 async def repo_stats(pool: AsyncConnectionPool) -> dict[tuple[str, str], dict[str, Any]]:
