@@ -25,9 +25,17 @@
 {% endfor %}
 {% for a in audits %}
   {% set au.cost = au.cost + (a.estimated_cost_usd or 0) %}
-  {% set au.findings = au.findings + (a.counts.total if a.counts else 0) %}
   {% set au.tokens = au.tokens + (a.tokens_in or 0) %}
 {% endfor %}
+{#
+  Findings are NOT summed across audits: re-auditing a repository finds
+  mostly the same issues, so two audits of 13 and 12 are not 25 problems.
+  The audit half is the newest audit that recorded counts (`audits` is
+  newest first; a failed audit has none). Cost and tokens above do sum
+  every run, because every run was paid for.
+#}
+{% set latest_counted = audits|selectattr("counts")|first %}
+{% set au.findings = latest_counted.counts.total if latest_counted else 0 %}
 {% set split_label = reviews|length ~ " review" ~ ("" if reviews|length == 1 else "s") ~ " · " ~ audits|length ~ " audit" ~ ("" if audits|length == 1 else "s") %}
 {#
   COST PER REVIEWED FILE, not cost per review. The raw-cost chart was
@@ -58,9 +66,9 @@
 
 <div class="stats">
   <div class="stat"><div class="k">Activity</div><div class="v">{{ reviews|length + audits|length }}</div><div class="split">{{ split_label }}</div></div>
-  <div class="stat"><div class="k">{{ m.term("Findings") }}</div><div class="v">{{ rv.findings + au.findings }}</div><div class="split">{{ rv.findings }} in reviews · {{ au.findings }} in audits</div></div>
+  <div class="stat"><div class="k">{{ m.term("Findings") }}</div><div class="v">{{ rv.findings + au.findings }}</div><div class="split">{{ rv.findings }} in reviews · {{ au.findings }} in latest audit</div></div>
   <div class="stat"><div class="k">Tokens in</div><div class="v">{{ "{:,}".format(rv.tokens + au.tokens) }}</div><div class="split">{{ "{:,}".format(rv.tokens) }} reviews · {{ "{:,}".format(au.tokens) }} audits</div></div>
-  <div class="stat"><div class="k">Total {{ m.term("Cost", "cost") }}</div><div class="v">{{ m.cost(rv.cost + au.cost) }}</div><div class="split">{{ split_label }}</div></div>
+  <div class="stat"><div class="k">Total {{ m.term("Cost", "cost") }}</div><div class="v">{{ m.cost(rv.cost + au.cost) }}</div><div class="split">{{ m.cost(rv.cost) }} reviews · {{ m.cost(au.cost) }} audits</div></div>
 </div>
 
 {% if series %}

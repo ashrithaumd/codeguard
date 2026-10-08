@@ -159,7 +159,11 @@ Container Apps instead of warning.
 
 - Repo page tiles (Activity, Findings, Tokens in, Total cost) all include
   the viewer's own audits, with a reviews/audits split under each. Total
-  cost included audits while the others did not.
+  cost included audits while the others did not. Findings are review
+  findings plus the LATEST audit's ("0 in reviews · 12 in latest audit"),
+  not a sum over audits, since a re-audit finds mostly the same issues;
+  cost and tokens sum every run, and the cost split shows amounts
+  ("$0.0000 reviews · $0.0892 audits").
 - The repo page's Audits table has a Findings column ("12 · 1 Critical,
   4 High") and marks the latest audit. Audits written before report_json
   take their counts from their own stored report.

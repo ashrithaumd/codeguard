@@ -210,3 +210,41 @@ async def test_titles_render_in_sentence_case(client, pool, as_principal):
 async def test_the_audit_note_is_one_line(client, pool, as_principal):
     html = await _audit_page(client, pool, as_principal)
     assert '<p class="note">Audit mode: findings and how to fix them; no code patches (audits have no diff).</p>' in html
+
+
+# --------------------------------------------------------------------------
+# Tiles, second pass: findings are not summed across audits
+# --------------------------------------------------------------------------
+
+async def test_findings_count_the_latest_audit_only_not_every_audit(client, pool, as_principal):
+    """Re-auditing a repository finds mostly the same issues; 13 + 12 = 25
+    overstated it. Findings = reviews + the latest audit. Cost and tokens
+    still sum every run, because every run was paid for."""
+    await insert_review(pool, owner=OWNER, repo=REPO, private=False, findings_total=2, det=2,
+                        estimated_cost_usd=0.01)
+    await _audit(pool, report_json=_report({"critical": 0, "high": 5, "medium": 6, "low": 2}),
+                 cost=0.0347, tokens_in=5756, created_at=datetime.now(timezone.utc) - timedelta(days=1))
+    await _audit(pool, report_json=_report(), cost=0.0544, tokens_in=6701)
+    as_principal(VIEWER)
+    stats = _stats(_repo_page(client))
+
+    assert re.search(r'class="k">(?:(?!class="v").)*?Findings.*?class="v">14<', stats, re.S)  # 2 + 12, not 2 + 25
+    assert "2 in reviews · 12 in latest audit" in stats
+    assert "12,457" in stats                                   # tokens: every run
+    assert "$0.0991" in stats                                  # cost: every run (0.01 + 0.0347 + 0.0544)
+
+
+async def test_a_failed_latest_audit_falls_back_to_the_latest_with_counts(client, pool, as_principal):
+    await _audit(pool, report_json=_report(), created_at=datetime.now(timezone.utc) - timedelta(hours=2))
+    await _audit(pool, status="failed", markdown=None)
+    as_principal(VIEWER)
+    assert "0 in reviews · 12 in latest audit" in _stats(_repo_page(client))
+
+
+async def test_the_cost_split_shows_amounts(client, pool, as_principal):
+    await _audit(pool, report_json=_report(), cost=0.0544)
+    await _audit(pool, report_json=_report(), cost=0.0348,
+                 created_at=datetime.now(timezone.utc) - timedelta(days=1))
+    as_principal(VIEWER)
+    stats = _stats(_repo_page(client))
+    assert "$0.0000 reviews · $0.0892 audits" in stats
