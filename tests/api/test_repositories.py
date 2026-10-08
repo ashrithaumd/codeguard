@@ -16,7 +16,6 @@ from unittest.mock import patch
 import pytest
 
 from codeguard.api import access, csrf, repo_url
-from codeguard.config import Settings, get_settings
 from tests.api.conftest import insert_review
 
 OWNER = "ashrithaumd"

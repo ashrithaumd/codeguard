@@ -28,7 +28,6 @@ THE THREE WAYS THIS SHAPE OF FLOW IS NORMALLY GOT WRONG, each with a test:
 
 from __future__ import annotations
 
-from unittest.mock import patch
 from urllib.parse import parse_qs, urlsplit
 
 import pytest

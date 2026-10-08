@@ -39,7 +39,7 @@ async def _force_expire(pool, job_id) -> None:
 
 
 async def test_expired_lease_under_max_attempts_returns_to_pending(pool):
-    job = await _enqueue_one(pool)
+    await _enqueue_one(pool)
     [claimed] = await claim_batch(pool, worker_id=WORKER_A, batch_size=1, lease_seconds=30)
     assert claimed.attempts == 1
     await _force_expire(pool, claimed.id)
@@ -59,7 +59,7 @@ async def test_expired_lease_under_max_attempts_returns_to_pending(pool):
 
 
 async def test_expired_lease_at_max_attempts_moves_to_dead_letters(pool):
-    job = await _enqueue_one(pool)
+    await _enqueue_one(pool)
     [claimed] = await claim_batch(pool, worker_id=WORKER_A, batch_size=1, lease_seconds=30)
     assert claimed.attempts == 1
     await _force_expire(pool, claimed.id)
@@ -79,7 +79,7 @@ async def test_expired_lease_at_max_attempts_moves_to_dead_letters(pool):
 
 
 async def test_reap_ignores_leases_not_yet_expired(pool):
-    job = await _enqueue_one(pool)
+    await _enqueue_one(pool)
     [claimed] = await claim_batch(pool, worker_id=WORKER_A, batch_size=1, lease_seconds=300)
     # deliberately NOT force-expired — leased_until is ~5 minutes out
 

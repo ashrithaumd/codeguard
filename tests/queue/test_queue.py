@@ -153,7 +153,7 @@ async def test_claim_ignores_jobs_not_yet_due(pool):
 # --- ack / nack / dead-lettering -----------------------------------------------
 
 async def test_ack_fails_for_worker_without_current_lease(pool):
-    job = await _enqueue_one(pool)
+    await _enqueue_one(pool)
     [claimed] = await claim_batch(pool, worker_id=WORKER_A, batch_size=1, lease_seconds=30)
 
     ok = await ack(pool, job_id=claimed.id, worker_id=WORKER_B)
@@ -164,7 +164,7 @@ async def test_ack_fails_for_worker_without_current_lease(pool):
 
 
 async def test_nack_below_max_attempts_returns_none_and_schedules_retry(pool):
-    job = await _enqueue_one(pool)
+    await _enqueue_one(pool)
     [claimed] = await claim_batch(pool, worker_id=WORKER_A, batch_size=1, lease_seconds=30)
 
     dead_letter = await nack(pool, job_id=claimed.id, worker_id=WORKER_A, reason="boom",
@@ -173,7 +173,7 @@ async def test_nack_below_max_attempts_returns_none_and_schedules_retry(pool):
 
 
 async def test_nack_at_max_attempts_returns_dead_letter(pool):
-    job = await _enqueue_one(pool, payload={"owner": "x", "repo": "y", "pr_number": 1, "installation_id": 1})
+    await _enqueue_one(pool, payload={"owner": "x", "repo": "y", "pr_number": 1, "installation_id": 1})
     [claimed] = await claim_batch(pool, worker_id=WORKER_A, batch_size=1, lease_seconds=30)
     assert claimed.attempts == 1
 
@@ -193,7 +193,7 @@ async def test_nack_explicit_delay_overrides_compute_backoff(pool):
     """The rate-limit-aware path: an explicit_delay must be honored
     verbatim instead of compute_backoff()'s value.
     """
-    job = await _enqueue_one(pool)
+    await _enqueue_one(pool)
     [claimed] = await claim_batch(pool, worker_id=WORKER_A, batch_size=1, lease_seconds=30)
 
     await nack(pool, job_id=claimed.id, worker_id=WORKER_A, reason="rate limited",

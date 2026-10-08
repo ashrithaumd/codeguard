@@ -46,7 +46,6 @@ from unittest.mock import patch
 import pytest
 
 from codeguard.api import access, csrf
-from codeguard.config import Settings, get_settings
 
 OWNER = "ashrithaumd"
 PUBLIC = "codeguard-playground"
