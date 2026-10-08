@@ -363,3 +363,17 @@ async def test_an_audit_without_structured_data_stores_null(pool, monkeypatch):
 
     row = await get_audit(pool, audit["id"])
     assert row["report_json"] is None
+
+
+async def test_the_audited_commit_is_stored(pool, monkeypatch):
+    audit = await _queued(pool)
+    sha = "4e02d10" + "b" * 33
+
+    def fake_run_audit(target, output_path, post_issue, stats=None, deadline_s=None):
+        if stats is not None:
+            stats.commit_sha = sha
+        return 0, None
+
+    monkeypatch.setattr("codeguard.worker.main.run_audit", fake_run_audit)
+    await handle_repo_audit(_job(audit["id"]), pool, asyncio.Event())
+    assert (await get_audit(pool, audit["id"]))["commit_sha"] == sha

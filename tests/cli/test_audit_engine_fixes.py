@@ -254,3 +254,28 @@ def test_a_taint_finding_says_where_the_value_was_built_in_report_json():
 def test_a_finding_without_a_source_has_no_flow():
     data = build_report_data(**_report_kwargs(ai_reviewed_findings=[_f(line=13, rule_id="B608")]))
     assert data["findings"][0]["source_line"] == 0 and data["findings"][0]["flow"] == ""
+
+
+# --------------------------------------------------------------------------
+# The audited commit
+# --------------------------------------------------------------------------
+
+def test_head_sha_reads_the_checked_out_commit(tmp_path):
+    import subprocess
+
+    from codeguard.cli import _head_sha
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)
+
+    git("init", "-q")
+    (tmp_path / "a.py").write_text("x = 1\n", encoding="utf-8")
+    git("add", "a.py")
+    git("-c", "user.email=t@example.com", "-c", "user.name=t", "commit", "-q", "-m", "init")
+    sha = _head_sha(tmp_path)
+    assert sha is not None and len(sha) == 40 and all(c in "0123456789abcdef" for c in sha)
+
+
+def test_head_sha_is_none_outside_a_repository(tmp_path):
+    from codeguard.cli import _head_sha
+    assert _head_sha(tmp_path) is None

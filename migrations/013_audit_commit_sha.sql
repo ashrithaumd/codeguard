@@ -1,0 +1,12 @@
+-- The commit an audit actually read.
+--
+-- An audit clones the default branch at whatever it points to at that
+-- moment. Linking a finding to "the line on GitHub" without the commit
+-- would link to that file as it is TODAY, which drifts from what was
+-- audited the first time anyone pushes. With the commit, the audit page
+-- links blob/<sha>/<path>#L<n> and the line under the cursor is the line
+-- that was judged.
+--
+-- Nullable, and NULL for every audit written before this: those show their
+-- locations as plain text. IDEMPOTENT, like every migration here.
+ALTER TABLE audits ADD COLUMN IF NOT EXISTS commit_sha TEXT;

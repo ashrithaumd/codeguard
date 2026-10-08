@@ -50,7 +50,7 @@ OUTCOME_TO_STATUS = {
 
 _COLUMNS = """
     id, owner, repo, requested_by, private, status, job_id,
-    report_markdown, report_json, exit_code, error,
+    report_markdown, report_json, commit_sha, exit_code, error,
     tokens_in, tokens_out, estimated_cost_usd, duration_s,
     created_at, started_at, finished_at
 """
@@ -236,7 +236,7 @@ async def finish_audit(
     report_markdown: str | None = None, exit_code: int | None = None,
     error: str | None = None, tokens_in: int = 0, tokens_out: int = 0,
     estimated_cost_usd: float = 0.0, duration_s: float = 0.0,
-    report_json: dict | None = None,
+    report_json: dict | None = None, commit_sha: str | None = None,
 ) -> None:
     """Write the terminal state. Releases the in-flight index entry, so
     this is also what makes the repo auditable again."""
@@ -248,12 +248,12 @@ async def finish_audit(
             UPDATE audits SET status = %s, report_markdown = %s, exit_code = %s,
                    error = %s, tokens_in = %s, tokens_out = %s,
                    estimated_cost_usd = %s, duration_s = %s, finished_at = now(),
-                   report_json = %s
+                   report_json = %s, commit_sha = %s
             WHERE id = %s
             """,
             (status, report_markdown, exit_code, error, tokens_in, tokens_out,
              estimated_cost_usd, duration_s,
-             Jsonb(report_json) if report_json is not None else None, audit_id),
+             Jsonb(report_json) if report_json is not None else None, commit_sha, audit_id),
         )
 
 

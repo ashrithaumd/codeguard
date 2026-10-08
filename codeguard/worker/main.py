@@ -641,6 +641,7 @@ async def handle_repo_audit(job: Job, pool, abandoned: asyncio.Event) -> bool:
             error=error or stats.message,
             report_markdown=report or None,
             report_json=stats.report,
+            commit_sha=stats.commit_sha,
             tokens_in=stats.tokens_in, tokens_out=stats.tokens_out,
             estimated_cost_usd=stats.estimated_cost_usd, duration_s=duration,
         )

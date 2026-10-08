@@ -30,6 +30,7 @@ import ast
 import asyncio
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -137,6 +138,21 @@ _CLONE_HARDENING = [
 # be shallow-cloned in two minutes is not one we want to audit, and the
 # clone runs inside the overall audit deadline.
 CLONE_TIMEOUT_S = 120
+
+
+def _head_sha(root: Path) -> str | None:
+    """The full commit hash checked out at `root`, or None. Never raises:
+    an audit does not fail because its commit could not be named -- the
+    page just shows plain-text locations."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    sha = proc.stdout.strip()
+    return sha if proc.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", sha) else None
 
 
 def _clone_shallow(url: str, dest: Path, timeout: float | None = None) -> None:
@@ -986,6 +1002,10 @@ class AuditStats:
     # the audit page. None on every path that never produced a report.
     report: dict | None = None
 
+    # The commit the audit read (_head_sha), so the audit page can link a
+    # finding to that exact line. None when the target is not a git checkout.
+    commit_sha: str | None = None
+
 
 class DeadlineExceeded(Exception):
     """The audit ran out of its wall-clock budget. Internal only.
@@ -1135,6 +1155,11 @@ def run_audit(
                 _record(stats, AuditOutcome.FAILED, error)
                 return 1, error
             root = Path(tmp_dir)
+            # The commit actually read, for linking findings to their lines.
+            # Remote clones only: a local directory has no GitHub page to
+            # link to, whatever its own history says.
+            if stats is not None:
+                stats.commit_sha = _head_sha(root)
         else:
             root = Path(target).resolve()
             if not root.is_dir():
