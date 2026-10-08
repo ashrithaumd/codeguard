@@ -5,6 +5,148 @@ CodeGuard is marked **ACTION REQUIRED**.
 
 ## Unreleased
 
+### Fix list from the 2026-10-08 feature tour
+
+**ACTION REQUIRED (operators):** migration `012_audit_report_json.sql` adds
+`audits.report_json`; it applies itself on startup like every migration. The
+verdict cache key is now versioned (`security/v2`, `ai_aware/v2`), so the
+first review of each unchanged file after deploy is a cache miss and is billed
+once. `DASHBOARD_TRUST_DEV_PRINCIPAL` now **refuses to start** inside Azure
+Container Apps instead of warning.
+
+#### Engine correctness
+
+- **Prompt injection through a variable is caught (#13).**
+  `llm-prompt-injection-concatenation` only matched a concatenation written
+  inline in `content=`, so `prompt = "..." + user_input` followed by
+  `content: prompt` (codeguard-playground `assistant.py:44`) matched nothing.
+  The rule is now taint-mode: a non-literal spliced into a string literal by
+  `+`, an f-string, `.format()` or `%` is followed to the `messages`,
+  `system`, `input`, `instructions` or `prompt` argument. List concatenation
+  (`history + [turn]`) and literal-only prompts are not sources. Scans of
+  simonw/llm 0.36 and `codeguard/`: 0 hits before, 0 after.
+- **Credential verdicts are decided by the value's shape, never a comment (#11).**
+  The verdict agents now see `[redacted: 93-char sk-ant-style token,
+  high-entropy]` instead of a bare `[redacted]`; stored and logged text keeps
+  the plain mask. A high- or low-entropy value is confirmed whatever the file
+  says about it; only a placeholder-shaped value may be dismissed. A
+  deterministic guard backs the prompt: a credential dismissal stands only if
+  every occurrence's value is placeholder-shaped, otherwise the raw finding is
+  reported (counted in `codeguard_credential_dismissal_overruled_total`).
+- **Duplicate findings merged (#12).** Bandit and the LLM ruleset reporting
+  the same bug on the same line (B307 + `llm-output-to-dangerous-sink`, B608 +
+  `llm-output-to-sql`, B105/6/7 + `llm-hardcoded-api-key`) are one finding
+  listing both rules. Different bugs on one line stay separate.
+- **Each finding describes only its own line (#12).** The verdict contract
+  gained OPTIONAL `lines` (per-line notes), `title`, `what`, `why` and `fix`.
+  One confirm/dismiss per rule_id is unchanged, and a response without the new
+  keys parses exactly as before.
+- **B101 in test files is skipped, not judged.** Asserts in `tests/`,
+  `test_*.py`, `*_test.py` and `conftest.py` never reach the model and are
+  reported as "skipped: N test asserts", not as dismissals.
+- **File-ceiling tiers.** When an audit is over its ceiling it now keeps
+  entrypoints, then application code (LLM files first), then LLM files
+  elsewhere, then everything else, then tests. A large `main.py` no longer
+  loses to small test files.
+- **`<repo>:0` gone.** Repo-level findings (eval hygiene) are shown once, in
+  their own section, with no fake line number.
+- `is_test_path` is shared; eval hygiene's old copy matched `latest_model.py`
+  as a test and never matched `conftest.py`.
+
+#### Dashboard
+
+- **Structured audit results page.** Severity summary bar, cost/duration
+  line, one card per finding (title, `file:line`, What / Why it matters / How
+  to fix, rule tags), collapsed Dismissed by AI, Skipped and Technical details
+  sections, and the raw report behind "View raw report". Rendered from
+  `report_json` with ordinary autoescaping; older audits fall back to the raw
+  report.
+- **Repositories: Activity, Last activity, Total cost** combine reviews and
+  audits (#14). The audit half is the viewer's own audits only — an audit is
+  visible only to its requester, so a shared total would disclose someone
+  else's audit and its cost.
+- **`Cache-Control: no-store` on signed-in pages** (`/dashboard`, `/auth`),
+  for the "last: done" that a refresh did not show (#15). The CSP and
+  Referrer-Policy are unchanged byte for byte, and a test pins them.
+- Review detail: no empty Suggested-fix column, a fix is an expandable row
+  under its finding (#6); "Dismissed by AI (N)" is a collapsed section (#7);
+  files not reviewed are listed once each, grouped by reason, with "N shown of
+  M" when they differ (#8).
+- The audit note is said once, as a tooltip on Run audit and a line on the
+  audit page, instead of a repeated banner (#1, #2).
+- Repo page: cost chart restored as **cost per reviewed file**, each bar
+  labelled with its PR (#3); breadcrumb is Repositories / repo (#4).
+- PR titles shown next to PR numbers on the Reviews, repo, PR and review
+  pages; they were already stored, only the search palette showed them (#5).
+- The Reviews page links to Repositories instead of repeating its table (#10).
+- Body text is 16px (was 14px); every other size scaled by the same ratio (#9).
+
+#### Hardening
+
+- The tiktoken `cl100k_base` encoding is bundled in the image
+  (`TIKTOKEN_CACHE_DIR=/opt/tiktoken`); `scripts/smoke_image.sh` proves it
+  with `--network none`.
+- `DASHBOARD_TRUST_DEV_PRINCIPAL` refuses to start when `CONTAINER_APP_NAME`
+  is set.
+
+#### Tooling
+
+- `scripts/seed_demo.py` replaces `scripts/seed_dashboard_fixtures.py`. Every
+  count is derived from the list it describes, so the demo can no longer show
+  impossible numbers; `--remove` deletes all sample rows. All rows stay
+  labelled SAMPLE DATA.
+- `evals/run_full_harness.py` takes `--only`, `--exclude` and `--verbose`, so
+  a before/after comparison can run the same fixtures both times.
+- Five regression eval fixtures (`evals/fixtures/regress_*`), including the
+  adversarial case: a realistic random key beside a comment calling it a fake
+  placeholder, which must be confirmed.
+
+#### Follow-ups in the same branch
+
+- **A failed verdict call is visible.** The raw-finding fallback stays, but
+  each fallback finding is marked `unreviewed`, and the audit report and
+  page, the review detail page and the PR summary say "AI review
+  unavailable for N finding(s); shown unreviewed." Inline comments on such a
+  finding say it is the scanner's, not a confirmed one. Found when the API
+  credit ran out mid-eval and the run still looked normal.
+- **The eval harness refuses bad numbers.** The first 401/402/403 or
+  credit-balance error aborts it (exit 2); any other failed call withholds
+  that run's metrics (exit 1). It also exits 1 if a credential dismissal
+  reason cites anything but the value's shape.
+- **Credential dismissal reasons cite only the shape**, per occurrence:
+  "Dismissed on the value's shape alone: 42-char sk-style token,
+  placeholder-like." The reason is written from the shape the guard checked,
+  not taken from the model.
+- **"key", "secret" and "token" no longer make a value placeholder-like** on
+  their own; a random key that happens to contain "-key-" is high-entropy.
+- **Per-line fixes.** A `lines` entry may be `{"what", "fix"}`, so "How to
+  fix" is per line like "What"; with the structured fields present the
+  contract asks for a one-sentence `message`.
+- **Taint findings say where the value was built**: "Assigned at line 44,
+  sent to the model at line 49." (Semgrep `--dataflow-traces`;
+  `Finding.source_line`; `report_json.findings[].source_line` and `flow`.)
+- **PR reviews merge same-bug findings and skip B101 in tests**, as audits
+  do: one inline comment for B307 + `llm-output-to-dangerous-sink`, listing
+  both rules.
+- `near_miss_07_example_key_placeholder` (the old `EXAMPLE1234567890` key,
+  expected dismissed) alongside the random-key `fixture_02` (expected
+  confirmed).
+- **Lint:** `[tool.ruff]` excludes the intentionally bad code
+  (`rules/llm-security.py`, `evals/fixtures*`), the 19 real errors in
+  `tests/` are fixed, and `.github/workflows/lint.yml` runs ruff on every
+  push and PR. Ruff: 0 errors.
+- `tests/tooling/` is now in `testpaths`; two test files written at the top
+  of `tests/` had not been collected by a bare `pytest`.
+
+#### Measured
+
+**Pending: API credit exhausted.** The eval comparison (HEAD vs this branch,
+same final fixture set, 3 runs each) and the live audits of
+codeguard-playground and reliqueue were started and ran out of credit
+partway; those partial numbers are not reported. They are added before
+merge.
+
+
 ### Investigated — the dashboard's audit POST returns 403 in production
 
 **Still open.** Not a CodeGuard bug, and nothing is queued or spent when it
