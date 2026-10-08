@@ -445,3 +445,56 @@ def test_the_referrer_policy_leaves_a_same_origin_referer_intact(client):
     # leaks the origin to every external link.
     assert resp.headers["referrer-policy"] != "no-referrer"
     assert resp.headers["referrer-policy"] != "strict-origin-when-cross-origin"
+
+
+# --------------------------------------------------------------------------
+# Cache-Control on signed-in pages
+# --------------------------------------------------------------------------
+#
+# Purely additive. The repositories page showed a finished audit's row
+# without "last: done" on localhost, and the server rendered it correctly
+# when asked again -- which leaves a browser-held copy of the page as the
+# remaining explanation. Pages behind sign-in are per-viewer and change
+# under the viewer, so no copy of one should be reused.
+
+# The CSP and Referrer-Policy exactly as they shipped before Cache-Control
+# was added. Byte-for-byte, so that "add one header" cannot quietly become
+# "and also adjust the policy" in the same change.
+_CSP_BEFORE_CACHE_CONTROL = (
+    "default-src 'none'; script-src 'self' 'nonce-NONCE'; "
+    "style-src 'self' https://fonts.googleapis.com; style-src-attr 'unsafe-inline'; "
+    "font-src https://fonts.gstatic.com; img-src 'self'; connect-src 'self'; "
+    "form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
+)
+
+
+def test_the_csp_and_referrer_policy_are_byte_for_byte_unchanged(client):
+    from codeguard.api.headers import policy
+
+    assert policy("NONCE") == _CSP_BEFORE_CACHE_CONTROL
+    resp = _dashboard(client)
+    nonce = _csp(resp)["script-src"].split("'nonce-")[1].rstrip("'")
+    assert resp.headers["content-security-policy"] == _CSP_BEFORE_CACHE_CONTROL.replace("NONCE", nonce)
+    assert resp.headers["referrer-policy"] == "same-origin"
+
+
+def test_signed_in_pages_are_never_cached(client):
+    resp = _dashboard(client)
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "no-store"
+
+
+def test_signed_in_json_is_never_cached_either(client):
+    """The search index and the audit poll are per-viewer too."""
+    with patch.object(access, "installed_repositories", return_value=[]), \
+         patch.object(access, "_is_collaborator", return_value=True):
+        resp = client.get("/dashboard/search")
+    assert resp.headers.get("cache-control") == "no-store"
+
+
+def test_static_assets_and_machine_endpoints_keep_their_caching(client):
+    """no-store is for per-viewer pages. A stylesheet is the same for
+    everybody, and a probe is not a browser."""
+    assert "cache-control" not in client.get("/static/dashboard.css").headers or \
+        client.get("/static/dashboard.css").headers["cache-control"] != "no-store"
+    assert client.get("/health").headers.get("cache-control") != "no-store"

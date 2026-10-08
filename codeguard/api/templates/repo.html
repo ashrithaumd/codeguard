@@ -3,7 +3,7 @@
 {% block title %}{{ owner }}/{{ repo }} · CodeGuard{% endblock %}
 
 {% block crumbs %}
-  <a href="/dashboard">Reviews</a>
+  <a href="/dashboard/repos">Repositories</a>
   <span class="sep">/</span>
   <strong>{{ owner }}/{{ repo }}</strong>
 {% endblock %}
@@ -16,11 +16,24 @@
   {% set agg.tokens = agg.tokens + (r.tokens_in or 0) %}
 {% endfor %}
 {#
-  No cost chart here. A repo-wide series mixes pull requests, so two
-  adjacent bars can be a 2-file PR and a 40-file PR and the difference
-  between them says nothing about either. The chart lives on a pull
-  request's own page, where every point is the same PR.
+  COST PER REVIEWED FILE, not cost per review. The raw-cost chart was
+  removed on Sept 22 because a repo-wide series mixes pull requests: two
+  adjacent bars could be a 2-file PR and a 40-file PR, and the difference
+  between them said nothing about either. Dividing by the files actually
+  reviewed makes adjacent bars comparable, and each bar is labelled with
+  its PR so the series is never read as one PR over time. A review that
+  reviewed no files has no per-file cost and is left out rather than
+  plotted as zero.
+
+  Oldest first, so the chart reads left to right the way time does.
 #}
+{% set series = [] %}
+{% for r in reviews|reverse %}
+  {% if r.files_reviewed %}
+    {% set _ = series.append({"r": r, "per_file": (r.estimated_cost_usd or 0) / r.files_reviewed}) %}
+  {% endif %}
+{% endfor %}
+{% set max_per_file = (series|map(attribute="per_file")|max) if series else 0 %}
 
 <div class="page-head">
   <div>
@@ -35,6 +48,40 @@
   <div class="stat"><div class="k">Tokens in</div><div class="v">{{ "{:,}".format(agg.tokens) }}</div></div>
   <div class="stat"><div class="k">Total {{ m.term("Cost", "cost") }}</div><div class="v">{{ m.cost(agg.cost) }}</div></div>
 </div>
+
+{% if series %}
+<div class="panel">
+  <div class="panel-head">
+    <h2>Cost per reviewed file</h2>
+    <span class="count">oldest → newest</span>
+  </div>
+  {% if max_per_file > 0 %}
+  {#
+    One series, so no legend — the panel title names it. Bars are laid
+    out in flow rather than in a stretched viewBox: an SVG with
+    preserveAspectRatio="none" scales its bars to the container, so two
+    reviews produced two 370px-wide slabs. Flow layout caps each bar and
+    keeps the shape honest at any number of reviews.
+  #}
+  <div class="chart">
+    <div class="bars" role="img" aria-label="Cost per reviewed file, oldest to newest. Peak {{ m.cost(max_per_file) }} per file.">
+      {% for p in series %}
+      <div class="bar-col" title="#{{ p.r.pr_number }}{% if p.r.pr_title %} {{ p.r.pr_title }}{% endif %} · {{ m.cost(p.per_file) }} per file · {{ m.cost(p.r.estimated_cost_usd) }} over {{ p.r.files_reviewed }} file{{ '' if p.r.files_reviewed == 1 else 's' }}">
+        <div class="bar-fill" style="height: {{ [(p.per_file / max_per_file * 100), 2]|max|round(2) }}%"></div>
+        <span class="bar-label">#{{ p.r.pr_number }}</span>
+      </div>
+      {% endfor %}
+    </div>
+    <div class="chart-foot">
+      <span>Peak {{ m.cost(max_per_file) }} per file</span>
+      <span class="dim">A re-review of an unchanged file reuses cached agent results, so a repeat review of the same PR costs a fraction of the first.</span>
+    </div>
+  </div>
+  {% else %}
+    {{ m.empty_state("No cost recorded yet", "These reviews completed without billable agent calls — every hunk was served from cache.", "check") }}
+  {% endif %}
+</div>
+{% endif %}
 
 {% if pulls %}
 <div class="panel">
@@ -58,7 +105,7 @@
       <tbody>
         {% for p in pulls %}
         <tr class="row-link" data-href="/dashboard/repos/{{ owner }}/{{ repo }}/pulls/{{ p.pr_number }}">
-          <td><a class="pr" href="/dashboard/repos/{{ owner }}/{{ repo }}/pulls/{{ p.pr_number }}">#{{ p.pr_number }}</a></td>
+          <td>{{ m.pr_ref(owner, repo, p.pr_number, p.pr_title) }}</td>
           <td class="num">{{ p.review_count }}</td>
           <td>{{ m.gate_pill(p.latest_conclusion) }}</td>
           <td class="num">{{ p.latest_findings }}</td>
@@ -99,7 +146,7 @@
       <tbody>
         {% for r in reviews %}
         <tr class="row-link" data-href="/dashboard/reviews/{{ r.job_id }}">
-          <td><a class="pr" href="/dashboard/repos/{{ owner }}/{{ repo }}/pulls/{{ r.pr_number }}">#{{ r.pr_number }}</a></td>
+          <td>{{ m.pr_ref(owner, repo, r.pr_number, r.pr_title) }}</td>
           <td class="sha">{{ r.head_sha[:7] }}</td>
           <td class="dim">{{ r.action }}</td>
           <td>{{ m.gate_pill(r.check_conclusion) }}</td>

@@ -22,6 +22,7 @@
 <div class="page-head">
   <div>
     <h1>{{ review.owner }}/{{ review.repo }} <span class="dim">#{{ review.pr_number }}</span></h1>
+    {% if review.pr_title %}<div class="pr-heading-title">{{ review.pr_title }}</div>{% endif %}
     <div class="sub">
       {{ m.gate_pill(review.check_conclusion) }}
       <span class="sha">{{ review.head_sha[:12] }}</span>
@@ -61,6 +62,13 @@
     <div class="title">Diff truncated — {{ review.files_reviewed }} of {{ review.files_seen }} changed files reviewed</div>
     <div class="body">The rest exceeded the per-PR budget and were not looked at. Everything below describes the reviewed portion only.</div>
   </div>
+</div>
+{% endif %}
+
+{% set unreviewed_count = findings|selectattr("unreviewed")|list|length %}
+{% if unreviewed_count %}
+<div class="banner warn" role="status">
+  <strong>{{ unreviewed_notice.format(n=unreviewed_count) }}</strong>
 </div>
 {% endif %}
 
@@ -111,30 +119,37 @@
               <th>Location</th>
               <th>Rule</th>
               <th class="col-msg">Message</th>
-              <th>{{ m.term("Fixes", "Suggested fix") }}</th>
             </tr>
           </thead>
           <tbody>
+            {#
+              No "Suggested fix" COLUMN: it was empty for most rows and took
+              the width the message needed. A finding that has a fix gets
+              its own expandable row underneath instead.
+            #}
             {% for f in findings %}
-            <tr>
+            {% set fix = fix_by_fp.get(f.fingerprint) %}
+            <tr{% if fix %} class="has-fix"{% endif %}>
               <td>{{ m.severity(f.severity) }}</td>
               <td class="loc">
                 {{ f.file }}{% if f.start_line %}:{{ f.start_line }}{% else %}<span class="dim"> (no line)</span>{% endif %}
               </td>
               <td>
                 <div class="finding-rule">{{ f.rule_id }}</div>
-                <div class="dim" style="font-size:11.5px">{{ f.source_tool }}</div>
+                <div class="dim finding-tool">{{ f.source_tool }}</div>
               </td>
-              <td class="finding-msg">{{ f.message|redact }}</td>
-              <td class="fix-cell">
-                {% set fix = fix_by_fp.get(f.fingerprint) %}
-                {% if fix %}
+              <td class="finding-msg">{% if f.unreviewed %}<span class="pill warn">Unreviewed</span> {% endif %}{{ f.message|redact }}</td>
+            </tr>
+            {% if fix %}
+            <tr class="fix-row">
+              <td colspan="4">
+                <details>
+                  <summary>Suggested fix</summary>
                   {{ m.fix_diff(fix) }}
-                {% else %}
-                  <span class="dim">No suggestion</span>
-                {% endif %}
+                </details>
               </td>
             </tr>
+            {% endif %}
             {% endfor %}
           </tbody>
         </table>
@@ -143,11 +158,10 @@
     </div>
 
     {% if dismissed %}
-    <div class="panel">
-      <div class="panel-head">
-        <h2>Checked and dismissed</h2>
-        <span class="count">{{ dismissed|length }}</span>
-      </div>
+    {# Collapsed, not hidden: what the AI talked away is worth a click to
+       check, and is not what the page is about. #}
+    <details class="panel fold">
+      <summary class="panel-head">Dismissed by AI ({{ dismissed|length }})</summary>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Location</th><th>Rule</th><th>Why it was not flagged</th></tr></thead>
@@ -162,7 +176,7 @@
           </tbody>
         </table>
       </div>
-    </div>
+    </details>
     {% endif %}
 
     <div class="panel">
@@ -172,21 +186,40 @@
       <div class="prose">{{ review.summary_body|redact }}</div>
     </div>
 
+    {#
+      Each path ONCE, grouped by reason. The token budget drops HUNKS, so
+      one file could appear once per dropped hunk, and the list used to
+      disagree with the banner above it (5 listed, 48 skipped). The header
+      says how many it shows of how many whenever the two differ.
+    #}
     {% if filtered %}
+    {% set groups = {} %}
+    {% set seen = [] %}
+    {% for f in filtered %}
+      {% if f.path not in seen %}
+        {% set _ = seen.append(f.path) %}
+        {% if f.reason not in groups %}{% set _ = groups.update({f.reason: []}) %}{% endif %}
+        {% set _ = groups[f.reason].append(f.path) %}
+      {% endif %}
+    {% endfor %}
+    {% set not_reviewed = [review.files_seen - review.files_reviewed, seen|length]|max %}
     <div class="panel">
       <div class="panel-head">
         <h2>Files not reviewed</h2>
-        <span class="count">{{ filtered|length }}</span>
+        <span class="count">
+          {% if seen|length < not_reviewed %}{{ seen|length }} shown of {{ not_reviewed }}{% else %}{{ seen|length }}{% endif %}
+        </span>
       </div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Path</th><th>Reason</th></tr></thead>
-          <tbody>
-            {% for f in filtered %}
-            <tr><td class="loc">{{ f.path }}</td><td class="dim">{{ f.reason }}</td></tr>
-            {% endfor %}
-          </tbody>
-        </table>
+      <div class="panel-body">
+        {% if seen|length < not_reviewed %}
+        <p class="dim">The other {{ not_reviewed - seen|length }} were not itemised when this review was recorded.</p>
+        {% endif %}
+        {% for reason, paths in groups.items() %}
+        <div class="reason-group">
+          <h3>{{ reason }} ({{ paths|length }})</h3>
+          <ul class="path-list">{% for p in paths %}<li class="loc">{{ p }}</li>{% endfor %}</ul>
+        </div>
+        {% endfor %}
       </div>
     </div>
     {% endif %}

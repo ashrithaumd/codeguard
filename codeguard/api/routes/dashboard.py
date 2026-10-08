@@ -39,6 +39,7 @@ from codeguard.api.auth import client_principal, client_viewer
 from codeguard.config import get_settings
 from codeguard.queue.queue import enqueue
 from codeguard.redact import redact
+from codeguard.report_format import REPORT_DATA_VERSION, UNREVIEWED_NOTICE_TEXT
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,9 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 # `|redact` instead of by remembering a helper exists. See
 # codeguard/redact.py for why any of this is needed.
 templates.env.filters["redact"] = redact
+# One wording for "the verdict call failed, these are raw findings", shared
+# with the audit report and the PR summary (see report_format).
+templates.env.globals["unreviewed_notice"] = UNREVIEWED_NOTICE_TEXT
 
 PAGE_SIZE = 50
 
@@ -197,11 +201,10 @@ async def index(
     # filtered set — a picker that hid the option you would switch to
     # would strand you on whatever you picked first.
     all_repos = await q.list_repos(pool, principal_repos=allowed)
-    repos = await q.list_repos(pool, principal_repos=allowed, filters=filters)
 
     return render_page(
         request, "index.html", principal,
-        reviews=reviews, repos=repos, all_repos=all_repos, total=total, totals=agg,
+        reviews=reviews, all_repos=all_repos, total=total, totals=agg,
         page=page, page_size=PAGE_SIZE, has_next=offset + len(reviews) < total,
         filters=filters, severities=q.SEVERITIES,
     )
@@ -326,9 +329,14 @@ async def pr_detail(request: Request, owner: str, repo: str, pr_number: int) -> 
 # before/after pair for a suggestion to be anchored to. Someone who has
 # seen fix suggestions on a pull request will otherwise read their
 # absence here as a failure.
+#
+# "No fix suggestions" means no committable suggestion block. Each finding
+# still says how to fix it in words, so the note says which is missing
+# rather than appearing to contradict the "How to fix" on every card.
 AUDIT_NO_FIXES_NOTE = (
-    "Audit mode reports findings only — no fix suggestions. "
-    "Fixes are anchored to a pull request's diff, and an audit has no diff."
+    "Audit mode reports findings only — no fix suggestions to commit. Each finding says "
+    "how to fix it, but code suggestions are anchored to a pull request's diff, and an "
+    "audit has no diff."
 )
 
 # Why the button is absent on a private repository. run_audit clones over
@@ -428,6 +436,9 @@ async def repositories(request: Request) -> HTMLResponse:
         lookup_failed = True
 
     stats = await audits.repo_stats(pool)
+    # Activity is reviews AND audits, the audit half scoped to this viewer:
+    # see audits.audit_stats for why it may never be everyone's.
+    audit_totals = await audits.audit_stats(pool, requested_by=principal)
     # MY audits, not everyone's. An audit is visible only to the person who
     # asked for it (_may_read_audit), and this page renders the row's audit
     # id as a link and its status as text — unscoped, it disclosed whoever
@@ -465,13 +476,20 @@ async def repositories(request: Request) -> HTMLResponse:
         if (owner, name) not in allowed:
             continue
         stat = stats.get((owner, name), {})
+        audit_stat = audit_totals.get((owner, name), {})
         audit = latest_audits.get((owner, name))
+        last_activity = max(
+            (t for t in (stat.get("last_reviewed"), audit_stat.get("last_audited")) if t),
+            default=None,
+        )
         rows.append({
             **entry,
             "active": not lookup_failed,
             "review_count": stat.get("review_count", 0),
-            "last_reviewed": stat.get("last_reviewed"),
-            "total_cost": float(stat.get("total_cost", 0) or 0),
+            "audit_count": audit_stat.get("audit_count", 0),
+            "last_activity": last_activity,
+            "total_cost": float(stat.get("total_cost", 0) or 0)
+                          + float(audit_stat.get("total_cost", 0) or 0),
             "audit": audit,
             "audit_in_flight": bool(audit and audit["status"] in ("queued", "running")),
             # All three conditions, so the template never has to combine
@@ -484,7 +502,9 @@ async def repositories(request: Request) -> HTMLResponse:
             ),
         })
 
-    rows.sort(key=lambda r: (r["last_reviewed"] is None, -(r["review_count"]), r["repo"]))
+    rows.sort(key=lambda r: (
+        r["last_activity"] is None, -(r["review_count"] + r["audit_count"]), r["repo"],
+    ))
 
     return render_page(
         request, "repositories.html", principal,
@@ -679,5 +699,11 @@ async def audit_status(request: Request, audit_id: UUID) -> JSONResponse:
 async def audit_detail(request: Request, audit_id: UUID) -> HTMLResponse:
     audit = await _audit_or_404(request, audit_id)
     principal = client_principal(request)
-    return render_page(request, "audit.html", principal, audit=audit,
+    # The structured view only for a report_json version this page knows.
+    # Anything else -- an audit from before the column existed, or one
+    # written by a newer worker during a rolling deploy -- gets the raw
+    # report, which every version still stores.
+    data = audit.get("report_json")
+    report = data if isinstance(data, dict) and data.get("version") == REPORT_DATA_VERSION else None
+    return render_page(request, "audit.html", principal, audit=audit, report=report,
                  audit_note=AUDIT_NO_FIXES_NOTE)

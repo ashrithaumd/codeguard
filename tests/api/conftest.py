@@ -233,7 +233,7 @@ async def insert_review(pool, **over):
         vc=0, gen=0, det=0, unv=0,
         dismissed_count=0, inline_count=0, fix_suggestion_count=0,
         budget_exceeded=False, findings=[], fixes=[], pr_title="",
-        estimated_cost_usd=0.0,
+        estimated_cost_usd=0.0, dismissed=[], filtered=[], created_at=None,
     )
     row.update(over)
     async with pool.connection() as conn:
@@ -247,9 +247,9 @@ async def insert_review(pool, **over):
                 findings_deterministic, findings_unverified,
                 dismissed_count, inline_count, fix_suggestion_count,
                 budget_exceeded, findings_json, fix_suggestions_json, pr_title,
-                estimated_cost_usd
+                estimated_cost_usd, dismissed_json, filtered_files_json, created_at
             ) VALUES (%s,%s,%s,%s,%s,%s,%s, %s,%s,%s,%s, %s,%s,%s, %s,%s,%s,%s,
-                      %s,%s,%s, %s,%s,%s,%s,%s)
+                      %s,%s,%s, %s,%s,%s,%s,%s, %s,%s, coalesce(%s, now()))
             """,
             (row["job_id"], row["owner"], row["repo"], row["pr_number"], row["head_sha"],
              row["action"], row["private"], row["summary_body"], row["check_conclusion"],
@@ -258,7 +258,8 @@ async def insert_review(pool, **over):
              row["det"], row["unv"], row["dismissed_count"], row["inline_count"],
              row["fix_suggestion_count"], row["budget_exceeded"],
              Jsonb(row["findings"]), Jsonb(row["fixes"]), row["pr_title"],
-             row["estimated_cost_usd"]),
+             row["estimated_cost_usd"], Jsonb(row["dismissed"]), Jsonb(row["filtered"]),
+             row["created_at"]),
         )
     return row["job_id"]
 

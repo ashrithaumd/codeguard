@@ -193,7 +193,7 @@
             </div>
           </td>
           <td class="nowrap">
-            <a href="/dashboard/reviews/{{ r.job_id }}" class="pr">#{{ r.pr_number }}</a>
+            {{ m.pr_ref(r.owner, r.repo, r.pr_number, r.pr_title, href='/dashboard/reviews/' ~ r.job_id) }}
             <span class="sha">{{ r.head_sha[:7] }}</span>
           </td>
           <td>{{ m.gate_pill(r.check_conclusion) }}</td>
@@ -225,43 +225,7 @@
   {% endif %}
 </div>
 
-{% if repos %}
-<div class="panel">
-  <div class="panel-head">
-    <h2>Repositories</h2>
-    <span class="count">{{ repos|length }}</span>
-  </div>
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th>Repository</th>
-          <th class="num">Reviews</th>
-          <th class="num">{{ m.term("Findings") }}</th>
-          <th class="num">Total {{ m.term("Cost", "cost") }}</th>
-          <th class="num">Last reviewed</th>
-          <th class="chev"><span class="visually-hidden">Open</span></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for rp in repos %}
-        <tr class="row-link" data-href="/dashboard/repos/{{ rp.owner }}/{{ rp.repo }}">
-          <td>
-            <div class="repo-cell">
-              <span class="owner">{{ rp.owner }}/</span><span class="name">{{ rp.repo }}</span>
-              {% if rp.private %}<span class="pill neutral">Private</span>{% endif %}
-            </div>
-          </td>
-          <td class="num">{{ rp.review_count }}</td>
-          <td class="num">{{ rp.total_findings }}</td>
-          <td class="num">{{ m.cost(rp.total_cost) }}</td>
-          <td class="num dim nowrap">{{ m.when(rp.last_reviewed) }}</td>
-          {{ m.chevron() }}
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-</div>
-{% endif %}
+{# A per-repository table used to sit here. It repeated the Repositories
+   page, one click away, so it is a link to that page instead. #}
+<p class="page-foot"><a href="/dashboard/repos">Per-repository totals, audits and activity are on Repositories →</a></p>
 {% endblock %}

@@ -91,13 +91,6 @@
 </div>
 {% endif %}
 
-{% if may_audit %}
-<div class="banner" role="note">
-  <strong>Audit mode reports findings only.</strong>
-  {{ audit_note }}
-</div>
-{% endif %}
-
 <div class="panel">
   <div class="panel-head">
     <h2>Installed</h2>
@@ -111,8 +104,8 @@
         <tr>
           <th>Repository</th>
           <th>CodeGuard</th>
-          <th class="num">Reviews</th>
-          <th class="num">Last reviewed</th>
+          <th class="num">Activity</th>
+          <th class="num">Last activity</th>
           <th class="num">Total {{ m.term("Cost", "cost") }}</th>
           {% if may_audit %}<th class="audit-col">Audit</th>{% endif %}
           <th class="chev"><span class="visually-hidden">Open</span></th>
@@ -139,11 +132,21 @@
               <span class="pill muted">Unknown</span>
             {% endif %}
           </td>
-          <td class="num">{{ r.review_count }}</td>
+          {# Reviews and audits together. The audit half is this viewer's own
+             audits only (audits.audit_stats); the review half is everyone's,
+             as it always was, because reviews are not per-requester. #}
           <td class="num">
-            {% if r.last_reviewed %}{{ m.when(r.last_reviewed) }}{% else %}<span class="dim">Never</span>{% endif %}
+            {% if r.review_count or r.audit_count %}
+              {% set parts = [] %}
+              {% if r.review_count %}{% set _ = parts.append(r.review_count ~ " review" ~ ("" if r.review_count == 1 else "s")) %}{% endif %}
+              {% if r.audit_count %}{% set _ = parts.append(r.audit_count ~ " audit" ~ ("" if r.audit_count == 1 else "s")) %}{% endif %}
+              {{ parts|join(" · ") }}
+            {% else %}<span class="dim">0</span>{% endif %}
           </td>
-          <td class="num">{% if r.review_count %}{{ m.cost(r.total_cost) }}{% else %}<span class="dim">—</span>{% endif %}</td>
+          <td class="num">
+            {% if r.last_activity %}{{ m.when(r.last_activity) }}{% else %}<span class="dim">Never</span>{% endif %}
+          </td>
+          <td class="num">{% if r.review_count or r.audit_count %}{{ m.cost(r.total_cost) }}{% else %}<span class="dim">—</span>{% endif %}</td>
 
           {% if may_audit %}
           <td class="audit-col" data-no-rowlink>
@@ -155,6 +158,9 @@
                 {{ r.audit.status|capitalize }}…
               </a>
             {% elif r.can_audit %}
+              {# What an audit does and does not produce, on the button it
+                 describes -- it was a page banner that said it twice. #}
+              <span class="hint" data-tip="{{ audit_note }}">
               <form method="post" action="/dashboard/repos/{{ r.owner }}/{{ r.repo }}/audit">
                 {# The half of the double-submit pair an attacker's page
                    cannot produce: it matches a SameSite=Strict cookie it
@@ -162,6 +168,7 @@
                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                 <button class="btn btn-sm" type="submit">Run audit</button>
               </form>
+              </span>
             {% elif mine_in_flight and may_audit and not r.private %}
               {# One audit per person at a time. Says so, and links to the
                  one that is running — drawing a button here would post,

@@ -34,6 +34,16 @@
   {%- endif -%}
 {%- endmacro %}
 
+{#
+  A pull request: its number, linked, and its title beside it. The title
+  is the author's text, so it is escaped like everything else and never
+  part of the link's accessible name alone -- the number is.
+#}
+{% macro pr_ref(owner, repo, number, title, href=None) -%}
+  <a class="pr" href="{{ href or '/dashboard/repos/' ~ owner ~ '/' ~ repo ~ '/pulls/' ~ number }}">#{{ number }}</a>
+  {%- if title %} <span class="pr-title">{{ title }}</span>{% endif %}
+{%- endmacro %}
+
 {% macro cost(v) -%}
   ${{ "%.4f"|format(v or 0) }}
 {%- endmacro %}

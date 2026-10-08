@@ -19,34 +19,30 @@
       Requested by {{ audit.requested_by }}.
     </div>
   </div>
-  <span class="pill {{ {'done':'ok','failed':'bad','running':'warn','queued':'muted'}[audit.status] }}"
+  <span class="pill {{ {'done':'ok','failed':'bad','running':'warn','queued':'muted','rejected':'muted','timed_out':'bad'}.get(audit.status, 'muted') }}"
         id="audit-status" data-status="{{ audit.status }}">
     {% if audit.status in ('queued', 'running') %}<span class="spinner" aria-hidden="true"></span>{% endif %}
     {{ audit.status|capitalize }}
   </span>
 </div>
 
-<div class="banner" role="note">
-  <strong>No fix suggestions in audit mode.</strong> {{ audit_note }}
-</div>
+{# Said once, here. It used to be a bold heading AND a sentence repeating
+   it, and the same pair again on the Repositories page. #}
+<p class="note">{{ audit_note }}</p>
 
-<div class="stats">
-  <div class="stat"><div class="k">Status</div><div class="v">{{ audit.status|capitalize }}</div></div>
-  <div class="stat"><div class="k">Requested</div><div class="v">{{ m.when(audit.created_at) }}</div></div>
-  <div class="stat"><div class="k">Duration</div>
-    <div class="v">{% if audit.duration_s %}{{ "%.1f"|format(audit.duration_s) }}s{% else %}—{% endif %}</div></div>
-  <div class="stat"><div class="k">Exit code</div>
-    <div class="v">{% if audit.exit_code is not none %}{{ audit.exit_code }}{% else %}—{% endif %}</div></div>
-  {#
-    Shown because the number is now real. It was 0 for every audit until
-    run_audit started handing its economics back — the report said
-    $0.0406 and the row said $0, and a KPI reading the row would have
-    under-reported audit spend by all of it.
-  #}
-  <div class="stat"><div class="k">{{ m.term("Cost", "cost") }}</div>
-    <div class="v">{{ m.cost(audit.estimated_cost_usd) }}</div></div>
-  <div class="stat"><div class="k">Tokens</div>
-    <div class="v">{{ "{:,}".format(audit.tokens_in) }} in / {{ "{:,}".format(audit.tokens_out) }} out</div></div>
+{#
+  Cost and duration are shown because the numbers are real. They were 0
+  for every audit until run_audit started handing its economics back —
+  the report said $0.0406 and the row said $0, and a KPI reading the row
+  would have under-reported audit spend by all of it. Exit code, tokens
+  and the report's size are internal: they live in Technical details.
+#}
+<div class="run-line">
+  Requested {{ m.when(audit.created_at) }} by {{ audit.requested_by }}
+  · {{ m.cost(audit.estimated_cost_usd) }}
+  · {% if audit.duration_s %}{{ "%.1f"|format(audit.duration_s) }}s{% else %}—{% endif %}
+  {% if report %}· {{ report.summary.files_scanned }} file{{ "" if report.summary.files_scanned == 1 else "s" }} scanned
+    ({{ report.summary.files_ai_aware }} with an LLM SDK import){% endif %}
 </div>
 
 {% if audit.status == 'failed' %}
@@ -65,10 +61,156 @@
 </div>
 {% endif %}
 
+{#
+  THE STRUCTURED VIEW, from audits.report_json (cli.build_report_data) --
+  the data the markdown was rendered from, so the two cannot disagree.
+  Every value goes through autoescaping like any other stored string; the
+  text is scanner and model output about code a repository's authors
+  control, and nothing here is ever marked safe. `report` is None for an
+  audit written before report_json existed, or of a version this page does
+  not know, and the raw report below is shown instead.
+#}
+{% if report %}
+{% set s = report.summary %}
+{% set total_sev = s.counts.critical + s.counts.high + s.counts.medium + s.counts.low %}
+<div class="sev-summary" aria-label="Findings by severity">
+  <div class="sev-counts">
+    {% for key in ("critical", "high", "medium", "low") %}
+      {% if key != "critical" or s.counts.critical %}
+      <span class="sev sev-{{ key|upper }}"><span class="bar"></span>{{ key|capitalize }} <b>{{ s.counts[key] }}</b></span>
+      {% endif %}
+    {% endfor %}
+    {% if s.repo_level %}<span class="dim">· {{ s.repo_level }} repository-level</span>{% endif %}
+  </div>
+  {% if total_sev %}
+  <div class="sev-track" aria-hidden="true">
+    {% for key in ("critical", "high", "medium", "low") %}
+      {% if s.counts[key] %}<span class="sev-seg seg-{{ key }}" style="width: {{ (100 * s.counts[key] / total_sev)|round(2) }}%"></span>{% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+
+{% if s.unreviewed %}
+{# Verdict calls failed, so these findings are the scanner's raw output.
+   Said up front: a fallback that looks exactly like a reviewed result is
+   how an exhausted API credit went unnoticed. #}
+<div class="banner warn" role="status">
+  <strong>{{ unreviewed_notice.format(n=s.unreviewed) }}</strong>
+</div>
+{% endif %}
+
+{% if report.incomplete %}
+<div class="banner warn" role="status">
+  <strong>This is not a clean result — the audit did not examine everything.</strong>
+  <ul>{% for reason in report.incomplete %}<li>{{ reason|redact }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+<div class="panel">
+  <div class="panel-head">
+    <h2>Findings</h2>
+    <span class="count">{{ report.findings|length }}</span>
+  </div>
+  {% if report.findings %}
+  <ol class="finding-cards">
+    {% for f in report.findings %}
+    <li class="finding-card sev-edge-{{ f.severity }}">
+      <div class="finding-head">
+        {{ m.severity(f.severity|upper) }}
+        <span class="finding-title">{{ f.title|redact }}</span>
+        {% if f.unreviewed %}<span class="pill warn">Unreviewed</span>{% endif %}
+        {# A taint finding: where the value was built, then where it reached
+           the model. `source_line` is absent in reports written before it. #}
+        <code class="finding-loc">{{ f.file }}:{% if f.source_line %}{{ f.source_line }} → {% endif %}{{ f.start_line }}{% if f.end_line > f.start_line %}–{{ f.end_line }}{% endif %}</code>
+      </div>
+      <dl class="finding-body">
+        <dt>What</dt><dd>{{ f.what|redact }}</dd>
+        {% if f.why %}<dt>Why it matters</dt><dd>{{ f.why|redact }}</dd>{% endif %}
+        {% if f.fix %}<dt>How to fix</dt><dd>{{ f.fix|redact }}</dd>{% endif %}
+      </dl>
+      <div class="finding-rules">
+        {% for rule in f.rules %}<span class="tag rule">{{ rule }}</span>{% endfor %}
+      </div>
+    </li>
+    {% endfor %}
+  </ol>
+  {% else %}
+    {{ m.empty_state(
+        "No findings" if not report.incomplete else "No findings in what was examined",
+        "Nothing the scanners reported survived review." if not report.incomplete
+          else "See the warning above: part of the repository was never examined.",
+        "check") }}
+  {% endif %}
+</div>
+
+{% if report.repo_level %}
+<div class="panel">
+  <div class="panel-head"><h2>Repository-level</h2><span class="count">{{ report.repo_level|length }}</span></div>
+  <ol class="finding-cards">
+    {% for f in report.repo_level %}
+    <li class="finding-card sev-edge-{{ f.severity }}">
+      <div class="finding-head">
+        {{ m.severity(f.severity|upper) }}
+        <span class="finding-title">{{ f.title|redact }}</span>
+      </div>
+      <p class="finding-text">{{ f.message|redact }}</p>
+      <div class="finding-rules">{% for rule in f.rules %}<span class="tag rule">{{ rule }}</span>{% endfor %}</div>
+    </li>
+    {% endfor %}
+  </ol>
+</div>
+{% endif %}
+
+{% if report.dismissed %}
+<details class="panel fold">
+  <summary class="panel-head">Dismissed by AI ({{ report.dismissed|length }})</summary>
+  <ul class="fold-list">
+    {% for d in report.dismissed %}
+    <li><code>{{ d.file }}:{{ d.start_line }}</code> <span class="tag rule">{{ d.rule_id }}</span>
+      <span class="dim">{{ d.reason|redact }}</span></li>
+    {% endfor %}
+  </ul>
+</details>
+{% endif %}
+
+{% if s.skipped_test_asserts or report.skipped_files or report.verdict_call_failures %}
+<details class="panel fold">
+  <summary class="panel-head">Skipped</summary>
+  <ul class="fold-list">
+    {% if s.skipped_test_asserts %}
+    <li>{{ s.skipped_test_asserts }} test asserts — Bandit B101 in test files, where an assert is the point;
+      never sent to the model.</li>
+    {% endif %}
+    {% for f in report.skipped_files %}<li><code>{{ f.path }}</code> <span class="dim">{{ f.reason }}</span></li>{% endfor %}
+    {% for f in report.verdict_call_failures %}<li><code>{{ f.path }}</code> <span class="dim">{{ f.reason|redact }}</span></li>{% endfor %}
+  </ul>
+</details>
+{% endif %}
+
+<details class="panel fold">
+  <summary class="panel-head">Technical details</summary>
+  <dl class="tech">
+    <dt>Tokens</dt><dd>{{ "{:,}".format(report.technical.tokens_in) }} in / {{ "{:,}".format(report.technical.tokens_out) }} out</dd>
+    {% for agent, model in report.technical.models.items() %}<dt>Model ({{ agent }})</dt><dd><code>{{ model }}</code></dd>{% endfor %}
+    <dt>Exit code</dt><dd>{% if audit.exit_code is not none %}{{ audit.exit_code }}{% else %}—{% endif %}</dd>
+    <dt>Report size</dt><dd>{{ "{:,}".format((audit.report_markdown or "")|length) }} chars</dd>
+    <dt>Audit id</dt><dd><code>{{ audit.id }}</code></dd>
+  </dl>
+</details>
+
+{% if audit.report_markdown %}
+<details class="panel fold">
+  <summary class="panel-head">View raw report</summary>
+  {# Escaped text in a <pre>, never parsed as Markdown -- see below. #}
+  <pre class="report">{{ audit.report_markdown|redact }}</pre>
+</details>
+{% endif %}
+
+{% else %}
 <div class="panel">
   <div class="panel-head">
     <h2>Report</h2>
-    {% if audit.report_markdown %}<span class="count">{{ audit.report_markdown|length }} chars</span>{% endif %}
   </div>
   {% if audit.report_markdown %}
     {#
@@ -88,6 +230,17 @@
     {{ m.empty_state("No report", "The audit produced no report.", "inbox") }}
   {% endif %}
 </div>
+{% if audit.status not in ('queued', 'running') %}
+<details class="panel fold">
+  <summary class="panel-head">Technical details</summary>
+  <dl class="tech">
+    <dt>Tokens</dt><dd>{{ "{:,}".format(audit.tokens_in) }} in / {{ "{:,}".format(audit.tokens_out) }} out</dd>
+    <dt>Exit code</dt><dd>{% if audit.exit_code is not none %}{{ audit.exit_code }}{% else %}—{% endif %}</dd>
+    <dt>Report size</dt><dd>{{ "{:,}".format((audit.report_markdown or "")|length) }} chars</dd>
+  </dl>
+</details>
+{% endif %}
+{% endif %}
 
 {% if audit.status in ('queued', 'running') %}
 {#

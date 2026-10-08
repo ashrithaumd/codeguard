@@ -24,7 +24,9 @@
 
 <div class="page-head">
   <div>
+    {% set pr_title = (reviews|map(attribute='pr_title')|select|first) if reviews else '' %}
     <h1>{{ owner }}/{{ repo }} <span class="dim">#{{ pr_number }}</span></h1>
+    {% if pr_title %}<div class="pr-heading-title">{{ pr_title }}</div>{% endif %}
     <div class="sub">
       {{ reviews|length }} review{{ "" if reviews|length == 1 else "s" }} of this pull request — one per push.
     </div>
