@@ -37,12 +37,15 @@ from codeguard.api.audits import (
     finish_audit,
     mark_running,
 )
+from codeguard.api.repo_settings import pr_reviews_enabled
 from codeguard.cli import AuditOutcome, AuditStats, run_audit
-from codeguard.config import Settings, get_settings, verify_required_settings
+from codeguard.config import RepoConfig, Settings, get_settings, verify_required_settings
+from codeguard.line_refs import strip_line_refs
 from codeguard.diff.filters import split_test_asserts
 from codeguard.diff.ingest import ingest_pr_diff
 from codeguard.github.auth import get_installation_token
 from codeguard.github.base_tree import fetch_base_tree_python_files
+from codeguard.github.diff import get_file_content
 from codeguard.github.check_summary import render_check_summary
 from codeguard.github.checks import complete_check_run, start_check_run
 from codeguard.github.errors import extract_retry_after
@@ -50,9 +53,11 @@ from codeguard.github.notifications import notify_dead_letter
 from codeguard.github.outbound import escape_for_github, escape_one_line
 from codeguard.github.repo_config import load_repo_config
 from codeguard.github.reviews import fetch_review_comments, post_review
+from codeguard.github.tarball import TarballTooLarge, fetch_python_files
 from codeguard.pipeline.feedback import FINGERPRINT_MARKER_RE, fetch_suppressed_fingerprints, fingerprint_marker, record_posted_finding_comments
 from codeguard.pipeline.graph import review_graph
 from codeguard.pipeline.hunk_cache import fetch_cache_hits, write_cache_records
+from codeguard.pipeline.impact import ImpactReport, analyze
 from codeguard.pipeline.merge import rule_label, with_flow_note
 from codeguard.pipeline.nodes import _exclude_suppressed, compute_cache_keys
 from codeguard.pipeline.reviews import record_review
@@ -262,7 +267,7 @@ def _findings_to_review_comments(findings, fix_suggestions) -> list[dict]:
         # (raw fallback) still says where its value was built.
         body = (
             f"**[{escape_one_line(f.source_tool)} / {f.severity.name}] "
-            f"{escape_one_line(rule_label(f))}**\n\n{escape_for_github(with_flow_note(f.message, f))}"
+            f"{escape_one_line(rule_label(f))}**\n\n{escape_for_github(strip_line_refs(with_flow_note(f.message, f)))}"
         )
         if f.unreviewed:
             body += (
@@ -319,6 +324,65 @@ def _check_run_conclusion(all_findings, gate_threshold) -> tuple[str, str, list]
     return "failure", f"{len(blocking)} finding(s) at or above {gate_threshold.name}", blocking
 
 
+_IMPACT_BASE_FETCH_CONCURRENCY = 5
+
+
+def impact_enabled(settings: Settings, repo_config: RepoConfig) -> bool:
+    """Both switches: the global one (off by default) and the repo's own
+    opt-out. A repository cannot opt in past the global switch."""
+    return settings.impact_analysis_enabled and repo_config.enable_impact_analysis
+
+
+async def prepare_impact(
+    token: str, owner: str, repo: str, head_sha: str, base_ref: str,
+    head_contents: dict[str, str], patches: dict[str, str], settings: Settings,
+) -> tuple[ImpactReport | None, list[str]]:
+    """(report, notes) for the review graph's review_impact node.
+
+    One tarball request for the repository's Python at the head
+    (codeguard/github/tarball.py), and the BASE version of each changed .py
+    file, which is all the old signatures need. Nothing is fetched when the
+    PR changes no Python. A repository too large, or a fetch that fails,
+    is a note the summary prints -- never a failed review: impact analysis
+    is extra context, and the review is the deliverable.
+    """
+    changed_py = sorted(p for p in patches if p.endswith(".py"))
+    if not changed_py:
+        return None, []
+
+    semaphore = asyncio.Semaphore(_IMPACT_BASE_FETCH_CONCURRENCY)
+
+    async def _base(path: str) -> tuple[str, str | None]:
+        async with semaphore:
+            return path, await asyncio.to_thread(get_file_content, token, owner, repo, path, base_ref)
+
+    try:
+        head_files, base_pairs = await asyncio.gather(
+            asyncio.to_thread(fetch_python_files, token, owner, repo, head_sha),
+            asyncio.gather(*(_base(p) for p in changed_py)),
+        )
+    except TarballTooLarge as exc:
+        logger.info("impact analysis skipped for %s/%s: %s", owner, repo, exc)
+        return None, ["skipped: repository too large"]
+    except Exception:
+        logger.warning("impact analysis fetch failed for %s/%s", owner, repo, exc_info=True)
+        return None, ["skipped: could not fetch the repository"]
+
+    head_files = {**head_files, **{p: c for p, c in head_contents.items() if p.endswith(".py")}}
+    base_files = {p: c for p, c in base_pairs if c is not None}
+    try:
+        report = await asyncio.to_thread(
+            analyze, head_files=head_files, base_files=base_files, patches=patches,
+            per_symbol=settings.impact_max_call_sites_per_symbol, per_pr=settings.impact_max_call_sites_per_pr,
+        )
+    except Exception:
+        logger.warning("impact analysis failed for %s/%s", owner, repo, exc_info=True)
+        return None, ["skipped: analysis failed"]
+    logger.info("impact %s/%s: %d changed symbol(s), %d call site(s), %d selected",
+                owner, repo, len(report.symbols), report.total_sites, len(report.sites))
+    return report, []
+
+
 async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -> bool:
     """Fetches this job's own installation token (never cached across
     jobs — see codeguard/github/auth.py): diff ingestion -> deterministic
@@ -342,6 +406,14 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
 
     if not (head_sha and base_ref):
         logger.warning("job %s missing head_sha/base_ref, nothing to review", job.id)
+        return True
+
+    # The per-repo switch, re-checked (the webhook already refused to queue
+    # for a repo that was OFF). Covers a switch turned OFF between enqueue
+    # and claim. Before the token, so a repo that is OFF costs no GitHub
+    # call and no model call.
+    if not await pr_reviews_enabled(pool, owner, repo):
+        logger.info("job %s: PR reviews are off for %s/%s, skipping", job.id, owner, repo)
         return True
 
     # The review handler's own wall clock, for the `reviews` row. Started
@@ -389,6 +461,13 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
     osv_task = asyncio.ensure_future(
         asyncio.to_thread(check_dependency_updates, diff_result.dependency_contents, diff_result.dependency_patches)
     )
+    # Impact analysis: off unless both switches are on (impact_enabled).
+    # Concurrent with the tool run, like the base-tree fetch below.
+    impact_task = (
+        asyncio.ensure_future(prepare_impact(
+            token, owner, repo, head_sha, base_ref, diff_result.file_contents, diff_result.patches, settings))
+        if impact_enabled(settings, repo_config) else None
+    )
     if repo_config.enable_ai_aware:
         base_tree_task = asyncio.ensure_future(fetch_base_tree_python_files(token, owner, repo, base_ref))
     else:
@@ -397,6 +476,7 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
     tool_findings, skipped_test_asserts = _tool_findings_for_review(pr_number, tool_findings)
     osv_findings = await osv_task
     base_tree_files = await base_tree_task if base_tree_task is not None else {}
+    impact_report, impact_notes = await impact_task if impact_task is not None else (None, [])
     _log_findings(pr_number, tool_findings)
     if osv_findings:
         logger.info("pr=%s: %d known-vulnerability finding(s) from OSV", pr_number, len(osv_findings))
@@ -425,6 +505,7 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
         "skipped_test_asserts": skipped_test_asserts,
         "hunk_cache_hits": hunk_cache_hits, "cache_writes": [], "verdict_call_failures": [],
         "suppressed_fingerprints": suppressed_fingerprints,
+        "impact_report": impact_report, "impact_callers": [], "impact_notes": impact_notes,
         "touches_ai_code": False,
         "findings": [], "repo_level_findings": osv_findings, "dismissed_findings": [], "fix_suggestions": [],
         "should_fix": False, "summary": "", "inline_findings": [],

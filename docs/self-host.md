@@ -96,6 +96,7 @@ max_files_per_pr: 15       # also capped by the operator's global ceiling
 max_tokens_per_pr: 40000
 max_wall_clock_s: 120
 ignored_paths: []          # fnmatch patterns, applied before language filtering
+enable_impact_analysis: true  # opt-out only; needs IMPACT_ANALYSIS_ENABLED (off by default)
 ```
 
 ## Environment variables
@@ -114,6 +115,7 @@ gates a specific feature.
 | `GITHUB_TOKEN` | `audit --post-issue` | Never pass a token on the command line. |
 | `METRICS_AUTH_TOKEN` | Public deployments | Bearer token for `/metrics`. Unset means the endpoint is open — fine on a compose network, not on a public ingress. The api warns at startup when it is unset. |
 | `DASHBOARD_AUDIT_PRINCIPALS` | The dashboard's Run audit button | Comma-separated GitHub **numeric user ids** allowed to trigger an on-demand audit — not logins. `gh api users/<login> --jq .id` gives you one. **Unset means nobody**, deliberately: an audit clones a repository and spends your Anthropic credit, so "any signed-in user" is not a safe gate. A login here is *ignored*, not matched, and the api warns about it by name at startup — ids are used because a renamed login is released for anyone else to register, and would carry this grant with it. |
+| `IMPACT_ANALYSIS_ENABLED` | Impact analysis in PR reviews | **Off by default.** When on, each PR review downloads the repository's tarball at the head (one request, token in a header, capped, Python only, in memory), finds the call sites of every function or class the PR changed, and flags callers that no longer fit the new signature (no model call). For functions whose body changed it makes **at most one** extra model call per PR (`IMPACT_AGENT_MODEL`, Haiku by default; about 6k tokens in at most) asking which callers rely on what changed. Callers outside the diff are listed in the review body under "Callers outside this diff"; GitHub does not accept inline comments there. Caps: `IMPACT_MAX_CALL_SITES_PER_SYMBOL` (5), `IMPACT_MAX_CALL_SITES_PER_PR` (15). A repository can opt out with `enable_impact_analysis: false`. |
 | `LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT` | Optional | Traces every real Anthropic call. |
 | `DASHBOARD_AUTH_MODE` | Which sign-in the dashboard uses | `easyauth` (default) or `app`. `easyauth` is the Azure Container Apps built-in; `app` is CodeGuard's own GitHub OAuth flow. Anything else signs everyone out and warns at startup, rather than trusting an unrecognised value. |
 | `GITHUB_OAUTH_CLIENT_ID` | `app` mode | The **GitHub App's** client id (`Iv2…`), not an OAuth App's. Not a secret — it travels in a redirect URL the browser follows. |

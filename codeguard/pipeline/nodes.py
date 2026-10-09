@@ -34,6 +34,7 @@ from langgraph.types import Send
 from codeguard.config import get_settings
 from codeguard.diff.parse import build_hunks, hash_content, parse_hunk_ranges
 from codeguard.github.outbound import escape_for_github, escape_one_line
+from codeguard.line_refs import strip_line_refs
 from codeguard.pipeline.eval_hygiene import review_eval_hygiene
 from codeguard.pipeline.llm_call import call_agent
 from codeguard.pipeline.merge import merge_same_bug, rule_label, with_flow_note
@@ -52,7 +53,15 @@ from codeguard.pipeline.models import (
     VerdictCallFailure,
 )
 from codeguard.pipeline.state import FileReviewState, HunkReviewState, NodeLatency, ReviewState
-from codeguard.redact import MASK, classify_secret, redact_source, secret_values
+from codeguard.redact import (
+    MASK,
+    classify_secret,
+    grouped_shape_reason,
+    parse_shape_reason,
+    redact_source,
+    secret_values,
+    shape_reason,
+)
 from codeguard.report_format import UNREVIEWED_NOTICE_TEXT
 from codeguard.severity import Severity
 from codeguard.tools.diff_position import is_line_in_diff
@@ -73,6 +82,15 @@ _DATA_FRAMING = (
 # Shared verbatim between the Security and AI-aware system prompts (both are verdict-contract
 # agents judging a deterministic scanner's own findings, never inventing new ones) so the
 # confirm/dismiss rules — and their wording — can only ever drift by editing this one string.
+# Every location is shown beside the text from the finding itself, and a
+# model's own line number can be wrong (live: "Line 43" under a correct
+# 44 -> 49). codeguard/line_refs.py strips what gets through, at render time.
+NO_LINE_NUMBERS_RULE = (
+    "Never write line numbers in \"message\", \"title\", \"what\", \"why\" or \"fix\": the location is "
+    "shown next to your text separately. Refer to code by what it is (the call, the variable, the query), "
+    "not by its line."
+)
+
 _VERDICT_CONTRACT = (
     "Return exactly ONE verdict per DISTINCT rule_id present in the findings below — never skip one, "
     "never split one rule_id into more than one verdict object. For each rule_id, decide, from the "
@@ -115,7 +133,8 @@ _VERDICT_CONTRACT = (
     "per line, like what; never describe or fix another line in it),\n"
     "\"title\" (string, at most 8 words),\n"
     "\"what\" (what is wrong), \"why\" (why it matters), \"fix\" (how to fix it) — one or two "
-    "sentences each; with \"lines\", keep \"fix\" general enough to apply to every line."
+    "sentences each; with \"lines\", keep \"fix\" general enough to apply to every line.\n"
+    + NO_LINE_NUMBERS_RULE
 )
 
 _SECURITY_SYSTEM_PROMPT = f"""You are a security-focused code reviewer. Your only job is to judge security findings a deterministic scanner (Bandit) already produced for one source file — you do not invent new findings, and you do not comment on style, naming, tests, or anything outside security.
@@ -170,6 +189,8 @@ Respond with ONLY a JSON array (no prose, no markdown code fences), one object p
 
 {_LINE_ECHO_CONTRACT}
 
+{NO_LINE_NUMBERS_RULE}
+
 If there are no real issues, respond with exactly: []
 """
 
@@ -189,6 +210,8 @@ Respond with ONLY a JSON array (no prose, no markdown code fences), one object p
 "confidence" (number, 0.0-1.0).
 
 {_LINE_ECHO_CONTRACT}
+
+{NO_LINE_NUMBERS_RULE}
 
 If coverage looks adequate, respond with exactly: []
 """
@@ -658,10 +681,8 @@ def _shape_reasons(
         if not values:
             out.append(d)
             continue
-        shapes = "; ".join(classify_secret(v).hint()[len("[redacted: "):-1] for v in values)
-        out.append(d.model_copy(update={
-            "reason": f"Dismissed on the value's shape alone: {shapes}. Not a usable credential.",
-        }))
+        shapes = [classify_secret(v).hint()[len("[redacted: "):-1] for v in values]
+        out.append(d.model_copy(update={"reason": shape_reason(shapes)}))
     return out
 
 
@@ -1616,15 +1637,22 @@ def _group_dismissed(dismissed: list[DismissedFinding]) -> list[tuple[str, str, 
     body AND the LLM summary intro are given — never two different
     numbers describing the same dismissals.
     """
-    groups: dict[tuple[str, str, str], list[int]] = {}
-    order: list[tuple[str, str, str]] = []
+    # A credential dismissal written from the shape (redact.shape_reason)
+    # groups by its shape CLASS, not its exact text, which names each
+    # value's length; the grouped reason lists each length with its lines.
+    groups: dict[tuple[str, str, str], list[DismissedFinding]] = {}
     for d in dismissed:
-        key = (d.file, d.rule_id, d.reason)
-        if key not in groups:
-            groups[key] = []
-            order.append(key)
-        groups[key].append(d.start_line)
-    return [(file, rule_id, reason, groups[(file, rule_id, reason)]) for file, rule_id, reason in order]
+        parsed = parse_shape_reason(d.reason)
+        key = (d.file, d.rule_id, f"shape:{parsed[0]}" if parsed else d.reason)
+        groups.setdefault(key, []).append(d)
+    out = []
+    for (file, rule_id, key), members in groups.items():
+        reason = members[0].reason
+        if key.startswith("shape:") and len(members) > 1:
+            items = [(str(m.start_line), desc) for m in members for desc in parse_shape_reason(m.reason)[1]]
+            reason = grouped_shape_reason(key.removeprefix("shape:"), items)
+        out.append((file, rule_id, reason, [m.start_line for m in members]))
+    return out
 
 
 def _group_findings_for_display(findings: list[Finding]) -> list[tuple[str, str, str, str, str, list[int]]]:
@@ -1897,6 +1925,13 @@ def _skipped_test_asserts_lines(state: ReviewState) -> list[str]:
     return [f"Skipped {n} test asserts (Bandit B101 in test files, where an assert is the test)."]
 
 
+def _impact_section(state: ReviewState) -> list[str]:
+    """The "Callers outside this diff" lines (impact_review.py). Imported
+    here, not at module level: impact_review imports this module."""
+    from codeguard.pipeline.impact_review import render_impact_section
+    return render_impact_section(state)
+
+
 def summarize(state: ReviewState) -> dict:
     """Dedupes findings by fingerprint across EVERY contributing agent
     (Ruff/Bandit passthrough, Security, AI-aware, Quality, Test,
@@ -1952,6 +1987,7 @@ def summarize(state: ReviewState) -> dict:
         body_lines += _skipped_test_asserts_lines(state)
         if state["budget_exceeded"]:
             body_lines += ["", *_BUDGET_EXCEEDED_NOTE_LINES]
+        body_lines += _impact_section(state)
         _append_dismissed_section(body_lines, grouped_dismissed)
         return {**summary_update, "summary": "\n".join(body_lines), "inline_findings": []}
 
@@ -2019,11 +2055,12 @@ def summarize(state: ReviewState) -> dict:
             body_lines.append(
                 f"- {escape_one_line(_format_grouped_location(file, lines))} "
                 f"[{escape_one_line(source_tool)}/{escape_one_line(severity)}] "
-                f"{escape_one_line(rule_id)}: {escape_one_line(message)}"
+                f"{escape_one_line(rule_id)}: {escape_one_line(strip_line_refs(message))}"
             )
     if quality_docs:
         body_lines.append(f"{len(quality_docs)} documentation ({_QUALITY_DOCS_RULE_ID}) finding(s) not shown individually.")
 
+    body_lines += _impact_section(state)
     _append_dismissed_section(body_lines, grouped_dismissed)
 
     return {**summary_update, "summary": "\n".join(body_lines), "inline_findings": to_inline}

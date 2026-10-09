@@ -1,0 +1,7 @@
+{
+  "description": "charge() gains a required keyword-only idempotency_key. api/checkout.py, unchanged by the PR, still calls charge(total, \"usd\") and raises TypeError at runtime.",
+  "signature": ["api/checkout.py:8"],
+  "behavior": [],
+  "not_flagged": ["api/refunds.py:7", "api/proxy.py:7", "payments/stripe.py:9"],
+  "unchecked": ["api/proxy.py:7"]
+}

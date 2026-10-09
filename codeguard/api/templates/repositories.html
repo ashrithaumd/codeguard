@@ -10,8 +10,9 @@
       {% if signed_out %}
         Sign in to see the repositories you can access.
       {% else %}
-        Every repository CodeGuard is installed on that you can access. It reviews each new pull
-        request automatically — these rows show what it has done on each one so far.
+        Every repository CodeGuard is installed on that you can access. It reviews new pull
+        requests on the ones where PR reviews are on — these rows show what it has done on each
+        one so far.
       {% endif %}
     </div>
   </div>
@@ -91,6 +92,52 @@
 </div>
 {% endif %}
 
+{#
+  "New repository" notices (migrations/015), operators only. GitHub sends
+  installation_repositories (added) when a repository is created, forked
+  into the account or transferred in while the App is on "All
+  repositories". Each action is the same POST the row itself uses.
+#}
+{% if notices %}
+<section class="repo-notices" aria-label="New repositories">
+  {% for n in notices %}
+  <div class="banner notice" role="status">
+    <span class="notice-text">
+      New repository: <a class="repo" href="/dashboard/repos/{{ n.owner }}/{{ n.repo }}">{{ n.owner }}/{{ n.repo }}</a>
+      {% if n.private %}<span class="tag">private</span>{% endif %}
+    </span>
+    <span class="notice-actions">
+      {% if not n.private %}
+      <form method="post" action="/dashboard/repos/{{ n.owner }}/{{ n.repo }}/audit">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="btn btn-sm" type="submit">Run audit</button>
+      </form>
+      {% endif %}
+      {% if n.pr_reviews %}
+      <span class="dim">PR reviews on</span>
+      {% else %}
+      <form method="post" action="/dashboard/repos/{{ n.owner }}/{{ n.repo }}/pr-reviews">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="enabled" value="on">
+        <button class="btn btn-sm" type="submit">Turn on PR reviews</button>
+      </form>
+      {% endif %}
+      <form method="post" action="/dashboard/notices/{{ n.owner }}/{{ n.repo }}/dismiss">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="btn btn-sm btn-quiet" type="submit">Dismiss</button>
+      </form>
+    </span>
+  </div>
+  {% endfor %}
+  {% if notices|length > 1 %}
+  <form class="notice-dismiss-all" method="post" action="/dashboard/notices/dismiss-all">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="btn btn-sm btn-quiet" type="submit">Dismiss all {{ notices|length }}</button>
+  </form>
+  {% endif %}
+</section>
+{% endif %}
+
 <div class="panel">
   <div class="panel-head">
     <h2>Installed</h2>
@@ -107,6 +154,7 @@
           <th class="num">Activity</th>
           <th class="num">Last activity</th>
           <th class="num">Total {{ m.term("Cost", "cost") }}</th>
+          {% if may_audit %}<th class="pr-col">PR reviews</th>{% endif %}
           {% if may_audit %}<th class="audit-col">Audit</th>{% endif %}
           <th class="chev"><span class="visually-hidden">Open</span></th>
         </tr>
@@ -149,6 +197,20 @@
           <td class="num">{% if r.review_count or r.audit_count %}{{ m.cost(r.total_cost) }}{% else %}<span class="dim">—</span>{% endif %}</td>
 
           {% if may_audit %}
+          {# The per-repo switch (migrations/014), operators only. One button
+             that posts the OTHER state, so the form never has to read the
+             current one back. OFF is also what a repo with no row is. #}
+          <td class="pr-col" data-no-rowlink>
+            <form class="pr-reviews-switch" method="post" action="/dashboard/repos/{{ r.owner }}/{{ r.repo }}/pr-reviews">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="enabled" value="{{ 'off' if r.pr_reviews else 'on' }}">
+              <button class="switch{{ ' on' if r.pr_reviews }}" type="submit" aria-pressed="{{ 'true' if r.pr_reviews else 'false' }}"
+                      title="{{ 'Turn off automatic reviews of new pull requests' if r.pr_reviews else 'Review every new pull request automatically' }}">
+                <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
+                {{ 'On' if r.pr_reviews else 'Off' }}
+              </button>
+            </form>
+          </td>
           <td class="audit-col" data-no-rowlink>
             {% if r.audit_in_flight %}
               {# Already running: link to it rather than offering a second button
@@ -204,9 +266,38 @@
   {% else %}
     {{ m.empty_state(
         "No repositories yet",
-        "CodeGuard isn't installed on any repository you can see. Use the button above to add one on GitHub — it starts reviewing pull requests as soon as it's installed.",
+        "CodeGuard isn't installed on any repository you can see. Use the button above to add one on GitHub, then turn on PR reviews for it here.",
         "inbox") }}
   {% endif %}
 </div>
+
+{#
+  Audit a public repository by URL, App installed or not. Operators only.
+  The list under it is this person's own audits by URL and nobody else's:
+  they are readable by their requester only (migration 016).
+#}
+{% if may_audit %}
+<section class="panel url-audits">
+  <div class="panel-head"><h2>Audit a public repository</h2></div>
+  <form class="url-audit-form" method="post" action="/dashboard/repos/audit-url">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label class="visually-hidden" for="audit-url">GitHub repository URL</label>
+    <input id="audit-url" name="url" type="url" inputmode="url" autocomplete="off" spellcheck="false"
+           required placeholder="{{ github_repo_url('owner', 'repo') }}">
+    <button class="btn btn-sm" type="submit">Run audit</button>
+  </form>
+  <p class="dim url-audit-note">Public github.com repositories only. Only you can see the result.</p>
+  {% if url_audits %}
+  <ul class="fold-list url-audit-list">
+    {% for a in url_audits %}
+    <li>
+      <a href="/dashboard/audits/{{ a.id }}">{{ a.owner }}/{{ a.repo }}</a>
+      <span class="dim">· {{ a.status }} · {{ m.when(a.created_at) }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+{% endif %}
 {% endif %}
 {% endblock %}

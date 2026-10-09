@@ -49,7 +49,7 @@ OUTCOME_TO_STATUS = {
 }
 
 _COLUMNS = """
-    id, owner, repo, requested_by, private, status, job_id,
+    id, owner, repo, requested_by, private, by_url, status, job_id,
     report_markdown, report_json, commit_sha, exit_code, error,
     tokens_in, tokens_out, estimated_cost_usd, duration_s,
     created_at, started_at, finished_at
@@ -99,8 +99,12 @@ class AuditInFlightOther(AuditInFlight):
 
 async def request_audit(
     pool: AsyncConnectionPool, *, owner: str, repo: str, requested_by: str, private: bool,
+    by_url: bool = False,
 ) -> dict:
     """Insert a queued audit, or raise AuditInFlight if one exists.
+
+    by_url marks an audit requested from the Repositories page's URL input
+    (migration 016), which changes who may read it: the requester only.
 
     The INSERT is the concurrency check. Nothing selects first: two tabs
     clicking at once both reach this, and the partial unique index from
@@ -119,11 +123,11 @@ async def request_audit(
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(
                     f"""
-                    INSERT INTO audits (id, owner, repo, requested_by, private, status)
-                    VALUES (%s, %s, %s, %s, %s, 'queued')
+                    INSERT INTO audits (id, owner, repo, requested_by, private, by_url, status)
+                    VALUES (%s, %s, %s, %s, %s, %s, 'queued')
                     RETURNING {_COLUMNS}
                     """,
-                    (audit_id, owner, repo, requested_by, private),
+                    (audit_id, owner, repo, requested_by, private, by_url),
                 )
                 return await cur.fetchone()
     except errors.UniqueViolation as exc:
@@ -450,3 +454,17 @@ async def repo_stats(pool: AsyncConnectionPool) -> dict[tuple[str, str], dict[st
                 """
             )
             return {(row["owner"], row["repo"]): row for row in await cur.fetchall()}
+
+
+async def url_audits_for(pool: AsyncConnectionPool, requested_by: str, *, limit: int = 10) -> list[dict]:
+    """This person's own audits by URL, newest first, for the Repositories
+    page. Never anyone else's: an audit by URL is readable by its requester
+    only (migration 016)."""
+    async with pool.connection() as conn:
+        async with conn.cursor(row_factory=dict_row) as cur:
+            await cur.execute(
+                f"SELECT {_COLUMNS} FROM audits WHERE by_url AND lower(requested_by) = lower(%s) "
+                "ORDER BY created_at DESC LIMIT %s",
+                (requested_by, limit),
+            )
+            return await cur.fetchall()

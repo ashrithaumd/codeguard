@@ -295,6 +295,22 @@ class Settings(BaseSettings):
     summary_agent_max_tokens: int = 256
     summary_agent_timeout_s: float = 15.0
 
+    # Impact analysis for PR reviews (codeguard/pipeline/impact.py,
+    # impact_review.py). OFF by default, globally: it downloads the
+    # repository's tarball on every review and adds up to one model call,
+    # and its cost and precision have not been measured against the eval
+    # yet. A repository can also opt out in .codeguard.yml
+    # (enable_impact_analysis: false); it cannot opt in past this switch.
+    impact_analysis_enabled: bool = False
+    impact_max_call_sites_per_symbol: int = 5
+    impact_max_call_sites_per_pr: int = 15
+    # Haiku, like the other hunk-level agents: one call per PR at most,
+    # capped at impact_review.MAX_CONTEXT_CHARS (~6k tokens) in and this
+    # many out.
+    impact_agent_model: str = "claude-haiku-4-5-20251001"
+    impact_agent_max_tokens: int = 1024
+    impact_agent_timeout_s: float = 30.0
+
     # Quality/Test are the only ungrounded agents — no deterministic
     # tool sits in front of them, so they're the only source of
     # findings this pipeline invents from scratch rather than verifies.
@@ -421,6 +437,10 @@ class RepoConfig(BaseModel):
     # actually too high or too low.
     max_tokens_per_pr: int = 40_000
     max_wall_clock_s: int = 120
+    # Opt-out only: impact analysis also needs Settings.impact_analysis_enabled,
+    # which is off by default. A PR cannot turn it on for itself -- this
+    # file is read from the base branch, like every field here.
+    enable_impact_analysis: bool = True
     ignored_paths: list[str] = Field(default_factory=list)
     # The GitHub Check Run's conclusion — "failure" (blocks a
     # merge, if the repo turns this into a required check in its branch

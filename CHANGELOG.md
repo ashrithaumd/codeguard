@@ -5,6 +5,168 @@ CodeGuard is marked **ACTION REQUIRED**.
 
 ## Unreleased
 
+### Repository controls (feat/repo-controls)
+
+#### Local webhook relay
+
+- `docker compose --profile tunnel up -d smee` relays the App's deliveries
+  from a smee.io channel to the local api. Opt-in by profile; the node
+  image and `smee-client@5.0.0` are pinned; the channel comes from
+  `SMEE_URL` in `.env`, the only variable the relay container receives.
+  Signature checking is unchanged. Setup in `docs/github-app.md` section 6.
+
+#### Per-repository "PR reviews" switch
+
+**ACTION REQUIRED (operators):** migration `014_repo_settings.sql` adds
+`repo_settings`. Every repository without a row is **Off**: its pull request
+deliveries are acknowledged and nothing is queued. The migration turns
+**On** every repository that already has a real review, so those keep
+being reviewed; sample rows from `scripts/seed_demo.py` (`[SAMPLE]` titles,
+`SAMPLE DATA` bodies, the `codeguard-fixtures` owner) are excluded. Turn
+others on from Repositories → PR reviews.
+
+- An On/Off switch per row on Repositories, for operators only (the
+  audit allow-list). Anyone else gets 404 from the POST and never sees the
+  switch. CSRF-checked; repo access re-checked.
+- Checked twice: the webhook refuses to queue for a repository that is Off
+  (`{"status": "skipped", "reason": "pr_reviews_off"}`, counted in
+  `codeguard_pr_reviews_skipped_total`), and the worker re-checks before
+  minting a token, for a switch turned off while a job was queued.
+- Names match case-insensitively. A renamed repository starts Off under its
+  new name.
+
+#### "New repository" notices
+
+**ACTION REQUIRED (operators):** migration `015_repo_notices.sql` adds
+`repo_notices`; it applies itself on startup.
+
+- `installation_repositories` (`added`), which an install on All
+  repositories sends when a repository is created, forked into the account
+  or transferred in, puts a notice at the top of Repositories:
+  "New repository: <name>" with Run audit (public only), Turn on PR reviews
+  (or "PR reviews on") and Dismiss. `installation` (`created`) announces the
+  initial list. `removed` / `deleted` drop the notice, so a repository added
+  back later is announced again. A redelivery neither duplicates a notice
+  nor revives a dismissed one.
+- Operators only, filtered through the same repo-access check as the rows;
+  dismiss and dismiss-all are 404 for anyone else, CSRF-checked.
+  "Dismiss all N" appears with more than one, since switching an install to
+  All repositories announces every repository at once.
+- The event drops the hour-long installed-repositories cache and the
+  repository's own installation lookup, so the new repository appears in
+  the list it is announced above straight away.
+- A local `git clone` creates nothing on GitHub and cannot be detected.
+
+#### Audit a public repository by URL
+
+**ACTION REQUIRED (operators):** migration `016_audit_by_url.sql` adds
+`audits.by_url` (existing rows FALSE, so nothing already stored changes who
+can read it); it applies itself on startup.
+
+- One input on Repositories, operators only: paste
+  `https://github.com/<owner>/<repo>`, App installed or not. The same gates
+  as Run audit, in the same order: identity (404), CSRF (403), the strict
+  parser (no network), GitHub's public-and-sized check, all before anything
+  is queued; then the same queueing, deadline, budget cap and
+  one-in-flight rules (`_queue_audit`, shared with Run audit).
+- A private repository looks the same as a missing one to GitHub's API, so
+  both are refused with "We couldn't find a public repository at that URL.
+  CodeGuard can only audit public repositories."
+- **Readable by the requester only**, other operators included, and with
+  no repo-access check. Fixed on the way: `_may_read_audit` asked
+  `can_access_repo` first, which goes through the App's installation, so
+  an audit of a repository without the App could not be opened even by the
+  person who ran it. Audits from Run audit keep the old rule.
+- "Your audits by URL" under the input lists the viewer's own, nobody
+  else's. The audit page links such a repository to GitHub, since it has no
+  repo page here.
+
+#### Impact analysis for PR reviews (off by default)
+
+`IMPACT_ANALYSIS_ENABLED=false` by default, globally; a repository can also
+opt out with `enable_impact_analysis: false` in `.codeguard.yml`. Nothing
+changes for a deployment that does not turn it on: no download, no call.
+
+- For each Python function, method or class a PR changes (compared by AST,
+  so a deletion-only edit counts and a moved def does not; `__init__` folds
+  into its class; removed defs count), its call sites elsewhere in the
+  repository are found through every import form (`from m import f as g`,
+  `import m as x`, `from pkg import m`, relative imports, same-module
+  calls, `self.method()` in its own class).
+- **Signature, deterministic, no model call:** a resolved call that no
+  longer binds to the new signature, and did bind to the old one, is a HIGH
+  finding on the changed def's line (in the diff, so inline), naming every
+  such caller; a broken call on a line this PR changed is also a finding at
+  the call. A call through `*args`/`**kwargs` is unchecked, never flagged.
+- **Behaviour, one model call per PR at most** (`IMPACT_AGENT_MODEL`,
+  Haiku; context capped at ~6k tokens), only when a function's body
+  changed: given before/after source and the chosen call sites, it reports
+  callers that rely on what changed. A concern about a site it was not
+  shown is dropped.
+- **Which call sites:** every signature break (up to 20), then resolved
+  before possible (`obj.method()` elsewhere), application code before
+  tests, one per file first; 5 per symbol and 15 per PR.
+- **Dynamic use** (`getattr(x, "name")`, functions passed as values) is
+  counted and said, never flagged.
+- **One entry per caller.** A call site the signature check already
+  flagged is labelled "already reported" in the behaviour prompt, and the
+  node keeps one entry per file:line with the signature entry winning.
+  Found end to end on codeguard-playground #11, where `checkout.py:8` was
+  listed twice (signature + a model restatement); behaviour precision on
+  the eval went from 0.50 to 1.00, recall 1.00 ($0.0022 for the run).
+- **Where it is posted:** callers outside the diff go in the review body
+  under "Callers outside this diff", each linked to its line at the PR
+  head, since GitHub refuses inline comments outside the diff.
+- **Fetching:** one tarball request for the head (token in a header,
+  never in a URL; streamed, in memory, Python only; capped at 50 MB
+  compressed, 512 KB per file, 40 MB and 5,000 files in total), plus the
+  base version of each changed `.py` file. Too large, a failed fetch, or a
+  bug in the analysis is a note in the review ("Impact analysis skipped:
+  ..."), never a failed review.
+- **Eval:** `evals/impact/` (a signature break in an unchanged caller, with
+  three near-misses; a behaviour change only the model can see) and
+  `evals/run_impact_eval.py`. The deterministic half runs in the test suite
+  and passes; `--with-model` makes the live behaviour calls and has **not**
+  been run yet (it spends credit).
+
+#### Dismissal grouping by shape; no line numbers in the model's prose
+
+- Credential dismissals written from the value's shape group by rule_id
+  and shape class ("placeholder-like"), not by exact text, which names
+  each value's length. codeguard-playground's four key dismissals were
+  three rows and are now one: "assistant.py:21, 24, 25, 45 · Dismissed on
+  the value's shape alone, placeholder-like: 42-char sk-style token at 21,
+  24; 43-char token at 25; 37-char token at 45." Same in the PR summary.
+  Render-time on the audit page, so stored audits get it. Other reasons
+  still group by exact text. The wording lives in one place
+  (`redact.shape_reason` / `parse_shape_reason` / `grouped_shape_reason`).
+- The agents are told never to write line numbers in message, title,
+  what, why or fix (`nodes.NO_LINE_NUMBERS_RULE`, in all four prose
+  prompts): the location is shown beside the text, and a model's own
+  number can be wrong (playground: "Line 43" under a correct 44 → 49).
+  `codeguard/line_refs.strip_line_refs` removes what gets through, at
+  render time: audit page, review page, PR inline comments and the PR
+  summary. Our own flow note ("Assigned at line 44, sent to the model at
+  line 49.") is protected and kept.
+- `docs/backlog.md`: six ideas for cutting the +34% review cost, with the
+  risk of each and the eval bar it must clear. Not built.
+
+#### Per-PR skip: the `codeguard:skip` label and drafts
+
+- A pull request labelled `codeguard:skip` (any case) is not reviewed,
+  including pushes to it. Removing the label (`unlabeled`) reviews the
+  current head.
+- A draft is not reviewed, including pushes to it. `ready_for_review`
+  reviews the current head.
+- A head already reviewed, or already queued for review, is not queued
+  again, so flipping a draft or the label back and forth pays once per
+  commit. A job the worker skipped (switch turned off mid-queue) does not
+  count as reviewed.
+- One decision function, `should_review`, in a fixed order: repo switch,
+  label, draft, already reviewed. Skips are acknowledged with
+  `{"status": "skipped", "reason": ...}` and counted by reason in
+  `codeguard_pr_reviews_skipped_total`.
+
 ### Fix list from the 2026-10-08 feature tour
 
 **ACTION REQUIRED (operators):** migration `012_audit_report_json.sql` adds

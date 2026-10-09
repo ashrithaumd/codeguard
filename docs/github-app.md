@@ -33,8 +33,22 @@ Under **Subscribe to events**:
 - **Pull request review comment** — powers the feedback loop.
 - **Issue comment** — the other half of the feedback loop.
 
-Only `opened` and `synchronize` start a review. Every push to an open pull request is its own
-review, with its own cost.
+`opened` and `synchronize` start a review, and so do `ready_for_review` (a draft marked ready)
+and `unlabeled` when the label removed is `codeguard:skip`. Every push to an open pull request is
+its own review, with its own cost. All of these arrive on the **Pull request** event; nothing
+else needs subscribing.
+
+Skipped, with nothing queued:
+
+- a pull request labelled **`codeguard:skip`** (any case). Create the label in the repository;
+  CodeGuard only reads it. Removing it reviews the current head.
+- a **draft**, including pushes to it. Marking it ready reviews the current head.
+- a head that has already been reviewed, or is queued for review, so turning a draft ready
+  twice, or the label off twice, does not pay for the same commit twice.
+
+Reviews also have to be switched on per repository: **Repositories → PR reviews** (operators
+only). A repository starts **Off**; a delivery for it is acknowledged and nothing is queued, so
+it costs nothing. Full audits never start from a pull request, only from **Run audit**.
 
 ## 4. Generate a webhook secret and a private key
 
@@ -56,13 +70,29 @@ On the App's **General** page. This is `GITHUB_APP_ID`.
 
 `https://<your-deployment>/webhook`.
 
-For local development, forward deliveries with a tunnel and use the tunnel URL here instead:
+For local development, relay deliveries through smee.io and use the channel URL here instead:
 
-```bash
-npx smee-client --url "$SMEE_URL" --target http://localhost:8000/webhook
-```
+1. Open <https://smee.io/new> and copy the channel URL.
+2. Add it to `.env` as `SMEE_URL=<channel URL>`. Keep it out of anything committed: anyone
+   holding the URL can read every delivery, including private repo names and PR titles.
+3. Start the relay. It is under its own compose profile, so a plain `docker compose up` never
+   starts it:
 
-The same field switches between the tunnel and the deployed URL with no code change.
+   ```bash
+   docker compose --profile tunnel up -d smee
+   docker compose logs -f smee      # "Forwarding https://smee.io/... to http://api:8000/webhook"
+   ```
+
+4. Set the App's **Webhook URL** to the same channel URL. Leave the **Webhook secret** as it is:
+   smee forwards the body and the `X-Hub-Signature-256` header unchanged, and the api verifies
+   them against `GITHUB_WEBHOOK_SECRET` exactly as it does for a direct delivery. The relay
+   container gets `SMEE_URL` and nothing else from `.env`.
+5. Check it: **Advanced → Recent Deliveries → Redeliver** the latest delivery, then look for
+   `Webhook ping received` (or `pull_request event`) in `docker compose logs api`.
+
+Stop it with `docker compose --profile tunnel stop smee`. The same field switches between the
+channel and the deployed URL with no code change; point it back at the deployment when that is
+running again.
 
 ## 7. Configure the deployment
 
@@ -84,6 +114,19 @@ environment variables rather than mounted files, such as Azure Container Apps.
 
 From the App's settings page → **Install App** → choose the account and the repositories. Start
 with one repository you do not mind being commented on.
+
+Installing gives no reviews yet: each repository starts with **PR reviews Off** (section 3).
+
+**New repositories.** With the App on **All repositories**, GitHub sends
+`installation_repositories` (`added`) when you create a repository, fork one into the account,
+or transfer one in, and Repositories shows a notice: "New repository: <name>", with **Run
+audit** (public repositories), **Turn on PR reviews** and **Dismiss**. Operators only. These
+installation events reach every App without subscribing to them. Switching an existing install
+to All repositories adds every repository not already selected at once, so expect one notice
+each; **Dismiss all** clears them.
+
+A `git clone` on your own machine creates nothing on GitHub and sends no event, so it never
+produces a notice.
 
 ## 9. Open a pull request
 
