@@ -43,7 +43,7 @@ IMPACT_SECTION_TITLE = "Callers outside this diff"
 MAX_CONTEXT_CHARS = 24_000
 _MAX_CONCERN_CHARS = 300
 
-_IMPACT_SYSTEM_PROMPT = """You check whether the callers of changed Python functions still work. For each changed function you get its source before and after the change, and some of its call sites elsewhere in the repository, each labelled path:line. Signature mismatches (missing or unexpected arguments) are already checked by a tool; do not report them.
+_IMPACT_SYSTEM_PROMPT = """You check whether the callers of changed Python functions still work. For each changed function you get its source before and after the change, and some of its call sites elsewhere in the repository, each labelled path:line. Signature mismatches (missing or unexpected arguments) are already checked by a tool; do not report them. A call site marked "already reported" has already been reported for its signature: never report it again, for any reason.
 
 Report a call site only when the code shown there depends on behaviour the change altered: a return value or type it uses, an exception it catches or relies on being raised, a side effect, a default, an ordering or a unit. Say what changed and what at that call site breaks, in one sentence, without line numbers. Do not report style, possible future problems, or call sites that are fine. A site marked "possible" may not call this function at all; only report it if the code shown makes that clear.
 
@@ -112,7 +112,14 @@ def _behavior_prompt(symbols: list[ChangedSymbol], sites: list[CallSite]) -> tup
         used += len(head)
         for site in sym_sites:
             key = f"{site.path}:{site.line}"
-            block = f"\n{key} ({'resolved' if site.resolved else 'possible'})\n```python\n{site.snippet}\n```\n"
+            # A site the signature check already flagged stays in the
+            # context (it is still a caller, and the model may need it to
+            # read the others) but is labelled, so the model does not
+            # restate the same break as "behaviour" (playground #11).
+            label = "resolved" if site.resolved else "possible"
+            if site.mismatch:
+                label += f"; already reported: {site.mismatch}"
+            block = f"\n{key} ({label})\n```python\n{site.snippet}\n```\n"
             if used + len(block) > MAX_CONTEXT_CHARS:
                 break
             parts.append(block)
@@ -155,11 +162,18 @@ def review_impact(state) -> dict:
                estimated_cost_usd=result.estimated_cost_usd)
     by_key = {f"{s.path}:{s.line}": s for s in context_sites}
     known = {b.qualname for b in behavior_symbols}
+    # One entry per file:line, and the signature entry wins: the model is
+    # told which sites are already reported, and this holds even if it
+    # reports one anyway, or reports one line twice.
+    listed = {(c["path"], c["line"]) for c in callers}
     for item in _parse_json_array(result.raw_text, "impact", "impact"):
         key, concern = str(item.get("site", "")), str(item.get("concern", "")).strip()
         site = by_key.get(key)
         if key not in shown or site is None or not concern or str(item.get("symbol", site.qualname)) not in known:
             continue
+        if (site.path, site.line) in listed:
+            continue
+        listed.add((site.path, site.line))
         callers.append(_caller(site, "behavior", concern[:_MAX_CONCERN_CHARS]))
     return out
 

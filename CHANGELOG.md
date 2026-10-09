@@ -108,6 +108,12 @@ changes for a deployment that does not turn it on: no download, no call.
   tests, one per file first; 5 per symbol and 15 per PR.
 - **Dynamic use** (`getattr(x, "name")`, functions passed as values) is
   counted and said, never flagged.
+- **One entry per caller.** A call site the signature check already
+  flagged is labelled "already reported" in the behaviour prompt, and the
+  node keeps one entry per file:line with the signature entry winning.
+  Found end to end on codeguard-playground #11, where `checkout.py:8` was
+  listed twice (signature + a model restatement); behaviour precision on
+  the eval went from 0.50 to 1.00, recall 1.00 ($0.0022 for the run).
 - **Where it is posted:** callers outside the diff go in the review body
   under "Callers outside this diff", each linked to its line at the PR
   head, since GitHub refuses inline comments outside the diff.

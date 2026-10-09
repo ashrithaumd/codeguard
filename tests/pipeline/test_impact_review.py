@@ -193,3 +193,60 @@ def test_nothing_to_say_renders_nothing():
 def test_a_skipped_analysis_says_why():
     text = "\n".join(render_impact_section(_state(None, impact_notes=["skipped: repository too large"])))
     assert "Impact analysis skipped: repository too large" in text
+
+
+# --------------------------------------------------------------------------
+# Regression: the same caller reported twice (live on playground #11)
+# --------------------------------------------------------------------------
+#
+# F1 shape: total() gains a required keyword AND its body changes, and the
+# unchanged caller checkout.py:8 breaks. The signature check flagged it,
+# the call site still went to the model as behaviour context, and the model
+# restated the missing argument -- so the summary listed checkout.py:8 twice
+# and the eval's behaviour precision halved.
+
+F1_BASE = "def total(amount, tax_rate):\n    return round(amount * (1 + tax_rate), 2)\n"
+F1_HEAD = ("def total(amount, tax_rate, *, currency):\n"
+           "    return {\"amount\": round(amount * (1 + tax_rate), 2), \"currency\": currency}\n")
+F1_CALLER = "from pricing import total\n\n\ndef checkout(cart):\n    subtotal = sum(cart.values())\n    return total(subtotal, 0.08)\n"
+
+
+def _f1_report(extra_callers=None):
+    head_files = {"pricing.py": F1_HEAD, "checkout.py": F1_CALLER, **(extra_callers or {})}
+    return analyze(head_files=head_files, base_files={"pricing.py": F1_BASE},
+                   patches={"pricing.py": _patch(F1_BASE, F1_HEAD, "pricing.py")}, per_symbol=5, per_pr=15)
+
+
+def test_a_caller_flagged_for_its_signature_is_listed_once():
+    reply = ('[{"site": "checkout.py:6", "symbol": "total", "concern": "The call is missing the required '
+             'keyword-only argument currency and expects a number back."}]')
+    with patch("codeguard.pipeline.impact_review.call_agent", return_value=_model(reply)):
+        out = review_impact(_state(_f1_report()))
+    assert [(c["path"], c["line"], c["kind"]) for c in out["impact_callers"]] == [("checkout.py", 6, "signature")]
+
+
+def test_the_model_is_told_which_callers_are_already_reported():
+    with patch("codeguard.pipeline.impact_review.call_agent", return_value=_model("[]")) as call:
+        review_impact(_state(_f1_report()))
+    content = call.call_args.kwargs["user_content"]
+    assert "checkout.py:6 (resolved; already reported: missing required keyword argument 'currency')" in content
+    assert "already reported" in call.call_args.kwargs["system_prompt"]
+
+
+def test_a_behaviour_concern_on_another_caller_is_still_kept():
+    other = "from pricing import total\n\n\ndef label(x):\n    return f'{total(x, 0.1, currency=\"usd\"):.2f}'\n"
+    reply = ('[{"site": "checkout.py:6", "symbol": "total", "concern": "missing currency"}, '
+             '{"site": "fmt.py:5", "symbol": "total", "concern": "Formats the result as a float, but total now returns a dict."}]')
+    with patch("codeguard.pipeline.impact_review.call_agent", return_value=_model(reply)):
+        out = review_impact(_state(_f1_report({"fmt.py": other})))
+    assert [(c["path"], c["line"], c["kind"]) for c in out["impact_callers"]] == [
+        ("checkout.py", 6, "signature"), ("fmt.py", 5, "behavior")]
+
+
+def test_two_behaviour_concerns_on_one_line_are_one_entry():
+    other = "from pricing import total\n\n\ndef label(x):\n    return f'{total(x, 0.1, currency=\"usd\"):.2f}'\n"
+    reply = ('[{"site": "fmt.py:5", "symbol": "total", "concern": "Formats a dict as a float."}, '
+             '{"site": "fmt.py:5", "symbol": "total", "concern": "Same line, said again."}]')
+    with patch("codeguard.pipeline.impact_review.call_agent", return_value=_model(reply)):
+        out = review_impact(_state(_f1_report({"fmt.py": other})))
+    assert [(c["path"], c["line"]) for c in out["impact_callers"] if c["kind"] == "behavior"] == [("fmt.py", 5)]
