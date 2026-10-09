@@ -192,6 +192,51 @@ class SecretShape(NamedTuple):
         return f"[redacted: {self.length}-char {family}token, {self.kind}]"
 
 
+# --------------------------------------------------------------------------
+# A credential dismissal's reason, written from the shape alone
+# --------------------------------------------------------------------------
+#
+# One place for the wording, so the PR summary and the audit page can group
+# by what the dismissal rests on -- the rule and the shape CLASS -- rather
+# than by exact text, which differs per value ("42-char ..." vs "43-char
+# ..."). Playground's four placeholder keys were three rows for that reason.
+
+_SHAPE_REASON = re.compile(
+    r"^Dismissed on the value's shape alone: (?P<shapes>.+)\. Not a usable credential\.$")
+_SHAPE_PART = re.compile(r"^(?P<desc>\d+-char (?:\S+-style )?token), (?P<kind>[a-z-]+)$")
+
+
+def shape_reason(shapes: list[str]) -> str:
+    """The reason for one dismissal; `shapes` are hint() bodies, one per
+    value on the line ("42-char sk-style token, placeholder-like")."""
+    return f"Dismissed on the value's shape alone: {'; '.join(shapes)}. Not a usable credential."
+
+
+def parse_shape_reason(reason: str) -> tuple[str, list[str]] | None:
+    """(shape class, [description per value]) for a reason shape_reason
+    wrote whose values all share one class; None for anything else."""
+    match = _SHAPE_REASON.match(reason or "")
+    if not match:
+        return None
+    parts = [_SHAPE_PART.match(p.strip()) for p in match.group("shapes").split(";")]
+    if not parts or not all(parts) or len({p.group("kind") for p in parts}) != 1:
+        return None
+    return parts[0].group("kind"), [p.group("desc") for p in parts]
+
+
+def grouped_shape_reason(kind: str, items: list[tuple[str, str]]) -> str:
+    """One reason for several dismissals of one class. `items` are
+    (location label, description); each description is listed once with
+    every location it applies to, in order of first appearance."""
+    where: dict[str, list[str]] = {}
+    for label, desc in items:
+        labels = where.setdefault(desc, [])
+        if label not in labels:
+            labels.append(label)
+    listed = "; ".join(f"{desc} at {', '.join(labels)}" for desc, labels in where.items())
+    return f"Dismissed on the value's shape alone, {kind}: {listed}. Not a usable credential."
+
+
 def _entropy_bits_per_char(s: str) -> float:
     counts = Counter(s)
     n = len(s)

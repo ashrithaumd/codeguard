@@ -138,7 +138,7 @@
                 <div class="finding-rule">{{ f.rule_id }}</div>
                 <div class="dim finding-tool">{{ f.source_tool }}</div>
               </td>
-              <td class="finding-msg">{% if f.unreviewed %}<span class="pill warn">Unreviewed</span> {% endif %}{{ f.message|redact }}</td>
+              <td class="finding-msg">{% if f.unreviewed %}<span class="pill warn">Unreviewed</span> {% endif %}{{ f.message|no_line_refs|redact }}</td>
             </tr>
             {% if fix %}
             <tr class="fix-row">

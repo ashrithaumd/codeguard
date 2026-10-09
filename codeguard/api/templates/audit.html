@@ -134,7 +134,7 @@
           {% for f in item.members %}
           <li>
             {{ m.audit_loc(audit, f) }}
-            {% if not repeats_title(f) and f.what != item.title %}<span class="dim">{{ f.what|redact }}</span>{% endif %}
+            {% if not repeats_title(f) and f.what != item.title %}<span class="dim">{{ f.what|no_line_refs|redact }}</span>{% endif %}
             {% if f.unreviewed %}<span class="pill warn">Unreviewed</span>{% endif %}
           </li>
           {% endfor %}
@@ -158,9 +158,9 @@
          title), and the list with it when nothing is left to say. #}
       {% if not repeats_title(f) or f.why or f.fix %}
       <dl class="finding-body">
-        {% if not repeats_title(f) %}<dt>What</dt><dd>{{ f.what|redact }}</dd>{% endif %}
-        {% if f.why %}<dt>Why it matters</dt><dd>{{ f.why|redact }}</dd>{% endif %}
-        {% if f.fix %}<dt>How to fix</dt><dd>{{ f.fix|redact }}</dd>{% endif %}
+        {% if not repeats_title(f) %}<dt>What</dt><dd>{{ f.what|no_line_refs|redact }}</dd>{% endif %}
+        {% if f.why %}<dt>Why it matters</dt><dd>{{ f.why|no_line_refs|redact }}</dd>{% endif %}
+        {% if f.fix %}<dt>How to fix</dt><dd>{{ f.fix|no_line_refs|redact }}</dd>{% endif %}
       </dl>
       {% endif %}
       {{ m.audit_rules(f) }}
@@ -187,7 +187,7 @@
         {{ m.severity(f.severity|upper) }}
         <span class="finding-title">{{ f.title|sentence_case|redact }}</span>
       </div>
-      <p class="finding-text">{{ f.message|redact }}</p>
+      <p class="finding-text">{{ f.message|no_line_refs|redact }}</p>
       <div class="finding-rules">{% for rule in f.rules %}<span class="tag rule">{{ rule }}</span>{% endfor %}</div>
     </li>
     {% endfor %}

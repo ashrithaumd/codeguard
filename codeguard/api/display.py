@@ -15,6 +15,8 @@ from functools import lru_cache
 from pathlib import Path
 from urllib.parse import quote
 
+from codeguard.redact import grouped_shape_reason, parse_shape_reason
+
 # --------------------------------------------------------------------------
 # Sentence case
 # --------------------------------------------------------------------------
@@ -146,14 +148,31 @@ def _locations(items: list[tuple[str, int]]) -> str:
 def group_dismissed(dismissed: list[dict]) -> list[dict]:
     """One row per (rule_id, reason): a verdict is one per rule, so one
     reason usually covers several lines, and listing it once per line
-    repeated the same paragraph four times (codeguard-playground's keys)."""
-    groups: dict[tuple[str, str], list[tuple[str, int]]] = {}
+    repeated the same paragraph four times (codeguard-playground's keys).
+
+    A credential dismissal written from the value's shape
+    (redact.shape_reason) groups by rule_id and shape CLASS instead: its
+    text names each value's length, so exact-text grouping left
+    playground's four placeholder keys as three rows. The row's reason
+    lists each length with its lines -- "file:line" when the row spans
+    files, the bare line otherwise."""
+    groups: dict[tuple[str, str], list[dict]] = {}
     for d in dismissed:
-        groups.setdefault((d["rule_id"], d["reason"]), []).append((d["file"], d["start_line"]))
-    return [
-        {"rule_id": rule_id, "reason": reason, "locations": _locations(items), "count": len(items)}
-        for (rule_id, reason), items in groups.items()
-    ]
+        parsed = parse_shape_reason(d["reason"])
+        groups.setdefault((d["rule_id"], f"shape:{parsed[0]}" if parsed else d["reason"]), []).append(d)
+    rows = []
+    for (rule_id, key), members in groups.items():
+        items = [(m["file"], m["start_line"]) for m in members]
+        reason = members[0]["reason"]
+        if key.startswith("shape:") and len(members) > 1:
+            one_file = len({m["file"] for m in members}) == 1
+            labelled = [
+                (str(m["start_line"]) if one_file else f"{m['file']}:{m['start_line']}", desc)
+                for m in members for desc in parse_shape_reason(m["reason"])[1]
+            ]
+            reason = grouped_shape_reason(key.removeprefix("shape:"), labelled)
+        rows.append({"rule_id": rule_id, "reason": reason, "locations": _locations(items), "count": len(items)})
+    return rows
 
 
 # --------------------------------------------------------------------------

@@ -40,6 +40,7 @@ from codeguard.api.audits import (
 from codeguard.api.repo_settings import pr_reviews_enabled
 from codeguard.cli import AuditOutcome, AuditStats, run_audit
 from codeguard.config import RepoConfig, Settings, get_settings, verify_required_settings
+from codeguard.line_refs import strip_line_refs
 from codeguard.diff.filters import split_test_asserts
 from codeguard.diff.ingest import ingest_pr_diff
 from codeguard.github.auth import get_installation_token
@@ -266,7 +267,7 @@ def _findings_to_review_comments(findings, fix_suggestions) -> list[dict]:
         # (raw fallback) still says where its value was built.
         body = (
             f"**[{escape_one_line(f.source_tool)} / {f.severity.name}] "
-            f"{escape_one_line(rule_label(f))}**\n\n{escape_for_github(with_flow_note(f.message, f))}"
+            f"{escape_one_line(rule_label(f))}**\n\n{escape_for_github(strip_line_refs(with_flow_note(f.message, f)))}"
         )
         if f.unreviewed:
             body += (

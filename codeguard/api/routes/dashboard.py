@@ -48,6 +48,7 @@ from codeguard.api.display import (
     sentence_case,
 )
 from codeguard.config import get_settings
+from codeguard.line_refs import strip_line_refs
 from codeguard.queue.queue import enqueue
 from codeguard.redact import redact
 from codeguard.report_format import REPORT_DATA_VERSION, UNREVIEWED_NOTICE_TEXT
@@ -82,6 +83,8 @@ templates.env.filters["utc"] = _utc
 # Titles arrive in whatever case the model chose; links are built from file
 # names a repository's authors chose. Both handled in code -- see display.py.
 templates.env.filters["sentence_case"] = sentence_case
+# Line numbers out of the model's prose: the location is shown beside it.
+templates.env.filters["no_line_refs"] = strip_line_refs
 templates.env.globals["blob_url"] = blob_url
 templates.env.globals["github_repo_url"] = github_repo_url
 templates.env.globals["group_dismissed"] = group_dismissed

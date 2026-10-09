@@ -123,6 +123,28 @@ changes for a deployment that does not turn it on: no download, no call.
   and passes; `--with-model` makes the live behaviour calls and has **not**
   been run yet (it spends credit).
 
+#### Dismissal grouping by shape; no line numbers in the model's prose
+
+- Credential dismissals written from the value's shape group by rule_id
+  and shape class ("placeholder-like"), not by exact text, which names
+  each value's length. codeguard-playground's four key dismissals were
+  three rows and are now one: "assistant.py:21, 24, 25, 45 · Dismissed on
+  the value's shape alone, placeholder-like: 42-char sk-style token at 21,
+  24; 43-char token at 25; 37-char token at 45." Same in the PR summary.
+  Render-time on the audit page, so stored audits get it. Other reasons
+  still group by exact text. The wording lives in one place
+  (`redact.shape_reason` / `parse_shape_reason` / `grouped_shape_reason`).
+- The agents are told never to write line numbers in message, title,
+  what, why or fix (`nodes.NO_LINE_NUMBERS_RULE`, in all four prose
+  prompts): the location is shown beside the text, and a model's own
+  number can be wrong (playground: "Line 43" under a correct 44 → 49).
+  `codeguard/line_refs.strip_line_refs` removes what gets through, at
+  render time: audit page, review page, PR inline comments and the PR
+  summary. Our own flow note ("Assigned at line 44, sent to the model at
+  line 49.") is protected and kept.
+- `docs/backlog.md`: six ideas for cutting the +34% review cost, with the
+  risk of each and the eval bar it must clear. Not built.
+
 #### Per-PR skip: the `codeguard:skip` label and drafts
 
 - A pull request labelled `codeguard:skip` (any case) is not reviewed,
