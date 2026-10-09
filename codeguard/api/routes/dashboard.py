@@ -40,6 +40,7 @@ from codeguard.api.auth import client_principal, client_viewer
 from codeguard.api.display import (
     blob_url,
     finding_counts,
+    github_repo_url,
     group_dismissed,
     group_lows,
     repeats_title,
@@ -82,6 +83,7 @@ templates.env.filters["utc"] = _utc
 # names a repository's authors chose. Both handled in code -- see display.py.
 templates.env.filters["sentence_case"] = sentence_case
 templates.env.globals["blob_url"] = blob_url
+templates.env.globals["github_repo_url"] = github_repo_url
 templates.env.globals["group_dismissed"] = group_dismissed
 templates.env.globals["group_lows"] = group_lows
 templates.env.globals["repeats_title"] = repeats_title
@@ -546,6 +548,9 @@ async def repositories(request: Request) -> HTMLResponse:
     # the same access gate as the rows: a notice names a repository, and a
     # name is exactly what this page must not leak.
     notices: list[dict] = []
+    # This person's own audits by URL. Never anyone else's: they are
+    # readable by their requester only.
+    url_audits = await audits.url_audits_for(pool, principal) if may_audit else []
     if may_audit:
         pending = await repo_notices.pending(pool)
         visible = await access.accessible_repos([(n["owner"], n["repo"]) for n in pending], principal)
@@ -557,12 +562,62 @@ async def repositories(request: Request) -> HTMLResponse:
     return render_page(
         request, "repositories.html", principal,
         rows=rows, may_audit=may_audit, lookup_failed=lookup_failed, notices=notices,
+        url_audits=url_audits,
         mine_in_flight=mine_in_flight, busy_note=AUDIT_BUSY_NOTE,
         settings_url=access.installation_settings_url(
             next((r["installation_id"] for r in rows if r["installation_id"]), None)
         ),
         audit_note=AUDIT_NO_FIXES_NOTE, private_note=PRIVATE_AUDIT_NOTE,
     )
+
+
+async def _queue_audit(pool, owner: str, repo: str, principal: str, *, private: bool,
+                       by_url: bool = False) -> RedirectResponse:
+    """Insert the audit, enqueue its job, and send the requester to it.
+
+    Shared by Run audit and the URL input, so the two cannot drift: one
+    in-flight rule, one job shape, one idempotency key. Every gate --
+    identity, CSRF, the public-and-sized check -- is the caller's and
+    has already passed."""
+    try:
+        audit = await audits.request_audit(
+            pool, owner=owner, repo=repo, requested_by=principal, private=private, by_url=by_url,
+        )
+    except audits.AuditInFlightMine as inflight:
+        # Their OWN audit. Not an error: they asked for an audit and there
+        # already is one, so they are sent to watch it rather than told
+        # off — and no second job is enqueued, no second lot of Anthropic
+        # credit spent.
+        return RedirectResponse(
+            url=f"/dashboard/audits/{inflight.existing['id']}", status_code=303,
+        )
+    except audits.AuditInFlightOther:
+        # SOMEONE ELSE's audit. Must NOT redirect: an audit is visible only
+        # to its requester, so the id alone would be a working URL to
+        # another person's result. The exception deliberately carries no
+        # row, so there is nothing here to leak even by accident.
+        raise HTTPException(
+            status_code=409,
+            detail="Someone is already auditing that repository. "
+                   "Please try again in a few minutes.",
+        ) from None
+
+    job, created = await enqueue(
+        pool, type="repo_audit",
+        payload={"audit_id": str(audit["id"]), "owner": owner, "repo": repo,
+                 "target": _audit_target(owner, repo)},
+        # The audit id, so the queue's own idempotency matches the
+        # request's identity. The in-flight index already prevents a
+        # duplicate request; this prevents a duplicate JOB for one
+        # request, e.g. a retried POST that got past the index because
+        # the row was already committed.
+        idempotency_key=f"repo_audit:{audit['id']}",
+    )
+    await audits.attach_job(pool, audit["id"], job.id)
+    logger.info("audit %s enqueued for %s/%s by %s (job=%s, created=%s)",
+                audit["id"], owner, repo, principal, job.id, created)
+
+    return RedirectResponse(url=f"/dashboard/audits/{audit['id']}", status_code=303)
 
 
 @router.post("/repos/{owner}/{repo}/audit")
@@ -619,45 +674,43 @@ async def trigger_audit(request: Request, owner: str, repo: str):
     except repo_url.RepoRejected as rejected:
         raise HTTPException(status_code=400, detail=str(rejected)) from None
 
+    return await _queue_audit(pool, owner, repo, principal, private=private)
+
+
+@router.post("/repos/audit-url")
+async def audit_by_url(request: Request):
+    """Audit a PUBLIC github.com repository by URL, App installed or not.
+
+    The same gates as Run audit, in the same order, minus the installed-
+    list lookup and the repo-access check (there may be no installation to
+    ask through): identity -> 404, CSRF -> 403, then the strict parser
+    (no network) and GitHub's public-and-sized answer, both -> 400 with
+    the reason. Only then is anything queued, through the same
+    _queue_audit, so the deadline, budget cap and in-flight rules are the
+    ones every audit gets.
+
+    A private repository is indistinguishable from a missing one to GitHub's
+    API, so both get NOT_FOUND_MESSAGE ("CodeGuard can only audit public
+    repositories"). The result is readable by the requester only
+    (by_url, migration 016).
+    """
+    pool = request.app.state.pool
+    viewer = client_viewer(request)
+    principal = viewer.login if viewer else None
+
+    if not get_settings().may_trigger_audit(viewer.user_id if viewer else None):
+        logger.warning("audit by URL refused for principal=%r", principal)
+        raise HTTPException(status_code=404, detail="not found")
+    await csrf.verify(request)
+
+    form = await request.form()
     try:
-        audit = await audits.request_audit(
-            pool, owner=owner, repo=repo, requested_by=principal, private=private,
-        )
-    except audits.AuditInFlightMine as inflight:
-        # Their OWN audit. Not an error: they asked for an audit and there
-        # already is one, so they are sent to watch it rather than told
-        # off — and no second job is enqueued, no second lot of Anthropic
-        # credit spent.
-        return RedirectResponse(
-            url=f"/dashboard/audits/{inflight.existing['id']}", status_code=303,
-        )
-    except audits.AuditInFlightOther:
-        # SOMEONE ELSE's audit. Must NOT redirect: an audit is visible only
-        # to its requester, so the id alone would be a working URL to
-        # another person's result. The exception deliberately carries no
-        # row, so there is nothing here to leak even by accident.
-        raise HTTPException(
-            status_code=409,
-            detail="Someone is already auditing that repository. "
-                   "Please try again in a few minutes.",
-        ) from None
+        owner, repo = repo_url.parse_public_github_url(str(form.get("url") or ""))
+        await asyncio.to_thread(repo_url.verify_public_and_sized, owner, repo)
+    except repo_url.RepoRejected as rejected:
+        raise HTTPException(status_code=400, detail=str(rejected)) from None
 
-    job, created = await enqueue(
-        pool, type="repo_audit",
-        payload={"audit_id": str(audit["id"]), "owner": owner, "repo": repo,
-                 "target": _audit_target(owner, repo)},
-        # The audit id, so the queue's own idempotency matches the
-        # request's identity. The in-flight index already prevents a
-        # duplicate request; this prevents a duplicate JOB for one
-        # request, e.g. a retried POST that got past the index because
-        # the row was already committed.
-        idempotency_key=f"repo_audit:{audit['id']}",
-    )
-    await audits.attach_job(pool, audit["id"], job.id)
-    logger.info("audit %s enqueued for %s/%s by %s (job=%s, created=%s)",
-                audit["id"], owner, repo, principal, job.id, created)
-
-    return RedirectResponse(url=f"/dashboard/audits/{audit['id']}", status_code=303)
+    return await _queue_audit(pool, owner, repo, principal, private=False, by_url=True)
 
 
 @router.post("/repos/{owner}/{repo}/pr-reviews")
@@ -744,6 +797,14 @@ def _may_read_audit(audit: dict, viewer, settings) -> bool:
     """
     if viewer is None:
         return False
+    is_requester = (audit["requested_by"] or "").strip().lower() == viewer.login.strip().lower()
+    # An audit by URL (migration 016): the requester only -- other
+    # operators included -- and NO repo-access check. The repository may not
+    # have the App installed, and can_access_repo asks through the
+    # installation, so it refused even the person who ran the audit. The
+    # target was verified public before it was queued.
+    if audit.get("by_url"):
+        return is_requester
     if not access.can_access_repo(audit["owner"], audit["repo"], viewer.login):
         return False
     # Operator status is keyed on the immutable id, like every other
@@ -751,7 +812,7 @@ def _may_read_audit(audit: dict, viewer, settings) -> bool:
     # request_audit stored in requested_by.
     if settings.may_trigger_audit(viewer.user_id):
         return True
-    return (audit["requested_by"] or "").strip().lower() == viewer.login.strip().lower()
+    return is_requester
 
 
 async def _audit_or_404(request: Request, audit_id: UUID) -> dict:

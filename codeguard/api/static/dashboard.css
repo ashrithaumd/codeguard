@@ -850,3 +850,13 @@ details.low-group > summary:focus-visible { outline: 2px solid var(--accent); ou
 .notice-dismiss-all { justify-self: end; }
 .btn-quiet { background: none; border-color: transparent; color: var(--text-mute); }
 .btn-quiet:hover { color: var(--text); }
+
+/* Repositories: audit a public repository by URL (operators only). */
+.url-audits { margin-top: 16px; }
+.url-audit-form { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 18px 0; }
+.url-audit-form input[type="url"] {
+  flex: 1 1 260px; min-width: 0; padding: 6px 10px; font: inherit; font-size: 15px;
+  color: var(--text); background: var(--bg-raised); border: 1px solid var(--border); border-radius: 6px;
+}
+.url-audit-form input[type="url"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.url-audit-note { margin: 8px 18px 14px; font-size: 14px; }

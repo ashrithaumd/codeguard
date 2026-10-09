@@ -58,6 +58,14 @@ _SHA = re.compile(r"^[0-9a-f]{40}$")
 _NAME = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 
+def github_repo_url(owner: str, repo: str) -> str | None:
+    """https://github.com/<owner>/<repo>, or None for a name that is not a
+    GitHub name. For a repository with no page here (an audit by URL)."""
+    if not _NAME.match(owner or "") or not _NAME.match(repo or ""):
+        return None
+    return f"https://github.com/{owner}/{repo}"
+
+
 def blob_url(owner: str, repo: str, sha: str | None, path: str, start: int, end: int) -> str | None:
     """https://github.com/<owner>/<repo>/blob/<sha>/<path>#L<start>[-L<end>],
     or None when any part is not what it should be.

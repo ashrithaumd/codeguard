@@ -57,6 +57,30 @@ others on from Repositories → PR reviews.
   the list it is announced above straight away.
 - A local `git clone` creates nothing on GitHub and cannot be detected.
 
+#### Audit a public repository by URL
+
+**ACTION REQUIRED (operators):** migration `016_audit_by_url.sql` adds
+`audits.by_url` (existing rows FALSE, so nothing already stored changes who
+can read it); it applies itself on startup.
+
+- One input on Repositories, operators only: paste
+  `https://github.com/<owner>/<repo>`, App installed or not. The same gates
+  as Run audit, in the same order: identity (404), CSRF (403), the strict
+  parser (no network), GitHub's public-and-sized check, all before anything
+  is queued; then the same queueing, deadline, budget cap and
+  one-in-flight rules (`_queue_audit`, shared with Run audit).
+- A private repository looks the same as a missing one to GitHub's API, so
+  both are refused with "We couldn't find a public repository at that URL.
+  CodeGuard can only audit public repositories."
+- **Readable by the requester only**, other operators included, and with
+  no repo-access check. Fixed on the way: `_may_read_audit` asked
+  `can_access_repo` first, which goes through the App's installation, so
+  an audit of a repository without the App could not be opened even by the
+  person who ran it. Audits from Run audit keep the old rule.
+- "Your audits by URL" under the input lists the viewer's own, nobody
+  else's. The audit page links such a repository to GitHub, since it has no
+  repo page here.
+
 #### Per-PR skip: the `codeguard:skip` label and drafts
 
 - A pull request labelled `codeguard:skip` (any case) is not reviewed,

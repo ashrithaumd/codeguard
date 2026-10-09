@@ -266,9 +266,38 @@
   {% else %}
     {{ m.empty_state(
         "No repositories yet",
-        "CodeGuard isn't installed on any repository you can see. Use the button above to add one on GitHub — it starts reviewing pull requests as soon as it's installed.",
+        "CodeGuard isn't installed on any repository you can see. Use the button above to add one on GitHub, then turn on PR reviews for it here.",
         "inbox") }}
   {% endif %}
 </div>
+
+{#
+  Audit a public repository by URL, App installed or not. Operators only.
+  The list under it is this person's own audits by URL and nobody else's:
+  they are readable by their requester only (migration 016).
+#}
+{% if may_audit %}
+<section class="panel url-audits">
+  <div class="panel-head"><h2>Audit a public repository</h2></div>
+  <form class="url-audit-form" method="post" action="/dashboard/repos/audit-url">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label class="visually-hidden" for="audit-url">GitHub repository URL</label>
+    <input id="audit-url" name="url" type="url" inputmode="url" autocomplete="off" spellcheck="false"
+           required placeholder="{{ github_repo_url('owner', 'repo') }}">
+    <button class="btn btn-sm" type="submit">Run audit</button>
+  </form>
+  <p class="dim url-audit-note">Public github.com repositories only. Only you can see the result.</p>
+  {% if url_audits %}
+  <ul class="fold-list url-audit-list">
+    {% for a in url_audits %}
+    <li>
+      <a href="/dashboard/audits/{{ a.id }}">{{ a.owner }}/{{ a.repo }}</a>
+      <span class="dim">· {{ a.status }} · {{ m.when(a.created_at) }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+{% endif %}
 {% endif %}
 {% endblock %}

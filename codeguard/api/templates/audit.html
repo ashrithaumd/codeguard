@@ -5,7 +5,10 @@
 {% block crumbs %}
   <a href="/dashboard/repos">Repositories</a>
   <span class="sep">/</span>
-  <a href="/dashboard/repos/{{ audit.owner }}/{{ audit.repo }}">{{ audit.owner }}/{{ audit.repo }}</a>
+  {# An audit by URL may be of a repository without the App, which has no
+     repo page here; link GitHub instead. #}
+  {% set gh = github_repo_url(audit.owner, audit.repo) if audit.by_url else None %}
+  {% if audit.by_url and gh %}<a href="{{ gh }}" target="_blank" rel="noopener noreferrer">{{ audit.owner }}/{{ audit.repo }}</a>{% elif audit.by_url %}<span>{{ audit.owner }}/{{ audit.repo }}</span>{% else %}<a href="/dashboard/repos/{{ audit.owner }}/{{ audit.repo }}">{{ audit.owner }}/{{ audit.repo }}</a>{% endif %}
   <span class="sep">/</span>
   <span>Audit</span>
 {% endblock %}
