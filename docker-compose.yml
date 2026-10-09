@@ -75,6 +75,36 @@ services:
       timeout: 3s
       retries: 5
 
+  # Local webhook relay: smee.io -> the api. Opt-in, so a plain `up` never
+  # forwards real deliveries:
+  #
+  #   docker compose --profile tunnel up -d smee
+  #
+  # SMEE_URL comes from .env by compose's own interpolation; the channel URL
+  # is never written here, because anyone holding it can read the
+  # deliveries. It is the ONLY variable the relay gets -- no env_file: the
+  # relay forwards bytes and never needs the webhook secret or any key. The
+  # api still verifies X-Hub-Signature-256, which smee forwards unchanged.
+  # See docs/github-app.md section 6.
+  #
+  # `:-` and a check in the container, NOT `:?`: compose interpolates every
+  # service whatever its profile, so `:?` made every `docker compose`
+  # command fail for anyone without SMEE_URL set.
+  smee:
+    image: node:20.20.2-alpine
+    profiles: ["tunnel"]
+    restart: "no"
+    environment:
+      SMEE_URL: ${SMEE_URL:-}
+    command:
+      - sh
+      - -c
+      - >-
+        test -n "$$SMEE_URL" || { echo "smee: set SMEE_URL in .env (https://smee.io/new)" >&2; exit 1; };
+        exec npx --yes smee-client@5.0.0 --url "$$SMEE_URL" --target http://api:8000/webhook
+    depends_on:
+      - api
+
   # Phase 10: local observability stack — scrapes api's and worker's
   # /metrics endpoints (see observability/prometheus.yml) and serves a
   # pre-provisioned dashboard (observability/grafana/dashboards/codeguard.json)

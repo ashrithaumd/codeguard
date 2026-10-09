@@ -56,13 +56,29 @@ On the App's **General** page. This is `GITHUB_APP_ID`.
 
 `https://<your-deployment>/webhook`.
 
-For local development, forward deliveries with a tunnel and use the tunnel URL here instead:
+For local development, relay deliveries through smee.io and use the channel URL here instead:
 
-```bash
-npx smee-client --url "$SMEE_URL" --target http://localhost:8000/webhook
-```
+1. Open <https://smee.io/new> and copy the channel URL.
+2. Add it to `.env` as `SMEE_URL=<channel URL>`. Keep it out of anything committed: anyone
+   holding the URL can read every delivery, including private repo names and PR titles.
+3. Start the relay. It is under its own compose profile, so a plain `docker compose up` never
+   starts it:
 
-The same field switches between the tunnel and the deployed URL with no code change.
+   ```bash
+   docker compose --profile tunnel up -d smee
+   docker compose logs -f smee      # "Forwarding https://smee.io/... to http://api:8000/webhook"
+   ```
+
+4. Set the App's **Webhook URL** to the same channel URL. Leave the **Webhook secret** as it is:
+   smee forwards the body and the `X-Hub-Signature-256` header unchanged, and the api verifies
+   them against `GITHUB_WEBHOOK_SECRET` exactly as it does for a direct delivery. The relay
+   container gets `SMEE_URL` and nothing else from `.env`.
+5. Check it: **Advanced → Recent Deliveries → Redeliver** the latest delivery, then look for
+   `Webhook ping received` (or `pull_request event`) in `docker compose logs api`.
+
+Stop it with `docker compose --profile tunnel stop smee`. The same field switches between the
+channel and the deployed URL with no code change; point it back at the deployment when that is
+running again.
 
 ## 7. Configure the deployment
 

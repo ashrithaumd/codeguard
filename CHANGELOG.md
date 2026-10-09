@@ -5,6 +5,16 @@ CodeGuard is marked **ACTION REQUIRED**.
 
 ## Unreleased
 
+### Repository controls (feat/repo-controls)
+
+#### Local webhook relay
+
+- `docker compose --profile tunnel up -d smee` relays the App's deliveries
+  from a smee.io channel to the local api. Opt-in by profile; the node
+  image and `smee-client@5.0.0` are pinned; the channel comes from
+  `SMEE_URL` in `.env`, the only variable the relay container receives.
+  Signature checking is unchanged. Setup in `docs/github-app.md` section 6.
+
 ### Fix list from the 2026-10-08 feature tour
 
 **ACTION REQUIRED (operators):** migration `012_audit_report_json.sql` adds
