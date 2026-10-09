@@ -201,11 +201,52 @@ Container Apps instead of warning.
 
 #### Measured
 
-**Pending: API credit exhausted.** The eval comparison (HEAD vs this branch,
-same final fixture set, 3 runs each) and the live audits of
-codeguard-playground and reliqueue were started and ran out of credit
-partway; those partial numbers are not reported. They are added before
-merge.
+Measured 2026-10-09. `evals/run_full_harness.py --runs 3`, before (main at
+`a775557`) and after (this branch at `7f3151a`), on the same final fixture
+set (37 fixtures: 22 AI-aware, 8 security, 7 quality/test), using the
+branch's harness for both, so a run with any failed call would have been
+withheld. No call failed in either. Figures are the mean of 3 runs.
+
+| Agent | Precision before → after | Recall before → after |
+| --- | --- | --- |
+| AI-aware | 1.00 → 1.00 | 0.96 → **1.00** (23/24 → 24/24) |
+| Security | 1.00 → 1.00 | 0.92 → **1.00** (1.00, 0.88, 0.88 → 1.00 ×3) |
+| Quality | 0.75 → 0.75 | 1.00 → 1.00 |
+| Test | 1.00 → 1.00 | 1.00 → 1.00 |
+
+- The AI-aware miss before was `regress_01_injection_through_variable`
+  (injection through a variable, #13), missed in all 3 runs. The security
+  miss before was B404 on `near_miss_03_shell_true_hardcoded_command`, in
+  2 of 3 runs. Credential dismissal reasons citing anything but the shape:
+  0 before, 0 after.
+- **Per review (per-PR equivalent): output tokens 7,311 → 9,825 (+34%),
+  input tokens 40,465 → 49,951 (+23%), cost $0.196 → $0.262 (+34%),
+  latency 150s → 193s.** The increase is the AI-aware agent
+  ($0.132 → $0.185) and the security agent ($0.046 → $0.059), which now
+  write per-line What / How to fix and receive the key-shape hints. The
+  earlier $0.174 → $0.230 (+32%) was measured on the smaller, pre-regression
+  fixture set and is not directly comparable; the ratio is about the same.
+
+Live audits, after, local stack:
+
+| Repo (commit) | Findings | Dismissed | Tokens in / out | Cost | Time |
+| --- | --- | --- | --- | --- | --- |
+| codeguard-playground (`1c77f73`) | 12: 1 Critical, 4 High, 4 Medium, 3 Low; 1 repo-level | 4 (3 rows) | 5,876 / 2,255 | $0.0518 | 72s |
+| reliqueue (`06e124d`) | 20 Low; 83 test asserts skipped | 2 (1 row) | 7,759 / 367 | $0.0288 | 13s |
+
+0 failed verdict calls and 0 unreviewed findings in both.
+
+- playground: the injection finding reads `assistant.py:44 → 49`; the three
+  B608 findings each have a How to fix for their own statement (SELECT by
+  email at 13, DELETE by order id at 20, table name via `.format()` at 29);
+  all four key dismissals cite only the value's shape. Dismissals sharing an
+  identical reason are grouped (21 and 24); 25 and 45 stay separate rows
+  because their shape text differs (43-char vs 37-char token). The model's
+  What text says "Line 43" where the prompt is built on line 44, an
+  off-by-one in its prose; the recorded location is right.
+- reliqueue: `core/queue.py:36` B311 (retry jitter) was dismissed in the
+  previous audit and is kept as Low this time, a borderline verdict that
+  varies between runs.
 
 
 ### Investigated — the dashboard's audit POST returns 403 in production
