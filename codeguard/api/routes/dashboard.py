@@ -37,7 +37,15 @@ from fastapi.templating import Jinja2Templates
 from codeguard.api import access, audits, csrf, repo_url
 from codeguard.api import dashboard_queries as q
 from codeguard.api.auth import client_principal, client_viewer
-from codeguard.api.display import blob_url, finding_counts, sentence_case
+from codeguard.api.display import (
+    blob_url,
+    finding_counts,
+    group_dismissed,
+    group_lows,
+    repeats_title,
+    ruff_docs_url,
+    sentence_case,
+)
 from codeguard.config import get_settings
 from codeguard.queue.queue import enqueue
 from codeguard.redact import redact
@@ -74,6 +82,10 @@ templates.env.filters["utc"] = _utc
 # names a repository's authors chose. Both handled in code -- see display.py.
 templates.env.filters["sentence_case"] = sentence_case
 templates.env.globals["blob_url"] = blob_url
+templates.env.globals["group_dismissed"] = group_dismissed
+templates.env.globals["group_lows"] = group_lows
+templates.env.globals["repeats_title"] = repeats_title
+templates.env.globals["ruff_docs_url"] = ruff_docs_url
 
 PAGE_SIZE = 50
 

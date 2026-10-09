@@ -179,6 +179,26 @@ Container Apps instead of warning.
 - The audit-mode note is one line: "Audit mode: findings and how to fix
   them; no code patches (audits have no diff)."
 
+#### Audit page, fourth pass (render-time, so older audits get it too)
+
+- Collapsible sections start collapsed: the server never sends `open`, and
+  a nonce'd script closes them on every page show.
+- Dismissals sharing a rule and reason are one row listing every location
+  ("worker/main.py:98, 103 · B311 · …").
+- The Skipped heading says what it holds: "Skipped (83 test asserts)".
+- A ruff finding whose What repeats its title hides the What row and links
+  the rule's docs (`https://docs.astral.sh/ruff/rules/<name>/`, from a
+  code → name map generated from the pinned ruff 0.6.9 and checked against
+  it by a test; unknown codes get no link).
+- Low findings sharing a rule are one collapsible card
+  ("F841 · Local variable … · 7 locations"); Critical/High/Medium stay
+  individual, and the severity bar is unchanged.
+- A group whose members' titles differ is titled after the rule, not after
+  one member: twelve F841s on reliqueue, each naming its own variable, read
+  "Local variable `reclaimed` is assigned to but never used" as if that
+  were all of them; they now read "Unused variable" (ruff's rule name).
+  A non-ruff group with mixed titles reads "<first title> (and N similar)".
+
 #### Measured
 
 **Pending: API credit exhausted.** The eval comparison (HEAD vs this branch,

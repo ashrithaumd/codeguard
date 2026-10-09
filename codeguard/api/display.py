@@ -9,7 +9,10 @@ come from stored reports of two different vintages.
 
 from __future__ import annotations
 
+import json
 import re
+from functools import lru_cache
+from pathlib import Path
 from urllib.parse import quote
 
 # --------------------------------------------------------------------------
@@ -115,3 +118,103 @@ def finding_counts(audit: dict) -> dict | None:
     parts = [f"{counts[s]} {s.capitalize()}" for s in shown]
     label = f"{total} · {', '.join(parts)}" if parts else str(total)
     return {"total": total, "counts": counts, "label": label}
+
+
+# --------------------------------------------------------------------------
+# Dismissals, grouped
+# --------------------------------------------------------------------------
+
+def _locations(items: list[tuple[str, int]]) -> str:
+    """"worker/main.py:98, 103" -- each file once, its lines in order, files
+    in the order they first appear."""
+    by_file: dict[str, list[int]] = {}
+    for file, line in items:
+        by_file.setdefault(file, []).append(line)
+    return ", ".join(
+        f"{file}:{', '.join(str(n) for n in sorted(set(lines)))}" for file, lines in by_file.items()
+    )
+
+
+def group_dismissed(dismissed: list[dict]) -> list[dict]:
+    """One row per (rule_id, reason): a verdict is one per rule, so one
+    reason usually covers several lines, and listing it once per line
+    repeated the same paragraph four times (codeguard-playground's keys)."""
+    groups: dict[tuple[str, str], list[tuple[str, int]]] = {}
+    for d in dismissed:
+        groups.setdefault((d["rule_id"], d["reason"]), []).append((d["file"], d["start_line"]))
+    return [
+        {"rule_id": rule_id, "reason": reason, "locations": _locations(items), "count": len(items)}
+        for (rule_id, reason), items in groups.items()
+    ]
+
+
+# --------------------------------------------------------------------------
+# Ruff rule docs
+# --------------------------------------------------------------------------
+
+_RUFF_RULES_FILE = Path(__file__).with_name("ruff_rules.json")
+
+
+@lru_cache(maxsize=1)
+def ruff_rule_names() -> dict[str, str]:
+    """Code -> rule name, as `ruff rule --all` printed it for the pinned ruff
+    (ruff_rules.json; a test compares it with the installed ruff)."""
+    return json.loads(_RUFF_RULES_FILE.read_text(encoding="utf-8"))["rules"]
+
+
+def ruff_docs_url(code: str) -> str | None:
+    """https://docs.astral.sh/ruff/rules/<name>/, or None for a code this
+    ruff does not know -- no link rather than a guessed one."""
+    name = ruff_rule_names().get(code)
+    return f"https://docs.astral.sh/ruff/rules/{name}/" if name else None
+
+
+def repeats_title(finding: dict) -> bool:
+    """True when a finding's What says nothing its title does not: ruff's
+    message IS its title, so the card showed it twice."""
+    def norm(s: str) -> str:
+        return re.sub(r"\s+", " ", (s or "").strip().rstrip(".")).lower()
+    return bool(finding.get("what")) and norm(finding["what"]) == norm(finding.get("title", ""))
+
+
+# --------------------------------------------------------------------------
+# Low findings, grouped by rule
+# --------------------------------------------------------------------------
+
+def _group_title(rule: str, items: list[dict]) -> str:
+    """A title that is true of every member. When the members' own titles
+    differ -- twelve F841s each naming a different variable -- one of them
+    is NOT the group's title: a ruff rule is named by its rule name
+    ("unused-variable" -> "Unused variable"), anything else by its first
+    title marked as standing for the rest."""
+    titles = {i["title"] for i in items}
+    if len(titles) == 1:
+        return items[0]["title"]
+    name = ruff_rule_names().get(rule) if items[0].get("source_tool") == "ruff" else None
+    if name:
+        return name.replace("-", " ").capitalize()
+    return f"{items[0]['title']} (and {len(items) - 1} similar)"
+
+
+def group_lows(findings: list[dict]) -> list[dict]:
+    """The card list, with Low findings that share a rule_id folded into one
+    entry: {"group": False, "f": finding} or {"group": True, "rule", "title",
+    "members"}. Critical/High/Medium are never grouped -- each is worth its own
+    card -- and a Low with no sibling stays a card. Order is kept: a group
+    sits where its first member was."""
+    low_rules: dict[str, list[dict]] = {}
+    for f in findings:
+        if f["severity"] == "low":
+            low_rules.setdefault(f["rules"][0], []).append(f)
+    out: list[dict] = []
+    placed: set[str] = set()
+    for f in findings:
+        rule = f["rules"][0]
+        if f["severity"] == "low" and len(low_rules[rule]) > 1:
+            if rule not in placed:
+                placed.add(rule)
+                items = low_rules[rule]
+                out.append({"group": True, "rule": rule, "title": _group_title(rule, items), "members": items})
+            continue
+        out.append({"group": False, "f": f})
+    return out

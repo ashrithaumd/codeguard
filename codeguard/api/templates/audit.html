@@ -113,39 +113,56 @@
     <span class="count">{{ report.findings|length }}</span>
   </div>
   {% if report.findings %}
+  {#
+    Low findings that share a rule are ONE collapsible card (group_lows);
+    Critical/High/Medium are always their own. The severity bar above still
+    counts every finding.
+  #}
   <ol class="finding-cards">
-    {% for f in report.findings %}
+    {% for item in group_lows(report.findings) %}
+    {% if item.group %}
+    <li class="low-group-item">
+      <details class="finding-card low-group sev-edge-low">
+        <summary class="finding-head">
+          {{ m.severity("LOW") }}
+          <span class="tag rule">{{ item.rule }}</span> · <span class="finding-title">{{ item.title|sentence_case|redact }}</span> · {{ item.members|length }} locations
+        </summary>
+        <ul class="group-locations">
+          {% for f in item.members %}
+          <li>
+            {{ m.audit_loc(audit, f) }}
+            {% if not repeats_title(f) and f.what != item.title %}<span class="dim">{{ f.what|redact }}</span>{% endif %}
+            {% if f.unreviewed %}<span class="pill warn">Unreviewed</span>{% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+        {{ m.audit_rules(item.members[0]) }}
+      </details>
+    </li>
+    {% else %}
+    {% set f = item.f %}
     <li class="finding-card sev-edge-{{ f.severity }}">
       <div class="finding-head">
         {{ m.severity(f.severity|upper) }}
-        {#
-          The location sits UNDER the title, at a readable size; it was small
-          grey text at the far right. Linked to the line on GitHub at the
-          commit that was audited, when that commit was recorded (audits
-          from before migration 013 show plain text). A taint finding shows
-          where the value was built, then where it reached the model, and
-          links the whole span. blob_url returns None for anything it will
-          not vouch for, and the plain text is shown instead.
-        #}
+        {# The location sits UNDER the title, at a readable size. #}
         <div class="finding-titles">
           <span class="finding-title">{{ f.title|sentence_case|redact }}</span>
-          {%- set first = [f.source_line, f.start_line]|select|min if f.source_line else f.start_line %}
-          {%- set last = [f.end_line, f.start_line]|max %}
-          {%- set url = blob_url(audit.owner, audit.repo, audit.commit_sha, f.file, first, last) %}
-          {%- set loc %}{{ f.file }}:{% if f.source_line %}{{ f.source_line }} → {% endif %}{{ f.start_line }}{% if f.end_line > f.start_line %}–{{ f.end_line }}{% endif %}{% endset %}
-          {% if url %}<a class="finding-loc" href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ loc }}</a>{% else %}<code class="finding-loc">{{ loc }}</code>{% endif %}
+          {{ m.audit_loc(audit, f) }}
         </div>
         {% if f.unreviewed %}<span class="pill warn">Unreviewed</span>{% endif %}
       </div>
+      {# What is hidden when it only repeats the title (ruff's message IS its
+         title), and the list with it when nothing is left to say. #}
+      {% if not repeats_title(f) or f.why or f.fix %}
       <dl class="finding-body">
-        <dt>What</dt><dd>{{ f.what|redact }}</dd>
+        {% if not repeats_title(f) %}<dt>What</dt><dd>{{ f.what|redact }}</dd>{% endif %}
         {% if f.why %}<dt>Why it matters</dt><dd>{{ f.why|redact }}</dd>{% endif %}
         {% if f.fix %}<dt>How to fix</dt><dd>{{ f.fix|redact }}</dd>{% endif %}
       </dl>
-      <div class="finding-rules">
-        {% for rule in f.rules %}<span class="tag rule">{{ rule }}</span>{% endfor %}
-      </div>
+      {% endif %}
+      {{ m.audit_rules(f) }}
     </li>
+    {% endif %}
     {% endfor %}
   </ol>
   {% else %}
@@ -178,9 +195,11 @@
 {% if report.dismissed %}
 <details class="panel fold">
   <summary class="panel-head">Dismissed by AI ({{ report.dismissed|length }})</summary>
+  {# One row per (rule, reason), listing every location: a verdict is one
+     per rule, so the same paragraph used to repeat once per line. #}
   <ul class="fold-list">
-    {% for d in report.dismissed %}
-    <li><code>{{ d.file }}:{{ d.start_line }}</code> <span class="tag rule">{{ d.rule_id }}</span>
+    {% for d in group_dismissed(report.dismissed) %}
+    <li class="dismissed-row"><code>{{ d.locations }}</code> · <span class="tag rule">{{ d.rule_id }}</span> ·
       <span class="dim">{{ d.reason|redact }}</span></li>
     {% endfor %}
   </ul>
@@ -189,7 +208,11 @@
 
 {% if s.skipped_test_asserts or report.skipped_files or report.verdict_call_failures %}
 <details class="panel fold">
-  <summary class="panel-head">Skipped</summary>
+  {%- set parts = [] %}
+  {%- if s.skipped_test_asserts %}{% set _ = parts.append(s.skipped_test_asserts ~ " test assert" ~ ("" if s.skipped_test_asserts == 1 else "s")) %}{% endif %}
+  {%- if report.skipped_files %}{% set _ = parts.append(report.skipped_files|length ~ " file" ~ ("" if report.skipped_files|length == 1 else "s")) %}{% endif %}
+  {%- if report.verdict_call_failures %}{% set _ = parts.append(report.verdict_call_failures|length ~ " failed AI call" ~ ("" if report.verdict_call_failures|length == 1 else "s")) %}{% endif %}
+  <summary class="panel-head">Skipped ({{ parts|join(", ") }})</summary>
   <ul class="fold-list">
     {% if s.skipped_test_asserts %}
     <li>{{ s.skipped_test_asserts }} test asserts — Bandit B101 in test files, where an assert is the point;
@@ -312,4 +335,15 @@
 })();
 </script>
 {% endif %}
+{#
+  Collapsed on every load. The server never sends `open`; this closes the
+  folds on every page show as well, so a browser that restores an opened
+  <details> (back/forward, a restored session) does not hand the page back
+  with "Dismissed by AI" already expanded.
+#}
+<script nonce="{{ csp_nonce }}">
+window.addEventListener("pageshow", function () {
+  document.querySelectorAll("details.fold").forEach(function (d) { d.open = false; });
+});
+</script>
 {% endblock %}
