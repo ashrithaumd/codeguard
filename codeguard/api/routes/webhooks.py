@@ -49,6 +49,95 @@ feedback_suppressions_total = Counter(
 )
 
 
+SKIP_LABEL = "codeguard:skip"
+
+# The actions that can start a review. unlabeled only when the label
+# removed is SKIP_LABEL; checked below.
+_REVIEW_ACTIONS = ("opened", "synchronize", "ready_for_review", "unlabeled")
+
+
+def _has_skip_label(pull_request: dict) -> bool:
+    return any(
+        str(label.get("name", "")).strip().lower() == SKIP_LABEL
+        for label in pull_request.get("labels") or []
+    )
+
+
+async def _head_already_reviewed(pool, owner: str, repo: str, pr_number: int, head_sha: str) -> bool:
+    """A review row for this exact head, or a review job for it that is
+    still pending or running.
+
+    NOT a finished job: the worker marks a job done when it skips it (the
+    switch turned off while it was queued) without writing a review, and
+    that head was never reviewed.
+    """
+    async with pool.connection() as conn:
+        cur = await conn.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM reviews
+                WHERE lower(owner) = lower(%(owner)s) AND lower(repo) = lower(%(repo)s)
+                  AND pr_number = %(pr)s AND head_sha = %(head)s
+            ) OR EXISTS (
+                SELECT 1 FROM jobs
+                WHERE type = 'pull_request_review' AND status IN ('pending', 'leased')
+                  AND lower(payload->>'owner') = lower(%(owner)s)
+                  AND lower(payload->>'repo') = lower(%(repo)s)
+                  AND (payload->>'pr_number')::int = %(pr)s
+                  AND payload->>'head_sha' = %(head)s
+            ) AS seen
+            """,
+            {"owner": owner, "repo": repo, "pr": pr_number, "head": head_sha},
+        )
+        return bool((await cur.fetchone())["seen"])
+
+
+async def should_review(pool, payload: dict) -> str:
+    """Whether a pull_request delivery becomes a review.
+
+    Returns "review", "ignore", or the reason it is skipped. In order, the
+    first that applies decides:
+
+      repo switch OFF            pr_reviews_off  (migrations/014)
+      codeguard:skip label       skip_label
+      draft                      draft      -- reviewed once marked ready
+      head already reviewed or   already_reviewed
+        queued for review
+      opened / synchronize /     review
+        ready_for_review /
+        unlabeled codeguard:skip
+      anything else              ignore
+
+    Removing the skip label or marking a draft ready reviews the head as it
+    stands, once: toggling either back and forth does not pay for the same
+    head twice.
+    """
+    action = payload.get("action")
+    if action == "unlabeled":
+        removed = str((payload.get("label") or {}).get("name", "")).strip().lower()
+        if removed != SKIP_LABEL:
+            return "ignore"
+    elif action not in _REVIEW_ACTIONS and action != "labeled":
+        return "ignore"
+
+    owner = payload["repository"]["owner"]["login"]
+    repo = payload["repository"]["name"]
+    pull_request = payload.get("pull_request") or {}
+
+    if not await repo_settings.pr_reviews_enabled(pool, owner, repo):
+        return "pr_reviews_off"
+    if _has_skip_label(pull_request):
+        return "skip_label"
+    if action == "labeled":
+        # Any other label: labelling a PR is not a reason to review it.
+        return "ignore"
+    if pull_request.get("draft"):
+        return "draft"
+    if await _head_already_reviewed(pool, owner, repo, payload.get("number"), pull_request["head"]["sha"]):
+        return "already_reviewed"
+    return "review"
+
+
 @router.post("/webhook")
 async def webhook(request: Request, response: Response):
     with webhook_ack_latency_seconds.time():
@@ -86,54 +175,51 @@ async def webhook(request: Request, response: Response):
             # happens on this request path at all. delivery_id (GitHub's
             # own X-GitHub-Delivery) is the idempotency key, so a webhook
             # redelivery of the same delivery is a no-op enqueue, not a
-            # duplicate job.
-            if action in ("opened", "synchronize"):
-                # The per-repo switch (migrations/014). OFF -- including a
-                # repository with no row -- is acknowledged and dropped:
-                # no job, so no token, no check run, no model call. After
-                # the signature check, so an unsigned request cannot
-                # learn anything from the answer.
-                owner = payload["repository"]["owner"]["login"]
-                repo = payload["repository"]["name"]
-                if not await repo_settings.pr_reviews_enabled(request.app.state.pool, owner, repo):
-                    pr_reviews_skipped_total.labels(reason="pr_reviews_off").inc()
-                    logger.info("pull_request %s/%s#%s skipped: PR reviews are off", owner, repo, pr_number)
-                    return {"status": "skipped", "reason": "pr_reviews_off"}
+            # duplicate job. Whether this delivery is a review at all is
+            # should_review's decision; see its docstring for the order.
+            decision = await should_review(request.app.state.pool, payload)
+            if decision == "ignore":
+                return {"status": "ignored"}
+            if decision != "review":
+                pr_reviews_skipped_total.labels(reason=decision).inc()
+                logger.info("pull_request %s/%s#%s (%s) skipped: %s",
+                            payload["repository"]["owner"]["login"], payload["repository"]["name"],
+                            pr_number, action, decision)
+                return {"status": "skipped", "reason": decision}
 
-                delivery_id = request.headers.get("X-GitHub-Delivery")
-                job_payload = {
-                    "installation_id": payload["installation"]["id"],
-                    "owner": payload["repository"]["owner"]["login"],
-                    "repo": payload["repository"]["name"],
-                    # Captured here, at the only point GitHub tells us,
-                    # so the review row can record it (migrations/007).
-                    # Defaults to True when absent: an unknown visibility
-                    # is treated as private, since the dashboard renders
-                    # findings, file paths and source fragments.
-                    "private": bool(payload["repository"].get("private", True)),
-                    # Recorded per review so the dashboard can be searched
-                    # by title (migrations/008) — nobody remembers a pull
-                    # request by its number. Attacker-controlled text, and
-                    # length-capped here so a pathological title cannot
-                    # bloat every job payload and review row that follows.
-                    "pr_title": str(payload["pull_request"].get("title") or "")[:300],
-                    "pr_number": pr_number,
-                    "action": action,
-                    "head_sha": payload["pull_request"]["head"]["sha"],
-                    # .codeguard.yml is always read from this —
-                    # the base branch, never the head — see
-                    # codeguard/github/repo_config.py.
-                    "base_ref": payload["pull_request"]["base"]["ref"],
-                }
-                job, created = await enqueue(
-                    request.app.state.pool,
-                    type="pull_request_review",
-                    payload=job_payload,
-                    idempotency_key=delivery_id,
-                )
-                logger.info("%s job %s for pr=%s (delivery=%s)",
-                            "enqueued" if created else "already enqueued", job.id, pr_number, delivery_id)
-
+            delivery_id = request.headers.get("X-GitHub-Delivery")
+            job_payload = {
+                "installation_id": payload["installation"]["id"],
+                "owner": payload["repository"]["owner"]["login"],
+                "repo": payload["repository"]["name"],
+                # Captured here, at the only point GitHub tells us,
+                # so the review row can record it (migrations/007).
+                # Defaults to True when absent: an unknown visibility
+                # is treated as private, since the dashboard renders
+                # findings, file paths and source fragments.
+                "private": bool(payload["repository"].get("private", True)),
+                # Recorded per review so the dashboard can be searched
+                # by title (migrations/008) — nobody remembers a pull
+                # request by its number. Attacker-controlled text, and
+                # length-capped here so a pathological title cannot
+                # bloat every job payload and review row that follows.
+                "pr_title": str(payload["pull_request"].get("title") or "")[:300],
+                "pr_number": pr_number,
+                "action": action,
+                "head_sha": payload["pull_request"]["head"]["sha"],
+                # .codeguard.yml is always read from this —
+                # the base branch, never the head — see
+                # codeguard/github/repo_config.py.
+                "base_ref": payload["pull_request"]["base"]["ref"],
+            }
+            job, created = await enqueue(
+                request.app.state.pool,
+                type="pull_request_review",
+                payload=job_payload,
+                idempotency_key=delivery_id,
+            )
+            logger.info("%s job %s for pr=%s (delivery=%s)",
+                        "enqueued" if created else "already enqueued", job.id, pr_number, delivery_id)
             return {"status": "ok"}
 
         if event == "pull_request_review_comment":

@@ -35,6 +35,22 @@ others on from Repositories → PR reviews.
 - Names match case-insensitively. A renamed repository starts Off under its
   new name.
 
+#### Per-PR skip: the `codeguard:skip` label and drafts
+
+- A pull request labelled `codeguard:skip` (any case) is not reviewed,
+  including pushes to it. Removing the label (`unlabeled`) reviews the
+  current head.
+- A draft is not reviewed, including pushes to it. `ready_for_review`
+  reviews the current head.
+- A head already reviewed, or already queued for review, is not queued
+  again, so flipping a draft or the label back and forth pays once per
+  commit. A job the worker skipped (switch turned off mid-queue) does not
+  count as reviewed.
+- One decision function, `should_review`, in a fixed order: repo switch,
+  label, draft, already reviewed. Skips are acknowledged with
+  `{"status": "skipped", "reason": ...}` and counted by reason in
+  `codeguard_pr_reviews_skipped_total`.
+
 ### Fix list from the 2026-10-08 feature tour
 
 **ACTION REQUIRED (operators):** migration `012_audit_report_json.sql` adds

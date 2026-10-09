@@ -33,8 +33,18 @@ Under **Subscribe to events**:
 - **Pull request review comment** — powers the feedback loop.
 - **Issue comment** — the other half of the feedback loop.
 
-Only `opened` and `synchronize` start a review. Every push to an open pull request is its own
-review, with its own cost.
+`opened` and `synchronize` start a review, and so do `ready_for_review` (a draft marked ready)
+and `unlabeled` when the label removed is `codeguard:skip`. Every push to an open pull request is
+its own review, with its own cost. All of these arrive on the **Pull request** event; nothing
+else needs subscribing.
+
+Skipped, with nothing queued:
+
+- a pull request labelled **`codeguard:skip`** (any case). Create the label in the repository;
+  CodeGuard only reads it. Removing it reviews the current head.
+- a **draft**, including pushes to it. Marking it ready reviews the current head.
+- a head that has already been reviewed, or is queued for review, so turning a draft ready
+  twice, or the label off twice, does not pay for the same commit twice.
 
 Reviews also have to be switched on per repository: **Repositories → PR reviews** (operators
 only). A repository starts **Off**; a delivery for it is acknowledged and nothing is queued, so
