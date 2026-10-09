@@ -21,6 +21,7 @@ import operator
 from typing import Annotated, NotRequired, TypedDict
 
 from codeguard.config import RepoConfig
+from codeguard.pipeline.impact import ImpactReport
 from codeguard.pipeline.models import (
     CachedAgentResult,
     CacheKey,
@@ -139,6 +140,19 @@ class ReviewState(TypedDict):
     # nothing new to write.
     hunk_cache_hits: dict[CacheKey, CachedAgentResult]
     cache_writes: Annotated[list[CacheWriteRecord], operator.add]
+
+    # Impact analysis (codeguard/pipeline/impact.py, impact_review.py).
+    # impact_report is set ONCE by worker/main.py before the graph runs,
+    # and only when impact analysis is on (Settings.impact_analysis_enabled
+    # and RepoConfig.enable_impact_analysis); absent otherwise, and
+    # review_impact then does nothing. impact_callers is what the summary's
+    # "Callers outside this diff" section lists ({path, line, qualname,
+    # kind: signature|behavior, note, in_diff}); impact_notes carries
+    # "skipped: ..." from the worker and "behavior check unavailable" from
+    # the node.
+    impact_report: NotRequired[ImpactReport | None]
+    impact_callers: Annotated[list[dict], operator.add]
+    impact_notes: Annotated[list[str], operator.add]
 
     # A verdict agent whose LLM call failed reports the file's raw tool
     # findings unverified rather than dropping them (see nodes.py's

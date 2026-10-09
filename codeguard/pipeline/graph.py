@@ -57,6 +57,7 @@ from codeguard.pipeline.nodes import (
     route_to_test_reviews,
     summarize,
 )
+from codeguard.pipeline.impact_review import review_impact
 from codeguard.pipeline.state import ReviewState
 
 
@@ -70,6 +71,7 @@ def build_review_graph():
     graph.add_node("review_quality", review_quality)
     graph.add_node("review_test", review_test)
     graph.add_node("review_repo_level", review_repo_level)
+    graph.add_node("review_impact", review_impact)
     graph.add_node("check_findings", check_findings)
     graph.add_node("propose_fix", propose_fix)
     graph.add_node("summarize", summarize)
@@ -81,6 +83,9 @@ def build_review_graph():
     graph.add_conditional_edges("classify", route_to_quality_reviews, ["review_quality"])
     graph.add_conditional_edges("classify", route_to_test_reviews, ["review_test"])
     graph.add_edge("classify", "review_repo_level")
+    # Impact analysis: once per PR, from the report the worker computed
+    # (absent when it is off, and then this does nothing).
+    graph.add_edge("classify", "review_impact")
 
     graph.add_edge("review_file", "check_findings")
     graph.add_edge("review_security", "check_findings")
@@ -88,6 +93,7 @@ def build_review_graph():
     graph.add_edge("review_quality", "check_findings")
     graph.add_edge("review_test", "check_findings")
     graph.add_edge("review_repo_level", "check_findings")
+    graph.add_edge("review_impact", "check_findings")
 
     graph.add_conditional_edges("check_findings", route_after_fanin, ["propose_fix", "summarize"])
     graph.add_edge("propose_fix", "summarize")

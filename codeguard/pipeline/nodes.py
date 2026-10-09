@@ -1897,6 +1897,13 @@ def _skipped_test_asserts_lines(state: ReviewState) -> list[str]:
     return [f"Skipped {n} test asserts (Bandit B101 in test files, where an assert is the test)."]
 
 
+def _impact_section(state: ReviewState) -> list[str]:
+    """The "Callers outside this diff" lines (impact_review.py). Imported
+    here, not at module level: impact_review imports this module."""
+    from codeguard.pipeline.impact_review import render_impact_section
+    return render_impact_section(state)
+
+
 def summarize(state: ReviewState) -> dict:
     """Dedupes findings by fingerprint across EVERY contributing agent
     (Ruff/Bandit passthrough, Security, AI-aware, Quality, Test,
@@ -1952,6 +1959,7 @@ def summarize(state: ReviewState) -> dict:
         body_lines += _skipped_test_asserts_lines(state)
         if state["budget_exceeded"]:
             body_lines += ["", *_BUDGET_EXCEEDED_NOTE_LINES]
+        body_lines += _impact_section(state)
         _append_dismissed_section(body_lines, grouped_dismissed)
         return {**summary_update, "summary": "\n".join(body_lines), "inline_findings": []}
 
@@ -2024,6 +2032,7 @@ def summarize(state: ReviewState) -> dict:
     if quality_docs:
         body_lines.append(f"{len(quality_docs)} documentation ({_QUALITY_DOCS_RULE_ID}) finding(s) not shown individually.")
 
+    body_lines += _impact_section(state)
     _append_dismissed_section(body_lines, grouped_dismissed)
 
     return {**summary_update, "summary": "\n".join(body_lines), "inline_findings": to_inline}

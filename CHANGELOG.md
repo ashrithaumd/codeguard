@@ -81,6 +81,48 @@ can read it); it applies itself on startup.
   else's. The audit page links such a repository to GitHub, since it has no
   repo page here.
 
+#### Impact analysis for PR reviews (off by default)
+
+`IMPACT_ANALYSIS_ENABLED=false` by default, globally; a repository can also
+opt out with `enable_impact_analysis: false` in `.codeguard.yml`. Nothing
+changes for a deployment that does not turn it on: no download, no call.
+
+- For each Python function, method or class a PR changes (compared by AST,
+  so a deletion-only edit counts and a moved def does not; `__init__` folds
+  into its class; removed defs count), its call sites elsewhere in the
+  repository are found through every import form (`from m import f as g`,
+  `import m as x`, `from pkg import m`, relative imports, same-module
+  calls, `self.method()` in its own class).
+- **Signature, deterministic, no model call:** a resolved call that no
+  longer binds to the new signature, and did bind to the old one, is a HIGH
+  finding on the changed def's line (in the diff, so inline), naming every
+  such caller; a broken call on a line this PR changed is also a finding at
+  the call. A call through `*args`/`**kwargs` is unchecked, never flagged.
+- **Behaviour, one model call per PR at most** (`IMPACT_AGENT_MODEL`,
+  Haiku; context capped at ~6k tokens), only when a function's body
+  changed: given before/after source and the chosen call sites, it reports
+  callers that rely on what changed. A concern about a site it was not
+  shown is dropped.
+- **Which call sites:** every signature break (up to 20), then resolved
+  before possible (`obj.method()` elsewhere), application code before
+  tests, one per file first; 5 per symbol and 15 per PR.
+- **Dynamic use** (`getattr(x, "name")`, functions passed as values) is
+  counted and said, never flagged.
+- **Where it is posted:** callers outside the diff go in the review body
+  under "Callers outside this diff", each linked to its line at the PR
+  head, since GitHub refuses inline comments outside the diff.
+- **Fetching:** one tarball request for the head (token in a header,
+  never in a URL; streamed, in memory, Python only; capped at 50 MB
+  compressed, 512 KB per file, 40 MB and 5,000 files in total), plus the
+  base version of each changed `.py` file. Too large, a failed fetch, or a
+  bug in the analysis is a note in the review ("Impact analysis skipped:
+  ..."), never a failed review.
+- **Eval:** `evals/impact/` (a signature break in an unchanged caller, with
+  three near-misses; a behaviour change only the model can see) and
+  `evals/run_impact_eval.py`. The deterministic half runs in the test suite
+  and passes; `--with-model` makes the live behaviour calls and has **not**
+  been run yet (it spends credit).
+
 #### Per-PR skip: the `codeguard:skip` label and drafts
 
 - A pull request labelled `codeguard:skip` (any case) is not reviewed,

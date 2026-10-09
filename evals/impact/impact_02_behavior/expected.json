@@ -1,0 +1,7 @@
+{
+  "description": "get_setting() stops raising KeyError and returns None. app/boot.py catches KeyError to fall back to the default region, so the fallback never runs and region() returns None. Only the behaviour check (the model) can see this; there is no signature change.",
+  "signature": [],
+  "behavior": ["app/boot.py:8"],
+  "not_flagged": ["app/report.py:7"],
+  "unchecked": []
+}
