@@ -237,6 +237,21 @@ async def accessible_repos(
     return {pair for pair, allowed in zip(unique, results) if allowed}
 
 
+def installation_changed(repos: list[tuple[str, str]]) -> None:
+    """GitHub says these repositories joined or left the installation.
+
+    Drops the hour-long installed-repositories list and each repository's
+    own installation lookup, which may be cached as "not installed". Without
+    this, a repository announced as new would be missing from the page that
+    announces it for up to _INSTALLED_TTL. Access decisions are left alone:
+    they are not about the installation, and their TTL is already short.
+    """
+    _installed_cache.clear()
+    wanted = {(owner.lower(), repo.lower()) for owner, repo in repos}
+    for key in [k for k in _installation_cache if (k[0].lower(), k[1].lower()) in wanted]:
+        _installation_cache.pop(key, None)
+
+
 def reset_caches() -> None:
     """For tests, and for a future admin endpoint that needs to make a
     revocation take effect immediately rather than within _DECISION_TTL.

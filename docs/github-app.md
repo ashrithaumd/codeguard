@@ -115,6 +115,19 @@ environment variables rather than mounted files, such as Azure Container Apps.
 From the App's settings page → **Install App** → choose the account and the repositories. Start
 with one repository you do not mind being commented on.
 
+Installing gives no reviews yet: each repository starts with **PR reviews Off** (section 3).
+
+**New repositories.** With the App on **All repositories**, GitHub sends
+`installation_repositories` (`added`) when you create a repository, fork one into the account,
+or transfer one in, and Repositories shows a notice: "New repository: <name>", with **Run
+audit** (public repositories), **Turn on PR reviews** and **Dismiss**. Operators only. These
+installation events reach every App without subscribing to them. Switching an existing install
+to All repositories adds every repository not already selected at once, so expect one notice
+each; **Dismiss all** clears them.
+
+A `git clone` on your own machine creates nothing on GitHub and sends no event, so it never
+produces a notice.
+
 ## 9. Open a pull request
 
 Push a branch with a Python change and open a PR. Within a minute or two you should see a review

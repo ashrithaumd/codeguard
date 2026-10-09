@@ -35,6 +35,28 @@ others on from Repositories → PR reviews.
 - Names match case-insensitively. A renamed repository starts Off under its
   new name.
 
+#### "New repository" notices
+
+**ACTION REQUIRED (operators):** migration `015_repo_notices.sql` adds
+`repo_notices`; it applies itself on startup.
+
+- `installation_repositories` (`added`), which an install on All
+  repositories sends when a repository is created, forked into the account
+  or transferred in, puts a notice at the top of Repositories:
+  "New repository: <name>" with Run audit (public only), Turn on PR reviews
+  (or "PR reviews on") and Dismiss. `installation` (`created`) announces the
+  initial list. `removed` / `deleted` drop the notice, so a repository added
+  back later is announced again. A redelivery neither duplicates a notice
+  nor revives a dismissed one.
+- Operators only, filtered through the same repo-access check as the rows;
+  dismiss and dismiss-all are 404 for anyone else, CSRF-checked.
+  "Dismiss all N" appears with more than one, since switching an install to
+  All repositories announces every repository at once.
+- The event drops the hour-long installed-repositories cache and the
+  repository's own installation lookup, so the new repository appears in
+  the list it is announced above straight away.
+- A local `git clone` creates nothing on GitHub and cannot be detected.
+
 #### Per-PR skip: the `codeguard:skip` label and drafts
 
 - A pull request labelled `codeguard:skip` (any case) is not reviewed,

@@ -10,8 +10,9 @@
       {% if signed_out %}
         Sign in to see the repositories you can access.
       {% else %}
-        Every repository CodeGuard is installed on that you can access. It reviews each new pull
-        request automatically — these rows show what it has done on each one so far.
+        Every repository CodeGuard is installed on that you can access. It reviews new pull
+        requests on the ones where PR reviews are on — these rows show what it has done on each
+        one so far.
       {% endif %}
     </div>
   </div>
@@ -89,6 +90,52 @@
   This list is built from repositories that already have reviews, so it may be missing ones
   CodeGuard is installed on but hasn't reviewed yet. Activity and costs below are accurate.
 </div>
+{% endif %}
+
+{#
+  "New repository" notices (migrations/015), operators only. GitHub sends
+  installation_repositories (added) when a repository is created, forked
+  into the account or transferred in while the App is on "All
+  repositories". Each action is the same POST the row itself uses.
+#}
+{% if notices %}
+<section class="repo-notices" aria-label="New repositories">
+  {% for n in notices %}
+  <div class="banner notice" role="status">
+    <span class="notice-text">
+      New repository: <a class="repo" href="/dashboard/repos/{{ n.owner }}/{{ n.repo }}">{{ n.owner }}/{{ n.repo }}</a>
+      {% if n.private %}<span class="tag">private</span>{% endif %}
+    </span>
+    <span class="notice-actions">
+      {% if not n.private %}
+      <form method="post" action="/dashboard/repos/{{ n.owner }}/{{ n.repo }}/audit">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="btn btn-sm" type="submit">Run audit</button>
+      </form>
+      {% endif %}
+      {% if n.pr_reviews %}
+      <span class="dim">PR reviews on</span>
+      {% else %}
+      <form method="post" action="/dashboard/repos/{{ n.owner }}/{{ n.repo }}/pr-reviews">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="enabled" value="on">
+        <button class="btn btn-sm" type="submit">Turn on PR reviews</button>
+      </form>
+      {% endif %}
+      <form method="post" action="/dashboard/notices/{{ n.owner }}/{{ n.repo }}/dismiss">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button class="btn btn-sm btn-quiet" type="submit">Dismiss</button>
+      </form>
+    </span>
+  </div>
+  {% endfor %}
+  {% if notices|length > 1 %}
+  <form class="notice-dismiss-all" method="post" action="/dashboard/notices/dismiss-all">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button class="btn btn-sm btn-quiet" type="submit">Dismiss all {{ notices|length }}</button>
+  </form>
+  {% endif %}
+</section>
 {% endif %}
 
 <div class="panel">

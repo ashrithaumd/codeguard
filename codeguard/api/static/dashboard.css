@@ -838,3 +838,15 @@ details.low-group > summary:focus-visible { outline: 2px solid var(--accent); ou
 .switch.on .switch-knob { transform: translateX(12px); }
 .switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 @media (prefers-reduced-motion: reduce) { .switch-track, .switch-knob { transition: none; } }
+
+/* Repositories: "New repository" notices (operators only). */
+.repo-notices { display: grid; gap: 8px; margin-bottom: 16px; }
+.repo-notices .banner.notice {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px;
+  margin: 0;
+}
+.notice-actions { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.notice-actions form, .notice-dismiss-all { margin: 0; }
+.notice-dismiss-all { justify-self: end; }
+.btn-quiet { background: none; border-color: transparent; color: var(--text-mute); }
+.btn-quiet:hover { color: var(--text); }

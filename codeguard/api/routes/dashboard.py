@@ -34,7 +34,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from codeguard.api import access, audits, csrf, repo_settings, repo_url
+from codeguard.api import access, audits, csrf, repo_notices, repo_settings, repo_url
 from codeguard.api import dashboard_queries as q
 from codeguard.api.auth import client_principal, client_viewer
 from codeguard.api.display import (
@@ -542,9 +542,21 @@ async def repositories(request: Request) -> HTMLResponse:
         r["last_activity"] is None, -(r["review_count"] + r["audit_count"]), r["repo"],
     ))
 
+    # "New repository" notices (migrations/015). Operators only, and through
+    # the same access gate as the rows: a notice names a repository, and a
+    # name is exactly what this page must not leak.
+    notices: list[dict] = []
+    if may_audit:
+        pending = await repo_notices.pending(pool)
+        visible = await access.accessible_repos([(n["owner"], n["repo"]) for n in pending], principal)
+        notices = [
+            {**n, "pr_reviews": pr_switches.get((n["owner"].lower(), n["repo"].lower()), False)}
+            for n in pending if (n["owner"], n["repo"]) in visible
+        ]
+
     return render_page(
         request, "repositories.html", principal,
-        rows=rows, may_audit=may_audit, lookup_failed=lookup_failed,
+        rows=rows, may_audit=may_audit, lookup_failed=lookup_failed, notices=notices,
         mine_in_flight=mine_in_flight, busy_note=AUDIT_BUSY_NOTE,
         settings_url=access.installation_settings_url(
             next((r["installation_id"] for r in rows if r["installation_id"]), None)
@@ -674,6 +686,32 @@ async def set_pr_reviews(request: Request, owner: str, repo: str):
     enabled = str(form.get("enabled") or "") == "on"
     await repo_settings.set_pr_reviews(pool, owner, repo, enabled=enabled, updated_by=principal)
     logger.info("PR reviews %s for %s/%s by %s", "ON" if enabled else "OFF", owner, repo, principal)
+    return RedirectResponse(url="/dashboard/repos", status_code=303)
+
+
+def _operator_login_or_404(request: Request) -> str:
+    """The operator's login, or 404 for anyone else. Identity only: each
+    handler calls csrf.verify itself, after this, so the CSRF check stays
+    visible in every handler (tests/api/test_csrf.py checks exactly that)."""
+    viewer = client_viewer(request)
+    if not get_settings().may_trigger_audit(viewer.user_id if viewer else None):
+        raise HTTPException(status_code=404, detail="not found")
+    return viewer.login
+
+
+@router.post("/notices/dismiss-all")
+async def dismiss_all_notices(request: Request):
+    principal = _operator_login_or_404(request)
+    await csrf.verify(request)
+    await repo_notices.dismiss_all(request.app.state.pool, dismissed_by=principal)
+    return RedirectResponse(url="/dashboard/repos", status_code=303)
+
+
+@router.post("/notices/{owner}/{repo}/dismiss")
+async def dismiss_notice(request: Request, owner: str, repo: str):
+    principal = _operator_login_or_404(request)
+    await csrf.verify(request)
+    await repo_notices.dismiss(request.app.state.pool, owner, repo, dismissed_by=principal)
     return RedirectResponse(url="/dashboard/repos", status_code=303)
 
 

@@ -3,7 +3,7 @@ import logging
 from fastapi import APIRouter, Request, Response
 from prometheus_client import Counter, Histogram
 
-from codeguard.api import repo_settings
+from codeguard.api import access, repo_notices, repo_settings
 from codeguard.api.signature import is_valid_signature
 from codeguard.config import get_settings
 from codeguard.pipeline.feedback import (
@@ -222,6 +222,10 @@ async def webhook(request: Request, response: Response):
                         "enqueued" if created else "already enqueued", job.id, pr_number, delivery_id)
             return {"status": "ok"}
 
+        if event in ("installation", "installation_repositories"):
+            await _handle_installation_change(request.app.state.pool, event, payload)
+            return {"status": "ok"}
+
         if event == "pull_request_review_comment":
             await _handle_feedback_comment(request, payload, event)
             return {"status": "ok"}
@@ -232,6 +236,51 @@ async def webhook(request: Request, response: Response):
 
         logger.info("Ignoring unhandled event type: %s", event)
         return {"status": "ignored"}
+
+
+def _repo_entries(entries) -> list[tuple[str, str, bool]]:
+    """(owner, repo, private) from GitHub's installation repository list,
+    which carries full_name rather than an owner object. Unknown visibility
+    is private, as everywhere else."""
+    out = []
+    for entry in entries or []:
+        owner, _, name = str(entry.get("full_name", "")).partition("/")
+        if owner and name:
+            out.append((owner, name, bool(entry.get("private", True))))
+    return out
+
+
+async def _handle_installation_change(pool, event: str, payload: dict) -> None:
+    """Repositories joining or leaving the App's installation.
+
+      installation_repositories added    -> a "New repository" notice each
+      installation_repositories removed  -> their notices are dropped
+      installation created               -> notices for the initial list
+      installation deleted               -> their notices are dropped
+
+    With the App on "All repositories", GitHub sends `added` when a
+    repository is created, forked into the account or transferred in; that
+    is the whole of "a new repository" as far as anything here can know.
+    These events reach every App without subscribing to them.
+
+    Not best-effort, unlike the feedback handler: if the notice cannot be
+    written, a 5xx lets GitHub's delivery log show the failure.
+    """
+    action = payload.get("action")
+    if event == "installation_repositories":
+        added = _repo_entries(payload.get("repositories_added"))
+        removed = _repo_entries(payload.get("repositories_removed"))
+    elif action == "created":
+        added, removed = _repo_entries(payload.get("repositories")), []
+    elif action == "deleted":
+        added, removed = [], _repo_entries(payload.get("repositories"))
+    else:
+        return
+
+    access.installation_changed([(o, r) for o, r, _ in added + removed])
+    await repo_notices.announce(pool, added)
+    await repo_notices.forget(pool, [(o, r) for o, r, _ in removed])
+    logger.info("%s %s: %d repo(s) added, %d removed", event, action, len(added), len(removed))
 
 
 async def _handle_feedback_comment(request: Request, payload: dict, event: str) -> None:
