@@ -39,6 +39,7 @@ from codeguard.api.audits import (
 )
 from codeguard.cli import AuditOutcome, AuditStats, run_audit
 from codeguard.config import Settings, get_settings, verify_required_settings
+from codeguard.diff.filters import split_test_asserts
 from codeguard.diff.ingest import ingest_pr_diff
 from codeguard.github.auth import get_installation_token
 from codeguard.github.base_tree import fetch_base_tree_python_files
@@ -52,6 +53,7 @@ from codeguard.github.reviews import fetch_review_comments, post_review
 from codeguard.pipeline.feedback import FINGERPRINT_MARKER_RE, fetch_suppressed_fingerprints, fingerprint_marker, record_posted_finding_comments
 from codeguard.pipeline.graph import review_graph
 from codeguard.pipeline.hunk_cache import fetch_cache_hits, write_cache_records
+from codeguard.pipeline.merge import rule_label, with_flow_note
 from codeguard.pipeline.nodes import _exclude_suppressed, compute_cache_keys
 from codeguard.pipeline.reviews import record_review
 from codeguard.pipeline.state import ReviewState
@@ -201,6 +203,18 @@ def _log_findings(pr_number: int, findings) -> None:
                      f.file, f.start_line, f.end_line, f.source_tool, f.severity.name, f.rule_id, f.message)
 
 
+def _tool_findings_for_review(pr_number: int, tool_findings) -> tuple[list, int]:
+    """The tool findings a PR review hands its agents: everything but
+    Bandit B101 in a test file, which is counted instead (the audit does
+    the same -- see diff/filters.split_test_asserts). Never reaching the
+    security agent is the point: judging asserts in tests is where most of
+    a test-heavy audit's spend went."""
+    kept, skipped = split_test_asserts(tool_findings)
+    if skipped:
+        logger.info("pr=%s: skipped %d test assert(s) (B101 in test files)", pr_number, skipped)
+    return kept, skipped
+
+
 def _suggestion_targets_finding(suggestion, finding) -> bool:
     """A suggestion generated before target_file/target_line existed
     (target_line == -1) is unverifiable, not wrong — kept, since the
@@ -242,10 +256,19 @@ def _findings_to_review_comments(findings, fix_suggestions) -> list[dict]:
         # so an `@name` in it would notify a real person from the
         # operator's App, and a `<details>` could forge CodeGuard's own
         # verdict inside CodeGuard's own comment. See github/outbound.py.
+        # rule_label: a merged finding names every rule that reported it
+        # (B307, llm-output-to-dangerous-sink), so one comment says what two
+        # used to. with_flow_note: a taint finding the agent never confirmed
+        # (raw fallback) still says where its value was built.
         body = (
             f"**[{escape_one_line(f.source_tool)} / {f.severity.name}] "
-            f"{escape_one_line(f.rule_id)}**\n\n{escape_for_github(f.message)}"
+            f"{escape_one_line(rule_label(f))}**\n\n{escape_for_github(with_flow_note(f.message, f))}"
         )
+        if f.unreviewed:
+            body += (
+                "\n\n_**Unreviewed**: the AI review for this finding was unavailable; "
+                "this is the scanner's own finding, not a confirmed one._"
+            )
         suggestion = suggestions_by_fingerprint.get(f.fingerprint)
         if suggestion is not None and not _suggestion_targets_finding(suggestion, f):
             FIX_SUGGESTIONS_DROPPED.inc()
@@ -371,6 +394,7 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
     else:
         base_tree_task = None
     tool_findings = await tool_findings_task
+    tool_findings, skipped_test_asserts = _tool_findings_for_review(pr_number, tool_findings)
     osv_findings = await osv_task
     base_tree_files = await base_tree_task if base_tree_task is not None else {}
     _log_findings(pr_number, tool_findings)
@@ -398,6 +422,7 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
         "files": diff_result.file_contents, "patches": diff_result.patches,
         "budget_exceeded": diff_result.budget_exceeded,
         "tool_findings": tool_findings, "base_tree_files": base_tree_files,
+        "skipped_test_asserts": skipped_test_asserts,
         "hunk_cache_hits": hunk_cache_hits, "cache_writes": [], "verdict_call_failures": [],
         "suppressed_fingerprints": suppressed_fingerprints,
         "touches_ai_code": False,
@@ -615,6 +640,8 @@ async def handle_repo_audit(job: Job, pool, abandoned: asyncio.Event) -> bool:
             pool, audit_id, status=status, exit_code=exit_code,
             error=error or stats.message,
             report_markdown=report or None,
+            report_json=stats.report,
+            commit_sha=stats.commit_sha,
             tokens_in=stats.tokens_in, tokens_out=stats.tokens_out,
             estimated_cost_usd=stats.estimated_cost_usd, duration_s=duration,
         )

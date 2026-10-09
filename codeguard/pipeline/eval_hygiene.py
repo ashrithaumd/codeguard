@@ -18,11 +18,11 @@ from __future__ import annotations
 
 import re
 
+from codeguard.diff.filters import is_test_path
 from codeguard.severity import Severity
 from codeguard.tools.models import Finding
 
 _AI_IMPORT_MARKERS = ("anthropic", "openai", "langchain", "langgraph")
-_TEST_PATH_MARKERS = ("test_", "_test.py", "/tests/")
 _MOCK_MARKERS = ("mock", "Mock", "monkeypatch", "@patch", "responses.", "vcr", "MagicMock", "AsyncMock")
 
 # A "content=" or "system=" kwarg holding a >=200-char triple-quoted
@@ -35,8 +35,7 @@ _PROMPT_STRING_RE = re.compile(
 
 
 def _is_test_path(path: str) -> bool:
-    lower = "/" + path.lower()
-    return any(marker in lower for marker in _TEST_PATH_MARKERS)
+    return is_test_path(path)
 
 
 def _touches_ai(content: str) -> bool:

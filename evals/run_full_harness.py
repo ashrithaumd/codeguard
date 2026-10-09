@@ -25,16 +25,76 @@ answer three times.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
+import re
 import statistics
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from codeguard.pipeline import nodes
 from codeguard.pipeline.nodes import review_ai_aware, review_quality, review_security, review_test
 from codeguard.tools.bandit_runner import run_bandit
 from codeguard.tools.semgrep_runner import run_semgrep
 
 FIXTURES_AI_AWARE = Path(__file__).parent / "fixtures"
+
+# Fixture-name globs, set from --only / --exclude. A before/after
+# comparison has to run the SAME fixtures both times, so a run on the
+# old set excludes fixtures added since ("regress_*"), and the new ones
+# are run on their own with --only.
+ONLY: list[str] = []
+CREDENTIAL_RULES = {"llm-hardcoded-api-key", "llm-langchain-hardcoded-api-key", "B105", "B106", "B107"}
+COMMENT_WORDS = re.compile(r"(?i)comment|docstring|header|says|states|claims|documented")
+REASON_VIOLATIONS: list[str] = []
+
+# ---------------------------------------------------------------------------
+# Failed calls: abort, or withhold the run
+# ---------------------------------------------------------------------------
+#
+# A failed verdict call falls back to the raw findings, which is right in
+# production and poison here: recall still looks fine (a raw finding still
+# "confirms" a planted issue), cost looks low, and dismissals quietly
+# vanish. Seen on 2026-10-08, when the API credit ran out partway through a
+# 3+3 run and both runs printed numbers anyway. So every call goes through
+# _guarded: an auth or credit error stops everything at once (nothing after
+# it can succeed), and any other failure marks the run as one whose metrics
+# are never printed.
+
+_FATAL_API_ERROR = re.compile(r"(?i)error code: (401|402|403)\b|credit balance")
+FAILED_CALLS: list[str] = []
+
+
+class FatalAPIError(Exception):
+    """Auth or billing: every later call would fail the same way."""
+
+
+def _guarded(call_agent):
+    def call(**kwargs):
+        result = call_agent(**kwargs)
+        if result.error:
+            if _FATAL_API_ERROR.search(result.error):
+                raise FatalAPIError(f"{kwargs.get('agent')} call: {result.error}")
+            FAILED_CALLS.append(f"{kwargs.get('agent')}: {result.error}")
+        return result
+    return call
+
+
+def install_call_guard() -> None:
+    """Route every agent call through _guarded. nodes looks call_agent up
+    as a module global at call time, so replacing the attribute covers
+    every agent."""
+    nodes.call_agent = _guarded(nodes.call_agent)
+EXCLUDE: list[str] = []
+VERBOSE = False
+
+
+def _selected(paths: list[Path]) -> list[Path]:
+    return [
+        p for p in paths
+        if (not ONLY or any(fnmatch.fnmatch(p.name, g) for g in ONLY))
+        and not any(fnmatch.fnmatch(p.name, g) for g in EXCLUDE)
+    ]
 # Phase 6's ground_truth.json lives one level up from fixtures/, not
 # inside it (see evals/run_eval.py) — the newer fixtures_security/ and
 # fixtures_quality_test/ keep their own ground_truth.json alongside
@@ -76,7 +136,7 @@ class AgentEvalResult:
 
 def _run_verdict_contract_eval(agent: str, fixtures_dir: Path, ground_truth_path: Path, run_tool, review_fn) -> AgentEvalResult:
     ground_truth = json.loads(ground_truth_path.read_text(encoding="utf-8"))
-    fixture_paths = sorted(fixtures_dir.glob("*.py"))
+    fixture_paths = _selected(sorted(fixtures_dir.glob("*.py")))
 
     totals = {"tp": 0, "fp": 0, "fn": 0}
     dismissal_expected = 0
@@ -99,6 +159,18 @@ def _run_verdict_contract_eval(agent: str, fixtures_dir: Path, ground_truth_path
         })
         confirmed_ids = {_bare_rule_id(f.rule_id) for f in result.get("findings", [])}
         dismissed_ids = {_bare_rule_id(d.rule_id) for d in result.get("dismissed_findings", [])}
+        if VERBOSE:
+            print(f"    [{agent}] {name}: confirmed={sorted(confirmed_ids)} dismissed={sorted(dismissed_ids)} "
+                  f"expected_confirmed={sorted(expected_confirmed)} expected_dismissed={sorted(expected_dismissed)}")
+            for d in result.get("dismissed_findings", []):
+                print(f"      dismissal reason ({_bare_rule_id(d.rule_id)}): {d.reason}")
+        # A credential dismissal must rest on the value's shape alone. A
+        # reason that mentions a comment, docstring or header is a failure
+        # of the contract whatever the verdict -- counted, and main() exits
+        # non-zero if any were seen.
+        for d in result.get("dismissed_findings", []):
+            if _bare_rule_id(d.rule_id) in CREDENTIAL_RULES and COMMENT_WORDS.search(d.reason):
+                REASON_VIOLATIONS.append(f"{agent} {name}:{d.start_line} {d.reason}")
 
         totals["tp"] += len(confirmed_ids & expected_confirmed)
         totals["fp"] += len(confirmed_ids - expected_confirmed)
@@ -151,7 +223,7 @@ class BinaryEvalResult:
 
 def run_quality_and_test_eval() -> tuple[BinaryEvalResult, BinaryEvalResult]:
     ground_truth = json.loads((FIXTURES_QUALITY_TEST / "ground_truth.json").read_text(encoding="utf-8"))
-    fixture_paths = sorted(FIXTURES_QUALITY_TEST.glob("*.py"))
+    fixture_paths = _selected(sorted(FIXTURES_QUALITY_TEST.glob("*.py")))
 
     counts = {
         "quality": {"tp": 0, "fp": 0, "fn": 0, "tn": 0, "tokens_in": 0, "tokens_out": 0, "cost": 0.0, "latency": 0.0},
@@ -243,23 +315,53 @@ def _variance_report(runs: list[dict]) -> None:
     print(f"  per_pr_cost_usd: {[round(v, 4) for v in total_costs]} (stdev={statistics.pstdev(total_costs):.4f})")
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--json", type=str, default=None)
-    args = parser.parse_args()
+    parser.add_argument("--only", action="append", default=[], help="fixture-name glob to run (repeatable)")
+    parser.add_argument("--exclude", action="append", default=[], help="fixture-name glob to skip (repeatable)")
+    parser.add_argument("--verbose", action="store_true", help="print each fixture's verdicts")
+    args = parser.parse_args(argv)
+    global VERBOSE
+    ONLY.extend(args.only)
+    EXCLUDE.extend(args.exclude)
+    VERBOSE = args.verbose
+    install_call_guard()
 
     runs = []
     for i in range(args.runs):
-        run = run_once()
+        failed_before = len(FAILED_CALLS)
+        try:
+            run = run_once()
+        except FatalAPIError as exc:
+            print(f"--- run {i + 1}: ABORTING, auth or credit error; no metrics reported ---")
+            print(f"  {exc}")
+            raise SystemExit(2) from None
+        failed = len(FAILED_CALLS) - failed_before
+        if failed:
+            print(f"--- run {i + 1}: {failed} failed call(s); metrics withheld (a failed call falls back "
+                  "to raw findings, which makes every number below meaningless) ---")
+            for f in FAILED_CALLS[failed_before:]:
+                print(f"  {f}")
+            raise SystemExit(1)
         _print_run(i, run)
         runs.append(run)
 
     _variance_report(runs)
 
+    print()
+    print(f"credential dismissal reasons citing anything but the shape: {len(REASON_VIOLATIONS)}")
+    for v in REASON_VIOLATIONS:
+        print(f"  {v}")
+
     if args.json:
         Path(args.json).write_text(json.dumps(runs, indent=2), encoding="utf-8")
-        print(f"\nwrote raw results to {args.json}")
+        print()
+        print(f"wrote raw results to {args.json}")
+
+    if REASON_VIOLATIONS:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

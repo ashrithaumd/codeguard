@@ -46,7 +46,7 @@ _LIST_COLUMNS = """
     findings_deterministic, findings_unverified,
     dismissed_count, inline_count, fix_suggestion_count,
     budget_exceeded, tokens_in, tokens_out, estimated_cost_usd,
-    duration_s, created_at
+    duration_s, created_at, pr_title
 """
 
 
@@ -284,7 +284,8 @@ async def pr_summaries(
                        max(created_at)                     AS last_reviewed,
                        (array_agg(findings_total ORDER BY created_at DESC))[1]   AS latest_findings,
                        (array_agg(check_conclusion ORDER BY created_at DESC))[1] AS latest_conclusion,
-                       bool_or(private)                    AS private
+                       bool_or(private)                    AS private,
+                       (array_agg(pr_title ORDER BY created_at DESC))[1]         AS pr_title
                 FROM reviews WHERE owner = %s AND repo = %s
                 GROUP BY pr_number
                 ORDER BY max(created_at) DESC

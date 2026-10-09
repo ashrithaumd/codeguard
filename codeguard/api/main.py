@@ -1,9 +1,11 @@
 import asyncio
 import logging
+import os
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -31,6 +33,31 @@ from codeguard.queue.metrics import refresh_live_gauges
 # modules is silently dropped — only warning()/error() calls would show.
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 logger = logging.getLogger("codeguard.api")
+
+
+class DevPrincipalInAzure(RuntimeError):
+    """DASHBOARD_TRUST_DEV_PRINCIPAL is on inside Azure Container Apps."""
+
+
+def refuse_dev_principal_in_azure(settings, environ: Mapping[str, str]) -> None:
+    """Refuse to start with the dev-principal override inside Azure.
+
+    The override forces every dashboard visitor's identity to one login and
+    ignores the EasyAuth header -- locally, how the dashboard is driven
+    without GitHub; deployed, the operator's identity and audit button for
+    anyone who can reach the URL. It was a startup warning. In Azure it is
+    now a refusal, because a crash-looping revision is noticed and a log
+    line is not.
+
+    CONTAINER_APP_NAME is set by the Container Apps runtime in every
+    container it runs, and by nothing on a developer machine.
+    """
+    if settings.dashboard_trust_dev_principal and environ.get("CONTAINER_APP_NAME"):
+        raise DevPrincipalInAzure(
+            "DASHBOARD_TRUST_DEV_PRINCIPAL is set, and this is running in Azure Container Apps "
+            f"({environ['CONTAINER_APP_NAME']!r}). It forces every dashboard visitor's identity "
+            "and must never be enabled in a deployment. Remove it from the app's environment."
+        )
 
 
 async def _on_sweep(pool, result) -> None:
@@ -61,6 +88,8 @@ async def lifespan(app: FastAPI):
     # webhooks it cannot review.
     verify_required_settings()
     settings = get_settings()
+    # Before the pool, before anything is served.
+    refuse_dev_principal_in_azure(settings, os.environ)
     pool = await create_pool(settings)
     await bootstrap_schema(pool)
     app.state.pool = pool
@@ -189,6 +218,10 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
     # "something went wrong" and nothing to do about it.
     if exc.status_code == 400 and exc.detail:
         body = exc.detail
+    back_href, back_label = "/dashboard", "Back to reviews"
+    if exc.status_code == 404:
+        thing, back_href, back_label = _not_found_subject(request.url.path)
+        body = _NOT_FOUND_BODY.format(thing=thing)
     # render_page, NOT a TemplateResponse of our own. This handler used to
     # assemble its own context, which meant it silently missed csp_nonce
     # when that was added: every error page rendered nonce="" and had all
@@ -213,6 +246,7 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
         request, "error.html", client_principal(request),
         status_code=exc.status_code,
         status=exc.status_code, title=title, body=body,
+        back_href=back_href, back_label=back_label,
     )
 
 
@@ -236,6 +270,33 @@ _ERROR_COPY = {
     500: ("Something went wrong",
           "The dashboard could not load this page. The error has been logged."),
 }
+
+
+# The 404 names what the ROUTE was for and links back to the list it came
+# from. It said "This review..." / "Back to reviews" on a repository's page
+# too. Still deliberately silent on WHICH of the two it is: routes answer
+# 404 for "does not exist" and "not yours" alike.
+_NOT_FOUND_BODY = (
+    "This {thing} either does not exist or is not visible to you. "
+    "If it belongs to a private repository, sign in with a GitHub account that can access it."
+)
+
+
+def _not_found_subject(path: str) -> tuple[str, str, str]:
+    """(what the page was, where to go back to, the link text)."""
+    if path.startswith("/dashboard/repos/") and "/pulls/" in path:
+        return "pull request", "/dashboard/repos", "Back to repositories"
+    if path.startswith("/dashboard/repos"):
+        return "repository", "/dashboard/repos", "Back to repositories"
+    if path.startswith("/dashboard/audits"):
+        return "audit", "/dashboard/repos", "Back to repositories"
+    return "review", "/dashboard", "Back to reviews"
+
+
+@app.get("/", include_in_schema=False)
+async def root() -> RedirectResponse:
+    """The bare origin lands on the dashboard rather than a 404."""
+    return RedirectResponse(url="/dashboard", status_code=302)
 
 
 @app.get("/metrics", dependencies=[Depends(require_metrics_token)])

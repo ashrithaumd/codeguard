@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from codeguard.diff.parse import hash_content
 from codeguard.pipeline.models import CachedAgentResult
-from codeguard.pipeline.nodes import compute_cache_keys, review_quality, route_to_quality_reviews
+from codeguard.pipeline.nodes import compute_cache_keys, review_quality, route_to_quality_reviews, verdict_cache_agent
 from tests.pipeline.conftest import make_finding
 
 
@@ -21,8 +21,8 @@ def test_compute_cache_keys_includes_security_only_for_files_with_bandit_finding
 
     agents_for_a = {agent for path, _, agent in keys if path == "a.py"}
     agents_for_b = {agent for path, _, agent in keys if path == "b.py"}
-    assert "security" in agents_for_a
-    assert "security" not in agents_for_b
+    assert verdict_cache_agent("security") in agents_for_a
+    assert verdict_cache_agent("security") not in agents_for_b
 
 
 def test_compute_cache_keys_includes_ai_aware_only_for_ai_touching_files_when_enabled():
@@ -32,8 +32,8 @@ def test_compute_cache_keys_includes_ai_aware_only_for_ai_touching_files_when_en
     agents_for_assistant = {agent for path, _, agent in keys if path == "assistant.py"}
     agents_for_plain = {agent for path, _, agent in keys if path == "plain.py"}
 
-    assert "ai_aware" in agents_for_assistant
-    assert "ai_aware" not in agents_for_plain
+    assert verdict_cache_agent("ai_aware") in agents_for_assistant
+    assert verdict_cache_agent("ai_aware") not in agents_for_plain
 
 
 def test_compute_cache_keys_excludes_ai_aware_when_disabled():
@@ -41,7 +41,7 @@ def test_compute_cache_keys_excludes_ai_aware_when_disabled():
 
     keys = compute_cache_keys(files, {}, [], ai_aware_enabled=False)
 
-    assert not any(agent == "ai_aware" for _, _, agent in keys)
+    assert not any(agent == verdict_cache_agent("ai_aware") for _, _, agent in keys)
 
 
 def test_compute_cache_keys_uses_the_same_hash_function_as_the_agents_do():
@@ -51,7 +51,7 @@ def test_compute_cache_keys_uses_the_same_hash_function_as_the_agents_do():
 
     keys = compute_cache_keys(files, {}, findings, ai_aware_enabled=True)
 
-    security_hashes = {h for path, h, agent in keys if agent == "security"}
+    security_hashes = {h for path, h, agent in keys if agent == verdict_cache_agent("security")}
     assert security_hashes == {hash_content(content)}
 
 

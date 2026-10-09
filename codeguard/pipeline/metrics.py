@@ -58,6 +58,13 @@ verdict_flip_total = Counter(
     "nodes.py's _apply_verdicts. Labeled by agent only; rule_id cardinality is unbounded.",
     ["agent"],
 )
+credential_dismissal_overruled_total = Counter(
+    "codeguard_credential_dismissal_overruled_total",
+    "A verdict agent dismissed a hardcoded-credential rule, but at least one occurrence's "
+    "value was not placeholder-shaped, so the raw finding(s) were reported confirmed — see "
+    "nodes.py's _enforce_credential_shape. Labeled by agent only.",
+    ["agent"],
+)
 fix_suggestions_dropped_total = Counter(
     "codeguard_fix_suggestions_dropped_total",
     "Fix suggestions withheld at generation time. reason='original_mismatch' means the fix agent's "

@@ -136,10 +136,17 @@ async def test_a_suggestion_with_no_recorded_original_says_so(pool, client):
 
 
 @pytest.mark.asyncio
-async def test_a_finding_without_a_fix_says_so_rather_than_showing_a_dash(pool, client):
+async def test_a_finding_without_a_fix_shows_no_empty_fix_cell(pool, client):
+    """Was: "No suggestion" in a Suggested-fix column, rather than a dash.
+    The column itself is gone now (it was empty for most rows and squeezed
+    the message); a fix, when there is one, is an expandable row under its
+    finding -- see tests/api/test_review_detail.py."""
     job_id = await insert_review(pool, findings_total=1, det=1, findings=[_finding()])
+    text = client.get(f"/dashboard/reviews/{job_id}").text
 
-    assert "No suggestion" in client.get(f"/dashboard/reviews/{job_id}").text
+    assert "No suggestion" not in text
+    assert 'class="fix-cell"' not in text
+    assert 'class="fix-row"' not in text
 
 
 # --- totals, not "this page" ---------------------------------------------
@@ -214,14 +221,18 @@ async def test_a_pull_requests_own_reviews_are_listed_on_its_page(pool, client):
 
 
 @pytest.mark.asyncio
-async def test_the_repo_page_has_no_cost_chart(pool, client):
-    """A repo-wide series mixes pull requests, so adjacent bars can be a
-    2-file PR and a 40-file PR and their difference means nothing.
+async def test_the_repo_page_has_no_raw_cost_per_review_chart(pool, client):
+    """A repo-wide series of RAW cost mixes pull requests, so adjacent bars
+    can be a 2-file PR and a 40-file PR and their difference means nothing.
+    The chart that came back is cost per REVIEWED FILE, labelled by PR --
+    see tests/api/test_repo_page.py -- and the raw one must stay gone.
     """
     for sha in ("a", "b", "c"):
         await insert_review(pool, pr_number=7, head_sha=sha * 40)
 
-    assert "Cost per review" not in client.get("/dashboard/repos/acme/widgets").text
+    text = client.get("/dashboard/repos/acme/widgets").text
+    assert "<h2>Cost per review</h2>" not in text
+    assert "<h2>Cost per reviewed file</h2>" in text
 
 
 @pytest.mark.asyncio

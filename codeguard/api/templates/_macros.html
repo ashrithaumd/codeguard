@@ -34,12 +34,29 @@
   {%- endif -%}
 {%- endmacro %}
 
+{#
+  A pull request: its number, linked, and its title beside it. The title
+  is the author's text, so it is escaped like everything else and never
+  part of the link's accessible name alone -- the number is.
+#}
+{% macro pr_ref(owner, repo, number, title, href=None) -%}
+  <a class="pr" href="{{ href or '/dashboard/repos/' ~ owner ~ '/' ~ repo ~ '/pulls/' ~ number }}">#{{ number }}</a>
+  {%- if title %} <span class="pr-title">{{ title }}</span>{% endif %}
+{%- endmacro %}
+
 {% macro cost(v) -%}
   ${{ "%.4f"|format(v or 0) }}
 {%- endmacro %}
 
+{#
+  A timestamp: a <time> element carrying the instant in ISO-8601 UTC, whose
+  text is the UTC time LABELLED as UTC. base.html's script rewrites it to the
+  viewer's local time; with scripts off, the label is what keeps "16:39"
+  from being read as local.
+#}
 {% macro when(ts) -%}
-  <span title="{{ ts }}">{{ ts.strftime("%b %d, %H:%M") }}</span>
+  {%- set u = ts|utc -%}
+  <time datetime="{{ u.strftime('%Y-%m-%dT%H:%M:%SZ') }}" data-local-time>{{ u.strftime("%b %d, %H:%M") }} UTC</time>
 {%- endmacro %}
 
 {% macro empty_state(title, body, glyph="inbox") -%}
@@ -163,5 +180,28 @@
     {% if not before %}
       <div class="diff-note">Recorded before the replaced lines were stored, so only the replacement is shown.</div>
     {% endif %}
+  </div>
+{%- endmacro %}
+
+{#
+  An audit finding's location: linked to the line at the audited commit
+  when blob_url will vouch for it, plain text otherwise. A taint finding
+  shows where the value was built, then where it reached the model, and
+  links the whole span. (env globals -- blob_url -- reach imported macros.)
+#}
+{% macro audit_loc(audit, f) -%}
+  {%- set first = [f.source_line, f.start_line]|select|min if f.source_line else f.start_line %}
+  {%- set last = [f.end_line, f.start_line]|max %}
+  {%- set url = blob_url(audit.owner, audit.repo, audit.commit_sha, f.file, first, last) %}
+  {%- set loc %}{{ f.file }}:{% if f.source_line %}{{ f.source_line }} → {% endif %}{{ f.start_line }}{% if f.end_line > f.start_line %}–{{ f.end_line }}{% endif %}{% endset %}
+  {%- if url %}<a class="finding-loc" href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ loc }}</a>{% else %}<code class="finding-loc">{{ loc }}</code>{% endif %}
+{%- endmacro %}
+
+{# Rule tags, plus a link to the rule's own docs for a ruff finding. #}
+{% macro audit_rules(f) -%}
+  <div class="finding-rules">
+    {% for rule in f.rules %}<span class="tag rule">{{ rule }}</span>{% endfor %}
+    {%- set docs = ruff_docs_url(f.rules[0]) if f.source_tool == "ruff" else None %}
+    {% if docs %}<a class="rule-docs" href="{{ docs }}" target="_blank" rel="noopener noreferrer">Rule docs</a>{% endif %}
   </div>
 {%- endmacro %}

@@ -96,6 +96,14 @@ EXEMPT_PATHS = ("/webhook", "/health", "/ready", "/metrics")
 
 HSTS = "max-age=31536000; includeSubDomains"
 
+# Pages and JSON behind sign-in: per-viewer, and they change under the
+# viewer (an audit finishing, a review arriving). no-store, so neither the
+# browser's cache nor its back/forward cache hands back a stale copy --
+# the repositories page was seen on localhost without the "last: done" a
+# fresh render showed. /static is the same for everybody and keeps its
+# caching.
+SIGNED_IN_PATHS = ("/dashboard", "/auth")
+
 _STATIC_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
@@ -169,5 +177,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         proto = request.headers.get("x-forwarded-proto", request.url.scheme)
         if proto == "https":
             response.headers["Strict-Transport-Security"] = HSTS
+
+        if request.url.path.startswith(SIGNED_IN_PATHS):
+            response.headers["Cache-Control"] = "no-store"
 
         return response

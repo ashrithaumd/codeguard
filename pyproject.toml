@@ -63,9 +63,17 @@ dev = [
 # could become the default (bare `pytest`) again, but there's no
 # benefit to widening it back until something actually needs to live
 # outside these directories.
-testpaths = ["tests/queue", "tests/diff", "tests/tools", "tests/github", "tests/pipeline", "tests/cli", "tests/mcp", "tests/api"]
+testpaths = ["tests/queue", "tests/diff", "tests/tools", "tests/github", "tests/pipeline", "tests/cli", "tests/mcp", "tests/api", "tests/tooling"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+
+[tool.ruff]
+# Deliberately bad code, kept bad: the Semgrep rule test file (undefined
+# names and unused imports are the shapes the rules are tested against)
+# and the eval fixtures (planted weaknesses, single-letter names and all).
+# Linting them would mean "fixing" what they exist to contain. Everything
+# else is linted, and CI requires 0 errors (.github/workflows/lint.yml).
+extend-exclude = ["rules/llm-security.py", "evals/fixtures*"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["codeguard"]

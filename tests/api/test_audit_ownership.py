@@ -44,10 +44,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import pytest
 
 from codeguard.api import access, audits as audits_mod
-from codeguard.config import Settings, get_settings
 from tests.api.conftest import TEST_PRINCIPAL
 
 OWNER = "ashrithaumd"

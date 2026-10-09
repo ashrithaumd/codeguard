@@ -14,7 +14,7 @@ from codeguard.config import RepoConfig
 from codeguard.diff.parse import hash_content
 from codeguard.pipeline.llm_call import AgentCallResult
 from codeguard.pipeline.models import CachedAgentResult
-from codeguard.pipeline.nodes import review_security, route_to_security_reviews
+from codeguard.pipeline.nodes import review_security, route_to_security_reviews, verdict_cache_agent
 from tests.pipeline.conftest import make_finding
 
 
@@ -39,7 +39,9 @@ def test_a_failed_call_reports_raw_findings_with_an_explicit_verdict_call_failur
     with patch("codeguard.pipeline.nodes.call_agent", return_value=failed):
         out = review_security(state)
 
-    assert out["findings"] == [finding]  # raw findings still reported
+    # Raw findings still reported, and marked: never judged (see
+    # tests/pipeline/test_silent_fallback.py).
+    assert out["findings"] == [finding.model_copy(update={"unreviewed": True})]
     assert len(out["verdict_call_failures"]) == 1
     failure = out["verdict_call_failures"][0]
     assert (failure.path, failure.agent) == ("a.py", "security")
@@ -104,14 +106,14 @@ def test_review_security_confirmed_verdict():
 
     assert len(result["findings"]) == 1
     assert result["findings"][0].source_tool == "security"
-    assert result["cache_writes"][0].agent == "security"
+    assert result["cache_writes"][0].agent == verdict_cache_agent("security")
 
 
 def test_review_security_hunk_cache_hit_skips_the_call():
     finding = make_finding(file="app/db.py", rule_id="B608", tool="bandit")
     content = "x = 1\n"
     cached_finding = make_finding(file="app/db.py", rule_id="B608", tool="security", message="cached")
-    hits = {("app/db.py", hash_content(content), "security"): CachedAgentResult(findings=[cached_finding])}
+    hits = {("app/db.py", hash_content(content), verdict_cache_agent("security")): CachedAgentResult(findings=[cached_finding])}
 
     with patch("codeguard.pipeline.nodes.call_agent") as mock_call:
         result = review_security({

@@ -11,6 +11,7 @@ import fnmatch
 
 from codeguard.config import RepoConfig
 from codeguard.diff.models import FilteredFile
+from codeguard.tools.models import Finding
 
 REVIEWABLE_EXTENSIONS = {".py"}
 
@@ -105,3 +106,45 @@ def filter_files(files: list[dict], repo_config: RepoConfig) -> tuple[list[dict]
         kept.append(f)
 
     return kept, filtered
+
+
+_TEST_DIRS = frozenset({"tests", "test"})
+
+
+def is_test_path(path: str) -> bool:
+    """A test file, judged on path SEGMENTS rather than substrings: any
+    directory named tests/ or test/, a test_*.py or *_test.py basename, or
+    conftest.py.
+
+    Shared by the audit (B101 suppression and the file-ceiling tiers) and
+    eval hygiene. The substring version eval hygiene had matched "test_"
+    anywhere -- latest_model.py was a test -- and never matched conftest.py.
+    """
+    parts = path.replace("\\", "/").lower().split("/")
+    name = parts[-1]
+    return (
+        any(part in _TEST_DIRS for part in parts[:-1])
+        or name.startswith("test_")
+        or name.endswith("_test.py")
+        or name == "conftest.py"
+    )
+
+
+def split_test_asserts(tool_findings: list[Finding]) -> tuple[list[Finding], int]:
+    """Bandit's B101 (`assert` is stripped under -O) in a TEST file, taken
+    out before the verdict layer and counted rather than judged.
+
+    In a test, an assert is the whole point. On reliqueue 83 of 86
+    dismissals were exactly these, and they cost most of that audit's
+    $0.066 to have a model say so 83 times. Applied by both the audit
+    (cli.run_audit) and the PR review (worker._tool_findings_for_review). B101 anywhere else is kept:
+    an assert guarding application logic really does vanish under -O.
+    """
+    kept: list[Finding] = []
+    skipped = 0
+    for f in tool_findings:
+        if f.source_tool == "bandit" and f.rule_id == "B101" and is_test_path(f.file):
+            skipped += 1
+        else:
+            kept.append(f)
+    return kept, skipped

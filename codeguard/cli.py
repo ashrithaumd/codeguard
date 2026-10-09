@@ -30,6 +30,7 @@ import ast
 import asyncio
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -46,13 +47,20 @@ import tiktoken
 import yaml
 
 from codeguard.config import Budget, RepoConfig, effective_budget, get_settings, verify_required_settings
-from codeguard.diff.filters import is_dependency_manifest, is_reviewable_path
+from codeguard.diff.filters import (
+    is_dependency_manifest,
+    is_reviewable_path,
+    is_test_path,
+    split_test_asserts,
+)
 from codeguard.pipeline.eval_hygiene import review_eval_hygiene
 from codeguard.pipeline.guardrails import MAX_CHUNK_TOKENS
+from codeguard.pipeline.merge import bare_rule_id, flow_note, merge_same_bug, with_flow_note
 from codeguard.pipeline.models import DismissedFinding
 from codeguard.pipeline.nodes import _build_findings_block, _file_touches_ai_markers, review_ai_aware, review_security
 from codeguard.pipeline.state import FileReviewState
 from codeguard.redact import redact
+from codeguard.report_format import REPORT_DATA_VERSION, UNREVIEWED_NOTICE_TEXT
 from codeguard.severity import Severity
 from codeguard.tools.base import UNAVAILABLE_RULE_ID
 from codeguard.tools.models import Finding
@@ -130,6 +138,21 @@ _CLONE_HARDENING = [
 # be shallow-cloned in two minutes is not one we want to audit, and the
 # clone runs inside the overall audit deadline.
 CLONE_TIMEOUT_S = 120
+
+
+def _head_sha(root: Path) -> str | None:
+    """The full commit hash checked out at `root`, or None. Never raises:
+    an audit does not fail because its commit could not be named -- the
+    page just shows plain-text locations."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    sha = proc.stdout.strip()
+    return sha if proc.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", sha) else None
 
 
 def _clone_shallow(url: str, dest: Path, timeout: float | None = None) -> None:
@@ -303,13 +326,58 @@ def _collect_repo_files(
     return files, dependency_contents, dependency_patches
 
 
+# Basenames that start an application. A large main.py is the file an
+# audit most needs to read, and smallest-first alone dropped exactly that
+# on DocuMind, in favour of test files.
+_ENTRYPOINT_NAMES = frozenset({
+    "main.py", "app.py", "__main__.py", "wsgi.py", "asgi.py", "manage.py", "server.py",
+})
+
+# Top-level directories that hold code nobody deploys: tooling, samples,
+# docs. Reviewed after the application, before the tests.
+_PERIPHERAL_DIRS = frozenset({
+    "scripts", "script", "examples", "example", "docs", "doc", "benchmarks", "bench",
+    "migrations", "tools", "notebooks", "samples",
+})
+_PERIPHERAL_FILES = frozenset({"setup.py", "noxfile.py", "fabfile.py", "tasks.py"})
+
+
+def _audit_tier(path: str, content: str) -> int:
+    """Which tier a file is reviewed in when the ceiling binds, lowest
+    first:
+
+      0  entrypoints            main.py, app.py, __main__.py, ...
+      1  application code       anything else that is neither of the below
+      2  LLM SDK files          outside the application (examples/, scripts/)
+      3  everything else        tooling, docs, setup.py
+      4  tests                  last, whatever they import
+
+    LLM files inside the application are tier 1, and come FIRST within it
+    (see the sort key in _select_files_for_audit), so the earlier rule --
+    only those can ever get an AI-aware verdict -- still holds where it can.
+    """
+    if is_test_path(path):
+        return 4
+    parts = path.lower().split("/")
+    if parts[-1] in _ENTRYPOINT_NAMES:
+        return 0
+    peripheral = (len(parts) > 1 and parts[0] in _PERIPHERAL_DIRS) or (
+        len(parts) == 1 and parts[0] in _PERIPHERAL_FILES
+    )
+    if not peripheral:
+        return 1
+    return 2 if _file_touches_ai_markers(content) else 3
+
+
 def _select_files_for_audit(
     all_files: dict[str, str], max_files: int, max_tokens: int,
 ) -> tuple[dict[str, str], list[tuple[str, str]]]:
-    """Greedily selects which files an audit actually reviews, AI-touching
-    files first (only those can ever get an AI-aware verdict at all —
+    """Greedily selects which files an audit actually reviews, by TIER
+    first (see _audit_tier: entrypoints, application code, LLM files
+    elsewhere, everything else, tests), then AI-touching files first
+    within a tier (only those can ever get an AI-aware verdict at all —
     prioritizing one that never will over one that might is backwards),
-    and within each group, SMALLEST first: a few very large files
+    and within that, SMALLEST first: a few very large files
     consuming the whole token ceiling before the file-count ceiling even
     binds is exactly what starved a real audit down to 5-of-50 scanned
     files against simonw/llm (see evals/RESULTS.md); smallest-first lets
@@ -325,15 +393,18 @@ def _select_files_for_audit(
     vanishing.
     """
     sized = sorted(
-        ((p, _count_tokens(c), _file_touches_ai_markers(c)) for p, c in all_files.items()),
-        key=lambda item: (0 if item[2] else 1, item[1]),
+        (
+            (p, _count_tokens(c), _file_touches_ai_markers(c), _audit_tier(p, c))
+            for p, c in all_files.items()
+        ),
+        key=lambda item: (item[3], 0 if item[2] else 1, item[1]),
     )
 
     selected: dict[str, str] = {}
     skipped: list[tuple[str, str]] = []
     cumulative_tokens = 0
 
-    for path, tokens, _is_ai in sized:
+    for path, tokens, _is_ai, _tier in sized:
         if len(selected) >= max_files:
             skipped.append((path, "dropped by audit_max_files_ceiling"))
             continue
@@ -495,6 +566,9 @@ def _run_verdict_layer(
                 # genuinely nothing to put here.
                 "patch": "",
                 "findings": chunk_findings, "hunk_cache_hits": {},
+                # chunk_findings keep their whole-file line numbers; this
+                # maps them onto chunk_content for the credential guard.
+                "content_first_line": start,
             }
             # THE expensive line, so THE place the clock belongs. Checked
             # per chunk rather than per stage: this layer makes one model
@@ -611,7 +685,45 @@ def _incompleteness(
     return reasons
 
 
-def render_report(
+# eval_hygiene's sentinel for a finding about the repository as a whole.
+# It has no file and no line, so the report never prints it as `<repo>:0`.
+_REPO_LEVEL_FILE = "<repo>"
+
+_SEVERITY_KEYS = ("critical", "high", "medium", "low")
+
+
+def _first_sentence(text: str, limit: int = 80) -> str:
+    sentence = text.strip().split(". ")[0].rstrip(".")
+    return sentence if len(sentence) <= limit else sentence[: limit - 1].rstrip() + "…"
+
+
+def _finding_data(f: Finding) -> dict:
+    rules = f.sources or [bare_rule_id(f.rule_id)]
+    return {
+        "severity": f.severity.name.lower(),
+        "title": f.title or _first_sentence(f.what or f.message) or rules[0],
+        "file": f.file,
+        "start_line": f.start_line,
+        "end_line": max(f.end_line, f.start_line),
+        # A taint finding is reported at its sink; source_line is where the
+        # tainted value was built, and `flow` says both in words. Added to
+        # the text here too, idempotently, so a raw fallback finding the
+        # agent never saw still carries it.
+        "source_line": f.source_line,
+        "flow": flow_note(f),
+        "what": with_flow_note(f.what or f.message, f),
+        "why": f.why,
+        "fix": f.fix,
+        "message": with_flow_note(f.message, f),
+        "rules": rules,
+        # The verdict call for this finding failed: the scanner's raw
+        # finding, never judged. See Finding.unreviewed.
+        "unreviewed": f.unreviewed,
+        "source_tool": f.source_tool,
+    }
+
+
+def build_report_data(
     *, target: str, files_scanned: int, files_ai_aware: int,
     ai_reviewed_findings: list[Finding], passthrough_findings: list[Finding],
     dismissed: list[DismissedFinding], eval_hygiene_findings: list[Finding],
@@ -619,30 +731,101 @@ def render_report(
     verdict_call_failures: list[tuple[str, str]],
     unavailable_tools: list[str],
     tokens_in: int, tokens_out: int, estimated_cost_usd: float, elapsed_s: float,
-) -> str:
-    all_findings = ai_reviewed_findings + passthrough_findings + eval_hygiene_findings + osv_findings
-    by_severity: dict[Severity, list[Finding]] = {}
-    for f in all_findings:
-        by_severity.setdefault(f.severity, []).append(f)
+    skipped_test_asserts: int = 0, models: dict[str, str] | None = None,
+) -> dict:
+    """The audit's result as data: what the audit page renders, what is
+    stored in audits.report_json, and what render_report turns into
+    markdown -- one source, so the page and the raw report cannot
+    disagree about what was found.
 
-    lines = [f"# CodeGuard audit: {target}", ""]
-    lines.append(
-        f"{len(all_findings)} finding(s) across {files_scanned} scanned file(s) "
-        f"({files_ai_aware} with an LLM SDK import, reviewed for AI-aware issues). "
-        f"{len(dismissed)} tool finding(s) reviewed and dismissed by an AI agent as false positives."
-    )
-    # Directly under the finding count, because the count is the claim
-    # being corrected. This used to be a **Note** about dropped files only,
-    # sitting above a "No findings." that a reader remembers instead.
+    Findings are merged (pipeline/merge.py: one bug reported by two rules
+    is one finding) and sorted most severe first. Repo-level findings --
+    eval hygiene's, which have no file and no line -- are kept OUT of the
+    severity list: they were shown twice, once as a Medium at `<repo>:0`
+    and again in their own section.
+
+    Pure, like render_report: no redaction here. run_audit hands in a
+    redacted target, and Finding.create already redacted every message.
+    """
+    every = ai_reviewed_findings + passthrough_findings + eval_hygiene_findings + osv_findings
+    repo_level = [f for f in every if f.file == _REPO_LEVEL_FILE]
+    located = merge_same_bug([f for f in every if f.file != _REPO_LEVEL_FILE])
+    located.sort(key=lambda f: (-f.severity, f.file, f.start_line))
+
+    counts = {key: 0 for key in _SEVERITY_KEYS}
+    for f in located:
+        counts[f.severity.name.lower()] += 1
+
     incomplete = _incompleteness(
         skipped_files=skipped_files, verdict_call_failures=verdict_call_failures,
         unavailable_tools=unavailable_tools,
     )
-    if incomplete:
+    return {
+        "version": REPORT_DATA_VERSION,
+        "target": target,
+        "summary": {
+            "files_scanned": files_scanned,
+            "files_ai_aware": files_ai_aware,
+            "total": len(located),
+            "counts": counts,
+            "repo_level": len(repo_level),
+            "dismissed": len(dismissed),
+            "skipped_test_asserts": skipped_test_asserts,
+            "unreviewed": sum(1 for f in located if f.unreviewed),
+            "verdict_calls_failed": len(verdict_call_failures),
+        },
+        "incomplete": incomplete,
+        "findings": [_finding_data(f) for f in located],
+        "repo_level": [
+            {"severity": f.severity.name.lower(), "title": f.title or _first_sentence(f.message),
+             "message": f.message, "rules": [bare_rule_id(f.rule_id)]}
+            for f in repo_level
+        ],
+        "dismissed": [
+            {"file": d.file, "start_line": d.start_line, "rule_id": bare_rule_id(d.rule_id), "reason": d.reason}
+            for d in dismissed
+        ],
+        "skipped_files": [{"path": p, "reason": r} for p, r in skipped_files],
+        "verdict_call_failures": [{"path": p, "reason": r} for p, r in verdict_call_failures],
+        "technical": {
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
+            "estimated_cost_usd": estimated_cost_usd,
+            "elapsed_s": elapsed_s,
+            "models": models or {},
+        },
+    }
+
+
+def render_report(**kwargs) -> str:
+    """The markdown report, rendered from build_report_data's output --
+    see that function for the arguments and why there is one source."""
+    data = build_report_data(**kwargs)
+    summary = data["summary"]
+
+    lines = [f"# CodeGuard audit: {data['target']}", ""]
+    opening = (
+        f"{summary['total']} finding(s) across {summary['files_scanned']} scanned file(s) "
+        f"({summary['files_ai_aware']} with an LLM SDK import, reviewed for AI-aware issues). "
+        f"{summary['dismissed']} tool finding(s) reviewed and dismissed by an AI agent as false positives."
+    )
+    if summary["skipped_test_asserts"]:
+        opening += (
+            f" Skipped: {summary['skipped_test_asserts']} test asserts (Bandit B101 in test files, "
+            "never sent to the model)."
+        )
+    lines.append(opening)
+    if summary["unreviewed"]:
+        lines.append("")
+        lines.append(f"> **{UNREVIEWED_NOTICE_TEXT.format(n=summary['unreviewed'])}**")
+    # Directly under the finding count, because the count is the claim
+    # being corrected. This used to be a **Note** about dropped files only,
+    # sitting above a "No findings." that a reader remembers instead.
+    if data["incomplete"]:
         lines.append("")
         lines.append("> [!WARNING]")
         lines.append("> **This is not a clean result — the audit did not examine everything.**")
-        for reason in incomplete:
+        for reason in data["incomplete"]:
             lines.append(f"> - {reason}")
         lines.append(">")
         lines.append("> Findings below describe only what was actually examined.")
@@ -650,64 +833,69 @@ def render_report(
 
     lines.append("## Findings by severity")
     lines.append("")
-    for sev in sorted(by_severity, reverse=True):
-        findings = sorted(by_severity[sev], key=lambda f: (f.file, f.start_line))
-        lines.append(f"### {_severity_label(sev)} ({len(findings)})")
+    for key in _SEVERITY_KEYS:
+        group = [f for f in data["findings"] if f["severity"] == key]
+        if not group:
+            continue
+        lines.append(f"### {key.capitalize()} ({len(group)})")
         lines.append("")
-        for f in findings:
-            lines.append(f"- `{f.file}:{f.start_line}` [{f.source_tool}/{f.rule_id}] {f.message}")
+        for f in group:
+            mark = " **(unreviewed)**" if f.get("unreviewed") else ""
+            lines.append(f"- `{f['file']}:{f['start_line']}` [{', '.join(f['rules'])}]{mark} {f['message']}")
         lines.append("")
 
-    if not all_findings:
+    if not data["findings"] and not data["repo_level"]:
         # "No findings." ONLY when the run was actually complete. Zero
         # findings from a partial run is not a clean bill of health, and
         # this line is the one somebody screenshots.
         lines.append(
-            "No findings." if not incomplete
+            "No findings." if not data["incomplete"]
             else "No findings in the portion that was examined — see the warning above."
         )
         lines.append("")
 
-    if dismissed:
+    if data["repo_level"]:
+        lines.append("## Repository-level")
+        lines.append("")
+        for f in data["repo_level"]:
+            lines.append(f"- **{f['severity'].capitalize()}** [{', '.join(f['rules'])}] {f['message']}")
+        lines.append("")
+
+    if data["dismissed"]:
         lines.append("## Dismissed (reviewed by an AI agent, judged not a real issue)")
         lines.append("")
-        for d in dismissed:
-            lines.append(f"- `{d.file}:{d.start_line}` [{d.rule_id}] {d.reason}")
+        for d in data["dismissed"]:
+            lines.append(f"- `{d['file']}:{d['start_line']}` [{d['rule_id']}] {d['reason']}")
         lines.append("")
 
-    lines.append("## Eval hygiene")
-    lines.append("")
-    if eval_hygiene_findings:
-        for f in eval_hygiene_findings:
-            lines.append(f"- `{f.file}`: {f.message}")
-    else:
-        lines.append("No eval-hygiene issues found.")
-    lines.append("")
-
-    if skipped_files or verdict_call_failures:
+    if data["skipped_files"] or data["verdict_call_failures"]:
         lines.append("## Skipped")
         lines.append("")
-        if skipped_files:
-            lines.append(f"**{len(skipped_files)} file(s) never scanned** (dropped by the audit budget before any tool ran):")
-            lines.append("")
-            for path, reason in skipped_files:
-                lines.append(f"- `{path}`: {reason}")
-            lines.append("")
-        if verdict_call_failures:
+        if data["skipped_files"]:
             lines.append(
-                f"**{len(verdict_call_failures)} AI-verdict call(s) failed** — the affected findings above are "
-                "raw tool output, not confirmed/dismissed by an agent:"
+                f"**{len(data['skipped_files'])} file(s) never scanned** "
+                "(dropped by the audit budget before any tool ran):"
             )
             lines.append("")
-            for path, reason in verdict_call_failures:
-                lines.append(f"- `{path}`: {reason}")
+            for s in data["skipped_files"]:
+                lines.append(f"- `{s['path']}`: {s['reason']}")
+            lines.append("")
+        if data["verdict_call_failures"]:
+            lines.append(
+                f"**{len(data['verdict_call_failures'])} AI-verdict call(s) failed** — the affected findings above "
+                "are raw tool output, not confirmed/dismissed by an agent:"
+            )
+            lines.append("")
+            for v in data["verdict_call_failures"]:
+                lines.append(f"- `{v['path']}`: {v['reason']}")
             lines.append("")
 
+    tech = data["technical"]
     lines.append("## Cost")
     lines.append("")
-    lines.append(f"- Tokens: {tokens_in} in / {tokens_out} out")
-    lines.append(f"- Estimated cost: ${estimated_cost_usd:.4f}")
-    lines.append(f"- Wall clock: {elapsed_s:.1f}s")
+    lines.append(f"- Tokens: {tech['tokens_in']} in / {tech['tokens_out']} out")
+    lines.append(f"- Estimated cost: ${tech['estimated_cost_usd']:.4f}")
+    lines.append(f"- Wall clock: {tech['elapsed_s']:.1f}s")
     lines.append("")
 
     return "\n".join(lines)
@@ -809,6 +997,14 @@ class AuditStats:
     # change how an audit is stored. See AuditOutcome.
     outcome: AuditOutcome = AuditOutcome.COMPLETED
     message: str | None = None
+
+    # The structured result (build_report_data), for audits.report_json and
+    # the audit page. None on every path that never produced a report.
+    report: dict | None = None
+
+    # The commit the audit read (_head_sha), so the audit page can link a
+    # finding to that exact line. None when the target is not a git checkout.
+    commit_sha: str | None = None
 
 
 class DeadlineExceeded(Exception):
@@ -959,6 +1155,11 @@ def run_audit(
                 _record(stats, AuditOutcome.FAILED, error)
                 return 1, error
             root = Path(tmp_dir)
+            # The commit actually read, for linking findings to their lines.
+            # Remote clones only: a local directory has no GitHub page to
+            # link to, whatever its own history says.
+            if stats is not None:
+                stats.commit_sha = _head_sha(root)
         else:
             root = Path(target).resolve()
             if not root.is_dir():
@@ -996,6 +1197,9 @@ def run_audit(
         synthetic_patches = {p: _synthetic_whole_file_patch(c) for p, c in files.items()}
 
         tool_findings = asyncio.run(run_tools_on_files(files, synthetic_patches))
+        # Before anything reads tool_findings: a test assert never reaches
+        # the verdict layer, the passthrough list or the report body.
+        tool_findings, skipped_test_asserts = split_test_asserts(tool_findings)
         osv_findings = check_dependency_updates(dependency_contents, dependency_patches)
         # Eval hygiene is a pure heuristic (no LLM, no subprocess) — cheap
         # enough to run over every reviewable file regardless of the
@@ -1070,7 +1274,7 @@ def run_audit(
             stats.duration_s = elapsed_s
 
         unavailable = _audit_unavailable_tools(tool_findings)
-        report = render_report(
+        report_kwargs = dict(
             target=safe_target, files_scanned=len(files), files_ai_aware=files_ai_aware,
             ai_reviewed_findings=ai_reviewed_findings, passthrough_findings=passthrough_findings,
             dismissed=dismissed, eval_hygiene_findings=eval_hygiene_findings, osv_findings=osv_findings,
@@ -1078,7 +1282,12 @@ def run_audit(
             unavailable_tools=unavailable,
             tokens_in=tokens_in, tokens_out=tokens_out,
             estimated_cost_usd=estimated_cost_usd, elapsed_s=elapsed_s,
+            skipped_test_asserts=skipped_test_asserts,
+            models={"security": settings.security_agent_model, "ai_aware": settings.ai_aware_agent_model},
         )
+        report = render_report(**report_kwargs)
+        if stats is not None:
+            stats.report = build_report_data(**report_kwargs)
 
         Path(output_path).write_text(report, encoding="utf-8")
         print(f"Report written to {output_path}", file=sys.stderr)

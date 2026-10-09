@@ -131,7 +131,6 @@ def test_a_dismissal_reason_cannot_escape_its_details_block():
     """`reason` is MODEL-AUTHORED prose written inside a <details> block.
     A reason containing </details> would close it early and promote
     whatever followed to the top level of CodeGuard's own comment."""
-    finding = make_finding(file="a.py", line=2, rule_id="B608", message="sqli")
     dismissed = [DismissedFinding(
         file="a.py", start_line=2, rule_id="B608", reason=PAYLOAD,
     )]

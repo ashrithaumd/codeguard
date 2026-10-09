@@ -19,34 +19,30 @@
       Requested by {{ audit.requested_by }}.
     </div>
   </div>
-  <span class="pill {{ {'done':'ok','failed':'bad','running':'warn','queued':'muted'}[audit.status] }}"
+  <span class="pill {{ {'done':'ok','failed':'bad','running':'warn','queued':'muted','rejected':'muted','timed_out':'bad'}.get(audit.status, 'muted') }}"
         id="audit-status" data-status="{{ audit.status }}">
     {% if audit.status in ('queued', 'running') %}<span class="spinner" aria-hidden="true"></span>{% endif %}
     {{ audit.status|capitalize }}
   </span>
 </div>
 
-<div class="banner" role="note">
-  <strong>No fix suggestions in audit mode.</strong> {{ audit_note }}
-</div>
+{# Said once, here. It used to be a bold heading AND a sentence repeating
+   it, and the same pair again on the Repositories page. #}
+<p class="note">{{ audit_note }}</p>
 
-<div class="stats">
-  <div class="stat"><div class="k">Status</div><div class="v">{{ audit.status|capitalize }}</div></div>
-  <div class="stat"><div class="k">Requested</div><div class="v">{{ m.when(audit.created_at) }}</div></div>
-  <div class="stat"><div class="k">Duration</div>
-    <div class="v">{% if audit.duration_s %}{{ "%.1f"|format(audit.duration_s) }}s{% else %}—{% endif %}</div></div>
-  <div class="stat"><div class="k">Exit code</div>
-    <div class="v">{% if audit.exit_code is not none %}{{ audit.exit_code }}{% else %}—{% endif %}</div></div>
-  {#
-    Shown because the number is now real. It was 0 for every audit until
-    run_audit started handing its economics back — the report said
-    $0.0406 and the row said $0, and a KPI reading the row would have
-    under-reported audit spend by all of it.
-  #}
-  <div class="stat"><div class="k">{{ m.term("Cost", "cost") }}</div>
-    <div class="v">{{ m.cost(audit.estimated_cost_usd) }}</div></div>
-  <div class="stat"><div class="k">Tokens</div>
-    <div class="v">{{ "{:,}".format(audit.tokens_in) }} in / {{ "{:,}".format(audit.tokens_out) }} out</div></div>
+{#
+  Cost and duration are shown because the numbers are real. They were 0
+  for every audit until run_audit started handing its economics back —
+  the report said $0.0406 and the row said $0, and a KPI reading the row
+  would have under-reported audit spend by all of it. Exit code, tokens
+  and the report's size are internal: they live in Technical details.
+#}
+<div class="run-line">
+  Requested {{ m.when(audit.created_at) }} by {{ audit.requested_by }}
+  · {{ m.cost(audit.estimated_cost_usd) }}
+  · {% if audit.duration_s %}{{ "%.1f"|format(audit.duration_s) }}s{% else %}—{% endif %}
+  {% if report %}· {{ report.summary.files_scanned }} file{{ "" if report.summary.files_scanned == 1 else "s" }} scanned
+    ({{ report.summary.files_ai_aware }} with an LLM SDK import){% endif %}
 </div>
 
 {% if audit.status == 'failed' %}
@@ -65,10 +61,192 @@
 </div>
 {% endif %}
 
+{#
+  THE STRUCTURED VIEW, from audits.report_json (cli.build_report_data) --
+  the data the markdown was rendered from, so the two cannot disagree.
+  Every value goes through autoescaping like any other stored string; the
+  text is scanner and model output about code a repository's authors
+  control, and nothing here is ever marked safe. `report` is None for an
+  audit written before report_json existed, or of a version this page does
+  not know, and the raw report below is shown instead.
+#}
+{% if report %}
+{% set s = report.summary %}
+{% set total_sev = s.counts.critical + s.counts.high + s.counts.medium + s.counts.low %}
+<div class="sev-summary" aria-label="Findings by severity">
+  <div class="sev-counts">
+    {% for key in ("critical", "high", "medium", "low") %}
+      {% if key != "critical" or s.counts.critical %}
+      <span class="sev sev-{{ key|upper }}"><span class="bar"></span>{{ key|capitalize }} <b>{{ s.counts[key] }}</b></span>
+      {% endif %}
+    {% endfor %}
+    {% if s.repo_level %}<span class="dim">· {{ s.repo_level }} repository-level</span>{% endif %}
+  </div>
+  {% if total_sev %}
+  <div class="sev-track" aria-hidden="true">
+    {% for key in ("critical", "high", "medium", "low") %}
+      {% if s.counts[key] %}<span class="sev-seg seg-{{ key }}" style="width: {{ (100 * s.counts[key] / total_sev)|round(2) }}%"></span>{% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+</div>
+
+{% if s.unreviewed %}
+{# Verdict calls failed, so these findings are the scanner's raw output.
+   Said up front: a fallback that looks exactly like a reviewed result is
+   how an exhausted API credit went unnoticed. #}
+<div class="banner warn" role="status">
+  <strong>{{ unreviewed_notice.format(n=s.unreviewed) }}</strong>
+</div>
+{% endif %}
+
+{% if report.incomplete %}
+<div class="banner warn" role="status">
+  <strong>This is not a clean result — the audit did not examine everything.</strong>
+  <ul>{% for reason in report.incomplete %}<li>{{ reason|redact }}</li>{% endfor %}</ul>
+</div>
+{% endif %}
+
+<div class="panel">
+  <div class="panel-head">
+    <h2>Findings</h2>
+    <span class="count">{{ report.findings|length }}</span>
+  </div>
+  {% if report.findings %}
+  {#
+    Low findings that share a rule are ONE collapsible card (group_lows);
+    Critical/High/Medium are always their own. The severity bar above still
+    counts every finding.
+  #}
+  <ol class="finding-cards">
+    {% for item in group_lows(report.findings) %}
+    {% if item.group %}
+    <li class="low-group-item">
+      <details class="finding-card low-group sev-edge-low">
+        <summary class="finding-head">
+          {{ m.severity("LOW") }}
+          <span class="tag rule">{{ item.rule }}</span> · <span class="finding-title">{{ item.title|sentence_case|redact }}</span> · {{ item.members|length }} locations
+        </summary>
+        <ul class="group-locations">
+          {% for f in item.members %}
+          <li>
+            {{ m.audit_loc(audit, f) }}
+            {% if not repeats_title(f) and f.what != item.title %}<span class="dim">{{ f.what|redact }}</span>{% endif %}
+            {% if f.unreviewed %}<span class="pill warn">Unreviewed</span>{% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+        {{ m.audit_rules(item.members[0]) }}
+      </details>
+    </li>
+    {% else %}
+    {% set f = item.f %}
+    <li class="finding-card sev-edge-{{ f.severity }}">
+      <div class="finding-head">
+        {{ m.severity(f.severity|upper) }}
+        {# The location sits UNDER the title, at a readable size. #}
+        <div class="finding-titles">
+          <span class="finding-title">{{ f.title|sentence_case|redact }}</span>
+          {{ m.audit_loc(audit, f) }}
+        </div>
+        {% if f.unreviewed %}<span class="pill warn">Unreviewed</span>{% endif %}
+      </div>
+      {# What is hidden when it only repeats the title (ruff's message IS its
+         title), and the list with it when nothing is left to say. #}
+      {% if not repeats_title(f) or f.why or f.fix %}
+      <dl class="finding-body">
+        {% if not repeats_title(f) %}<dt>What</dt><dd>{{ f.what|redact }}</dd>{% endif %}
+        {% if f.why %}<dt>Why it matters</dt><dd>{{ f.why|redact }}</dd>{% endif %}
+        {% if f.fix %}<dt>How to fix</dt><dd>{{ f.fix|redact }}</dd>{% endif %}
+      </dl>
+      {% endif %}
+      {{ m.audit_rules(f) }}
+    </li>
+    {% endif %}
+    {% endfor %}
+  </ol>
+  {% else %}
+    {{ m.empty_state(
+        "No findings" if not report.incomplete else "No findings in what was examined",
+        "Nothing the scanners reported survived review." if not report.incomplete
+          else "See the warning above: part of the repository was never examined.",
+        "check") }}
+  {% endif %}
+</div>
+
+{% if report.repo_level %}
+<div class="panel">
+  <div class="panel-head"><h2>Repository-level</h2><span class="count">{{ report.repo_level|length }}</span></div>
+  <ol class="finding-cards">
+    {% for f in report.repo_level %}
+    <li class="finding-card sev-edge-{{ f.severity }}">
+      <div class="finding-head">
+        {{ m.severity(f.severity|upper) }}
+        <span class="finding-title">{{ f.title|sentence_case|redact }}</span>
+      </div>
+      <p class="finding-text">{{ f.message|redact }}</p>
+      <div class="finding-rules">{% for rule in f.rules %}<span class="tag rule">{{ rule }}</span>{% endfor %}</div>
+    </li>
+    {% endfor %}
+  </ol>
+</div>
+{% endif %}
+
+{% if report.dismissed %}
+<details class="panel fold">
+  <summary class="panel-head">Dismissed by AI ({{ report.dismissed|length }})</summary>
+  {# One row per (rule, reason), listing every location: a verdict is one
+     per rule, so the same paragraph used to repeat once per line. #}
+  <ul class="fold-list">
+    {% for d in group_dismissed(report.dismissed) %}
+    <li class="dismissed-row"><code>{{ d.locations }}</code> · <span class="tag rule">{{ d.rule_id }}</span> ·
+      <span class="dim">{{ d.reason|redact }}</span></li>
+    {% endfor %}
+  </ul>
+</details>
+{% endif %}
+
+{% if s.skipped_test_asserts or report.skipped_files or report.verdict_call_failures %}
+<details class="panel fold">
+  {%- set parts = [] %}
+  {%- if s.skipped_test_asserts %}{% set _ = parts.append(s.skipped_test_asserts ~ " test assert" ~ ("" if s.skipped_test_asserts == 1 else "s")) %}{% endif %}
+  {%- if report.skipped_files %}{% set _ = parts.append(report.skipped_files|length ~ " file" ~ ("" if report.skipped_files|length == 1 else "s")) %}{% endif %}
+  {%- if report.verdict_call_failures %}{% set _ = parts.append(report.verdict_call_failures|length ~ " failed AI call" ~ ("" if report.verdict_call_failures|length == 1 else "s")) %}{% endif %}
+  <summary class="panel-head">Skipped ({{ parts|join(", ") }})</summary>
+  <ul class="fold-list">
+    {% if s.skipped_test_asserts %}
+    <li>{{ s.skipped_test_asserts }} test asserts — Bandit B101 in test files, where an assert is the point;
+      never sent to the model.</li>
+    {% endif %}
+    {% for f in report.skipped_files %}<li><code>{{ f.path }}</code> <span class="dim">{{ f.reason }}</span></li>{% endfor %}
+    {% for f in report.verdict_call_failures %}<li><code>{{ f.path }}</code> <span class="dim">{{ f.reason|redact }}</span></li>{% endfor %}
+  </ul>
+</details>
+{% endif %}
+
+<details class="panel fold">
+  <summary class="panel-head">Technical details</summary>
+  <dl class="tech">
+    <dt>Tokens</dt><dd>{{ "{:,}".format(report.technical.tokens_in) }} in / {{ "{:,}".format(report.technical.tokens_out) }} out</dd>
+    {% for agent, model in report.technical.models.items() %}<dt>Model ({{ agent }})</dt><dd><code>{{ model }}</code></dd>{% endfor %}
+    <dt>Exit code</dt><dd>{% if audit.exit_code is not none %}{{ audit.exit_code }}{% else %}—{% endif %}</dd>
+    <dt>Report size</dt><dd>{{ "{:,}".format((audit.report_markdown or "")|length) }} chars</dd>
+    <dt>Audit id</dt><dd><code>{{ audit.id }}</code></dd>
+  </dl>
+</details>
+
+{% if audit.report_markdown %}
+<details class="panel fold">
+  <summary class="panel-head">View raw report</summary>
+  {# Escaped text in a <pre>, never parsed as Markdown -- see below. #}
+  <pre class="report">{{ audit.report_markdown|redact }}</pre>
+</details>
+{% endif %}
+
+{% else %}
 <div class="panel">
   <div class="panel-head">
     <h2>Report</h2>
-    {% if audit.report_markdown %}<span class="count">{{ audit.report_markdown|length }} chars</span>{% endif %}
   </div>
   {% if audit.report_markdown %}
     {#
@@ -88,6 +266,17 @@
     {{ m.empty_state("No report", "The audit produced no report.", "inbox") }}
   {% endif %}
 </div>
+{% if audit.status not in ('queued', 'running') %}
+<details class="panel fold">
+  <summary class="panel-head">Technical details</summary>
+  <dl class="tech">
+    <dt>Tokens</dt><dd>{{ "{:,}".format(audit.tokens_in) }} in / {{ "{:,}".format(audit.tokens_out) }} out</dd>
+    <dt>Exit code</dt><dd>{% if audit.exit_code is not none %}{{ audit.exit_code }}{% else %}—{% endif %}</dd>
+    <dt>Report size</dt><dd>{{ "{:,}".format((audit.report_markdown or "")|length) }} chars</dd>
+  </dl>
+</details>
+{% endif %}
+{% endif %}
 
 {% if audit.status in ('queued', 'running') %}
 {#
@@ -146,4 +335,15 @@
 })();
 </script>
 {% endif %}
+{#
+  Collapsed on every load. The server never sends `open`; this closes the
+  folds on every page show as well, so a browser that restores an opened
+  <details> (back/forward, a restored session) does not hand the page back
+  with "Dismissed by AI" already expanded.
+#}
+<script nonce="{{ csp_nonce }}">
+window.addEventListener("pageshow", function () {
+  document.querySelectorAll("details.fold").forEach(function (d) { d.open = false; });
+});
+</script>
 {% endblock %}

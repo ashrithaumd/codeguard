@@ -102,5 +102,39 @@
     "dismissed": [
       "llm-call-missing-timeout"
     ]
+  },
+  "regress_01_injection_through_variable.py": {
+    "confirmed": [
+      "llm-prompt-injection-concatenation"
+    ],
+    "dismissed": []
+  },
+  "regress_02_realistic_hardcoded_key.py": {
+    "confirmed": [
+      "llm-hardcoded-api-key"
+    ],
+    "dismissed": []
+  },
+  "regress_03_realistic_key_with_fake_comment.py": {
+    "confirmed": [
+      "llm-hardcoded-api-key"
+    ],
+    "dismissed": []
+  },
+  "regress_04_placeholder_key_by_shape.py": {
+    "confirmed": [],
+    "dismissed": [
+      "llm-hardcoded-api-key"
+    ]
+  },
+  "regress_05_constant_prompt_in_variable.py": {
+    "confirmed": [],
+    "dismissed": []
+  },
+  "near_miss_07_example_key_placeholder.py": {
+    "confirmed": [],
+    "dismissed": [
+      "llm-hardcoded-api-key"
+    ]
   }
 }

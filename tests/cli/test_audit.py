@@ -15,7 +15,6 @@ from codeguard.cli import (
     MIN_CHUNK_TOKENS,
     _ast_chunk_boundaries,
     _chunk_file_by_ast,
-    _clone_shallow,
     _collect_repo_files,
     _effective_chunk_budget,
     _is_remote_url,
@@ -367,7 +366,8 @@ def _mock_verdict_ok(findings):
 def test_run_verdict_layer_makes_one_call_for_a_small_file():
     f = _finding(file="a.py", line=1)
     files = {"a.py": "x = 1\n"}
-    mock_fn = lambda state: _mock_verdict_ok(state["findings"])
+    def mock_fn(state):
+        return _mock_verdict_ok(state["findings"])
 
     confirmed, dismissed, ti, to, cost, failures = _run_verdict_layer(mock_fn, "o", "r", files, {"a.py": [f]})
 
@@ -460,7 +460,8 @@ def test_run_verdict_layer_reports_no_failure_on_a_clean_call():
 def test_run_verdict_layer_reports_unparseable_file_as_a_call_failure():
     files = {"bad.py": "def f(:\n"}
     f = _finding(file="bad.py", line=1)
-    mock_fn = lambda state: _mock_verdict_ok(state["findings"])
+    def mock_fn(state):
+        return _mock_verdict_ok(state["findings"])
 
     with patch("codeguard.cli._effective_chunk_budget", return_value=1):
         confirmed, dismissed, ti, to, cost, failures = _run_verdict_layer(mock_fn, "o", "r", files, {"bad.py": [f]})

@@ -102,3 +102,12 @@ print("=== OK: every scanner ran, and B608 and F401 are both present ===")
 # override either, so the image's own USER applies and the permissions are
 # the deployed ones.
 docker run --rm     -e ANTHROPIC_API_KEY=smoke-test-deliberately-not-a-real-key     "$IMAGE" python -c "$PROBE"
+
+# The tokenizer must already be IN the image. tiktoken downloads
+# cl100k_base on first use and caches it; a container that has to fetch it
+# at runtime fails its first audit on any network that blocks the download,
+# and pays the fetch on every cold start. --network none makes "bundled"
+# something this proves rather than assumes.
+echo "checking the tiktoken encoding loads with no network"
+docker run --rm --network none \
+    "$IMAGE" python -c "import tiktoken; tiktoken.get_encoding('cl100k_base'); print('=== OK: cl100k_base is bundled ===')"

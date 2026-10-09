@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 from uuid import UUID
@@ -36,9 +37,19 @@ from fastapi.templating import Jinja2Templates
 from codeguard.api import access, audits, csrf, repo_url
 from codeguard.api import dashboard_queries as q
 from codeguard.api.auth import client_principal, client_viewer
+from codeguard.api.display import (
+    blob_url,
+    finding_counts,
+    group_dismissed,
+    group_lows,
+    repeats_title,
+    ruff_docs_url,
+    sentence_case,
+)
 from codeguard.config import get_settings
 from codeguard.queue.queue import enqueue
 from codeguard.redact import redact
+from codeguard.report_format import REPORT_DATA_VERSION, UNREVIEWED_NOTICE_TEXT
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +65,27 @@ templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 # `|redact` instead of by remembering a helper exists. See
 # codeguard/redact.py for why any of this is needed.
 templates.env.filters["redact"] = redact
+# One wording for "the verdict call failed, these are raw findings", shared
+# with the audit report and the PR summary (see report_format).
+templates.env.globals["unreviewed_notice"] = UNREVIEWED_NOTICE_TEXT
+
+
+def _utc(ts: datetime) -> datetime:
+    """For m.when(): the instant in UTC. Every column is timestamptz, so
+    rows arrive aware; a naive value (a fixture, a hand-built row) is taken
+    to be UTC already rather than guessed at."""
+    return ts.replace(tzinfo=timezone.utc) if ts.tzinfo is None else ts.astimezone(timezone.utc)
+
+
+templates.env.filters["utc"] = _utc
+# Titles arrive in whatever case the model chose; links are built from file
+# names a repository's authors chose. Both handled in code -- see display.py.
+templates.env.filters["sentence_case"] = sentence_case
+templates.env.globals["blob_url"] = blob_url
+templates.env.globals["group_dismissed"] = group_dismissed
+templates.env.globals["group_lows"] = group_lows
+templates.env.globals["repeats_title"] = repeats_title
+templates.env.globals["ruff_docs_url"] = ruff_docs_url
 
 PAGE_SIZE = 50
 
@@ -197,11 +229,10 @@ async def index(
     # filtered set — a picker that hid the option you would switch to
     # would strand you on whatever you picked first.
     all_repos = await q.list_repos(pool, principal_repos=allowed)
-    repos = await q.list_repos(pool, principal_repos=allowed, filters=filters)
 
     return render_page(
         request, "index.html", principal,
-        reviews=reviews, repos=repos, all_repos=all_repos, total=total, totals=agg,
+        reviews=reviews, all_repos=all_repos, total=total, totals=agg,
         page=page, page_size=PAGE_SIZE, has_next=offset + len(reviews) < total,
         filters=filters, severities=q.SEVERITIES,
     )
@@ -279,26 +310,34 @@ async def repo_detail(request: Request, owner: str, repo: str) -> HTMLResponse:
     pool = request.app.state.pool
     principal = client_principal(request)
 
+    # ACCESS FIRST, and access is the whole question. This used to 404
+    # whenever the repo had no review rows -- before asking anything else --
+    # so an installed, accessible repository with only audits (or with no
+    # activity yet) read "Not found", from a row the Repositories page had
+    # just linked. Now the rule is exactly that page's: can_access_repo,
+    # which also requires the App to be installed on the repo (no
+    # installation, no collaborator check, no access). Anonymous visitors
+    # and non-collaborators get the same 404 as before, for a repo that
+    # exists or not.
+    #
+    # The per-row `any(private)` rule stays subsumed by this: the question
+    # is "may this person see this repository at all", which is strictly
+    # stronger than anything the rows say and does not depend on there
+    # being rows.
+    if not principal or not access.can_access_repo(owner, repo, principal):
+        raise HTTPException(status_code=404, detail="repo not found")
+
     reviews = await q.repo_history(pool, owner=owner, repo=repo)
-    if not reviews:
-        raise HTTPException(status_code=404, detail="repo not found")
-
-    # ANY private row in the history gates the whole page, not just the
-    # newest one. This page lists every review it fetched, so asking only
-    # the newest row would publish a repo's entire private history the
-    # moment it was made public — the rows recorded while it was private
-    # included. Visibility is per-row because it is recorded per-row
-    # (migrations/007), so the strictest row is the one that answers.
-    # The per-row `any(private)` rule is gone because it is subsumed: the
-    # question is no longer "is any row private" but "may this person see
-    # this repository at all", which is strictly stronger and does not
-    # depend on what the rows happen to say.
-    if not access.can_access_repo(owner, repo, principal):
-        raise HTTPException(status_code=404, detail="repo not found")
-
     pulls = await q.pr_summaries(pool, owner=owner, repo=repo)
+    # The viewer's OWN audits only -- see audits.for_repo. Each carries its
+    # finding counts (display.finding_counts: report_json, or the markdown
+    # of an audit that predates it) for the Findings column and the tiles.
+    repo_audits = [
+        {**a, "counts": finding_counts(a)}
+        for a in await audits.for_repo(pool, owner, repo, requested_by=principal)
+    ]
     return render_page(request, "repo.html", principal,
-                 owner=owner, repo=repo, reviews=reviews, pulls=pulls)
+                 owner=owner, repo=repo, reviews=reviews, pulls=pulls, audits=repo_audits)
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{pr_number}", response_class=HTMLResponse)
@@ -326,10 +365,11 @@ async def pr_detail(request: Request, owner: str, repo: str, pr_number: int) -> 
 # before/after pair for a suggestion to be anchored to. Someone who has
 # seen fix suggestions on a pull request will otherwise read their
 # absence here as a failure.
-AUDIT_NO_FIXES_NOTE = (
-    "Audit mode reports findings only — no fix suggestions. "
-    "Fixes are anchored to a pull request's diff, and an audit has no diff."
-)
+#
+# "No fix suggestions" means no committable suggestion block. Each finding
+# still says how to fix it in words, so the note says which is missing
+# rather than appearing to contradict the "How to fix" on every card.
+AUDIT_NO_FIXES_NOTE = "Audit mode: findings and how to fix them; no code patches (audits have no diff)."
 
 # Why the button is absent on a private repository. run_audit clones over
 # HTTPS and would need a credential in the URL to reach a private repo;
@@ -428,6 +468,9 @@ async def repositories(request: Request) -> HTMLResponse:
         lookup_failed = True
 
     stats = await audits.repo_stats(pool)
+    # Activity is reviews AND audits, the audit half scoped to this viewer:
+    # see audits.audit_stats for why it may never be everyone's.
+    audit_totals = await audits.audit_stats(pool, requested_by=principal)
     # MY audits, not everyone's. An audit is visible only to the person who
     # asked for it (_may_read_audit), and this page renders the row's audit
     # id as a link and its status as text — unscoped, it disclosed whoever
@@ -465,13 +508,20 @@ async def repositories(request: Request) -> HTMLResponse:
         if (owner, name) not in allowed:
             continue
         stat = stats.get((owner, name), {})
+        audit_stat = audit_totals.get((owner, name), {})
         audit = latest_audits.get((owner, name))
+        last_activity = max(
+            (t for t in (stat.get("last_reviewed"), audit_stat.get("last_audited")) if t),
+            default=None,
+        )
         rows.append({
             **entry,
             "active": not lookup_failed,
             "review_count": stat.get("review_count", 0),
-            "last_reviewed": stat.get("last_reviewed"),
-            "total_cost": float(stat.get("total_cost", 0) or 0),
+            "audit_count": audit_stat.get("audit_count", 0),
+            "last_activity": last_activity,
+            "total_cost": float(stat.get("total_cost", 0) or 0)
+                          + float(audit_stat.get("total_cost", 0) or 0),
             "audit": audit,
             "audit_in_flight": bool(audit and audit["status"] in ("queued", "running")),
             # All three conditions, so the template never has to combine
@@ -484,7 +534,9 @@ async def repositories(request: Request) -> HTMLResponse:
             ),
         })
 
-    rows.sort(key=lambda r: (r["last_reviewed"] is None, -(r["review_count"]), r["repo"]))
+    rows.sort(key=lambda r: (
+        r["last_activity"] is None, -(r["review_count"] + r["audit_count"]), r["repo"],
+    ))
 
     return render_page(
         request, "repositories.html", principal,
@@ -679,5 +731,11 @@ async def audit_status(request: Request, audit_id: UUID) -> JSONResponse:
 async def audit_detail(request: Request, audit_id: UUID) -> HTMLResponse:
     audit = await _audit_or_404(request, audit_id)
     principal = client_principal(request)
-    return render_page(request, "audit.html", principal, audit=audit,
+    # The structured view only for a report_json version this page knows.
+    # Anything else -- an audit from before the column existed, or one
+    # written by a newer worker during a rolling deploy -- gets the raw
+    # report, which every version still stores.
+    data = audit.get("report_json")
+    report = data if isinstance(data, dict) and data.get("version") == REPORT_DATA_VERSION else None
+    return render_page(request, "audit.html", principal, audit=audit, report=report,
                  audit_note=AUDIT_NO_FIXES_NOTE)

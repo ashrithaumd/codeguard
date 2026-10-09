@@ -23,7 +23,13 @@ RULES_DIR = Path(__file__).resolve().parent.parent.parent / "rules"
 
 
 def _build_cmd(tmp_dir: str) -> list[str]:
-    return resolve_tool_command(TOOL_NAME) + [f"--config={RULES_DIR}", "--json", "--quiet", "--metrics=off", tmp_dir]
+    return resolve_tool_command(TOOL_NAME) + [
+        f"--config={RULES_DIR}", "--json", "--quiet", "--metrics=off",
+        # Where a taint rule's value came from, not just where it ended up:
+        # an injection finding names the line the prompt was built on.
+        "--dataflow-traces",
+        tmp_dir,
+    ]
 
 
 def _parse(stdout: str, tmp_dir: str) -> list[Finding]:
@@ -34,13 +40,28 @@ def _parse(stdout: str, tmp_dir: str) -> list[Finding]:
         severity = _SEVERITY_MAP.get(extra.get("severity", "INFO"), Severity.LOW)
         start = r.get("start", {}).get("line", 0)
         end = r.get("end", {}).get("line", start)
-        findings.append(Finding.create(
+        finding = Finding.create(
             file=resolve_original_path(tmp_dir, r.get("path", "")),
             start_line=start, end_line=end, severity=severity,
             source_tool=TOOL_NAME, rule_id=r.get("check_id", "unknown"),
             message=(extra.get("message") or "").strip(),
-        ))
+        )
+        source_line = _taint_source_line(extra)
+        if source_line and source_line != start:
+            finding = finding.model_copy(update={"source_line": source_line})
+        findings.append(finding)
     return findings
+
+
+def _taint_source_line(extra: dict) -> int:
+    """The line a taint rule's source sits on, from --dataflow-traces:
+    `taint_source` is ["CliLoc", [location, text]]. 0 for a search-mode
+    rule, or any shape this does not recognise -- a missing trace must
+    never cost the finding itself."""
+    try:
+        return int(extra["dataflow_trace"]["taint_source"][1][0]["start"]["line"])
+    except (KeyError, IndexError, TypeError, ValueError):
+        return 0
 
 
 def run_semgrep(files: dict[str, str], timeout: int = DEFAULT_TIMEOUT) -> list[Finding]:

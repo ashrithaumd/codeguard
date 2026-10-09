@@ -9,7 +9,7 @@ filter_files runs, specifically because of this.
 from __future__ import annotations
 
 from codeguard.config import RepoConfig
-from codeguard.diff.filters import _extension, filter_files, is_dependency_manifest, is_reviewable_path
+from codeguard.diff.filters import _extension, filter_files, is_dependency_manifest, is_reviewable_path, is_test_path
 
 
 def _file(name, additions=5, patch="@@ -1,1 +1,1 @@\n+x"):
@@ -66,3 +66,27 @@ def test_extension_no_dot_anywhere():
 def test_extension_normal_case():
     assert _extension("app.py") == ".py"
     assert _extension("dir/app.py") == ".py"
+
+
+# --- is_test_path ----------------------------------------------------------
+# One definition of "a test file", shared by the audit's B101 suppression,
+# its file-ceiling tiers and eval hygiene. eval_hygiene had its own, which
+# matched "test_" as a bare substring -- so latest_model.py was a test --
+# and never matched conftest.py at all.
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("path", [
+    "tests/test_queue.py", "tests/helpers.py", "pkg/tests/fixtures/data.py",
+    "test/util.py", "test_api.py", "src/api_test.py", "conftest.py", "tests/api/conftest.py",
+])
+def test_is_test_path_recognises_test_files(path):
+    assert is_test_path(path)
+
+
+@pytest.mark.parametrize("path", [
+    "latest_model.py", "contest/main.py", "src/testing_utils.py", "app/attest.py", "main.py",
+])
+def test_is_test_path_leaves_app_code_alone(path):
+    assert not is_test_path(path)

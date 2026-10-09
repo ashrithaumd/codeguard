@@ -23,7 +23,10 @@ module it is already in the repository's history.
 
 from __future__ import annotations
 
+import math
 import re
+from collections import Counter
+from typing import NamedTuple
 
 MASK = "[redacted]"
 
@@ -69,7 +72,12 @@ _ASSIGNED = re.compile(
       \w*
       \s*(?:=|:=|:|=>)\s*
     )
-    (['"])(?P<value>(?:\\.|(?!\2).){3,})\2
+    # Not a value that is already exactly a mask or a shape hint. Without
+    # this, the second redaction pass call_agent makes over every prompt
+    # turned the verdict agents' hint back into a bare mask. Anchored on
+    # the closing quote, so a hint-looking prefix glued onto a real secret
+    # is still a value, and still masked.
+    (['"])(?!\[redacted(?::\ [^\]'"\n]{1,80})?\]\2)(?P<value>(?:\\.|(?!\2).){3,})\2
     """,
 )
 
@@ -120,19 +128,162 @@ _OPAQUE = re.compile(
 )
 
 
-def redact(text: str) -> str:
+# --------------------------------------------------------------------------
+# Shape hints, for the verdict agents only
+# --------------------------------------------------------------------------
+#
+# The verdict agents judge findings about hardcoded credentials, and they
+# see the file AFTER redaction. A bare `[redacted]` tells them nothing about
+# the value behind it, and on codeguard-playground the agent dismissed four
+# hardcoded-key hits partly BECAUSE the value read as "the literal
+# placeholder string '[redacted]'". A shape hint lets the agent tell
+# `...000000000000` from a real key without seeing either: the length, the
+# vendor family, and whether the value looks random. None of that is the
+# secret. It is never stored or logged -- redact() and redact_source() keep
+# the plain MASK unless a caller asks for hints by name.
+
+# Vendor prefixes, stripped before the shape is judged, so that `sk_test_`
+# (a real Stripe test-mode credential) is not mistaken for a placeholder
+# because it contains "test".
+_FAMILIES: tuple[tuple[re.Pattern[str], str], ...] = tuple(
+    (re.compile(p), name) for p, name in (
+        (r"^github_pat_", "github_pat"),
+        (r"^gh[pousr]_", "github"),
+        (r"^sk-ant-(?:[a-z]+\d+-)?", "sk-ant"),
+        (r"^sk-proj-", "sk-proj"),
+        (r"^sk_(?:live|test)_", "stripe"),
+        (r"^[pr]k_(?:live|test)_", "stripe"),
+        (r"^sk-", "sk"),
+        (r"^A[KS]IA", "aws"),
+        (r"^AIza", "google"),
+        (r"^xox[abposr]-", "slack"),
+        (r"^glpat-", "gitlab"),
+        (r"^npm_", "npm"),
+        (r"^eyJ", "jwt"),
+    )
+)
+
+# Long markers count anywhere: five or more letters do not turn up in a
+# random 80-character body by chance. Short ones count only as a whole
+# word, so a real key that happens to contain "here" is not a placeholder.
+#
+# NOT "key", "secret" or "token". They were short markers, and a real key
+# that happens to contain "-key-" was then placeholder-like -- dismissable.
+# They describe what the value IS, not that it is a stand-in, so they never
+# qualify a value on their own; "your-key-here", "example-api-key" or
+# "sk-key-000000" are placeholders because of "your", "example" or the
+# repeated run, which every such value already carries.
+_LONG_MARKERS = re.compile(
+    r"(?i)example|placeholder|dummy|sample|changeme|redacted|notreal|not-a-real|insert|replace"
+)
+_SHORT_MARKERS = re.compile(
+    r"(?i)(?<![a-z0-9])(?:fake|test|your|here|xxx+|todo)(?![a-z0-9])"
+)
+_TEMPLATE_MARKERS = re.compile(r"<[^>]*>|\$\{|\{\{|%\(")
+
+
+class SecretShape(NamedTuple):
+    length: int
+    family: str | None
+    kind: str  # "high-entropy" | "low-entropy" | "placeholder-like"
+
+    def hint(self) -> str:
+        family = f"{self.family}-style " if self.family else ""
+        return f"[redacted: {self.length}-char {family}token, {self.kind}]"
+
+
+def _entropy_bits_per_char(s: str) -> float:
+    counts = Counter(s)
+    n = len(s)
+    return -sum(c / n * math.log2(c / n) for c in counts.values())
+
+
+def _longest_run(s: str, step: int) -> int:
+    """Longest run of characters each `step` code points after the last:
+    0 for repeats (`0000`), 1 for sequences (`1234`, `abcd`)."""
+    best = run = 1
+    for a, b in zip(s, s[1:]):
+        run = run + 1 if ord(b) - ord(a) == step else 1
+        best = max(best, run)
+    return best
+
+
+def classify_secret(value: str) -> SecretShape:
+    """Describe a credential-shaped value without disclosing it.
+
+    placeholder-like  an obvious stand-in: a marker word ("example",
+                      "your-key-here"), a template (`<API_KEY>`), or a
+                      repetitive or sequential body (`000000`, `123456`).
+    high-entropy      looks random. A credential verdict on one of these is
+                      "confirmed", whatever the surrounding comments say.
+    low-entropy       neither -- a weak but plausible value, like a
+                      human-chosen password. Still a credential.
+    """
+    family = None
+    body = value
+    for pattern, name in _FAMILIES:
+        m = pattern.match(value)
+        if m:
+            family, body = name, value[m.end():]
+            break
+
+    alnum = re.sub(r"[^A-Za-z0-9]", "", body)
+    placeholder = (
+        bool(_LONG_MARKERS.search(body))
+        or bool(_SHORT_MARKERS.search(body))
+        or bool(_TEMPLATE_MARKERS.search(body))
+        or (len(alnum) >= 6 and _longest_run(alnum, 0) >= 6)
+        or (len(alnum) >= 6 and _longest_run(alnum.lower(), 1) >= 6)
+        or (len(alnum) >= 8 and len(set(alnum)) / len(alnum) < 0.3)
+    )
+    if placeholder:
+        kind = "placeholder-like"
+    elif len(alnum) >= 12 and _entropy_bits_per_char(alnum) >= 3.0:
+        kind = "high-entropy"
+    else:
+        kind = "low-entropy"
+    return SecretShape(length=len(value), family=family, kind=kind)
+
+
+def secret_values(text: str) -> list[str]:
+    """Every value redact() would mask in `text`, in order -- the raw
+    values, for classify_secret. Never for display."""
+    found: list[str] = []
+    for m in _VENDOR.finditer(text):
+        found.append(m.group(0))
+    remainder = _VENDOR.sub(MASK, text)
+    for m in _ASSIGNED.finditer(remainder):
+        if m.group("value") != MASK:
+            found.append(m.group("value"))
+    # The opaque net sees only what the assignment pattern left, exactly
+    # as in redact(): scanning `remainder` again reported an assigned key
+    # twice, once per pattern.
+    remainder = _ASSIGNED.sub(lambda m: f"{m.group(1)}{m.group(2)}{MASK}{m.group(2)}", remainder)
+    for m in _OPAQUE.finditer(remainder):
+        found.append(m.group("value"))
+    return found
+
+
+def redact(text: str, *, hints: bool = False) -> str:
     """Mask anything credential-shaped in `text`.
 
     Order matters: the vendor patterns run first so a recognised token
     is masked as a whole even when it also sits inside a quoted
     assignment, and the opaque-string net runs last so it only sees what
     nothing more specific has claimed.
+
+    hints=True replaces each value with a SHAPE HINT instead of the bare
+    MASK -- see classify_secret. Only the verdict agents' prompts ask for
+    it; everything stored, logged or rendered keeps the plain MASK.
     """
     if not text:
         return text
 
+    def mask(value: str) -> str:
+        return classify_secret(value).hint() if hints else MASK
+
     out = _PEM.sub(rf"\1 {MASK} \2", text)
-    out = _VENDOR.sub(MASK, out)
+    out = _VENDOR.sub(lambda m: mask(m.group(0)), out)
     out = _URL_CREDS.sub(rf"\1{MASK}\3", out)
     # After _URL_CREDS, never before. _URL_CREDS has already replaced the
     # password with MASK, leaving `scheme://user:[redacted]@host`, and
@@ -141,8 +292,8 @@ def redact(text: str) -> str:
     # `user:secret@` to `[redacted]@` and lose the distinction between a
     # masked password and a masked whole-userinfo.
     out = _URL_USERINFO.sub(rf"\1{MASK}\3", out)
-    out = _ASSIGNED.sub(lambda m: f"{m.group(1)}{m.group(2)}{MASK}{m.group(2)}", out)
-    out = _OPAQUE.sub(lambda m: f"{m.group(1)}{MASK}{m.group(1)}", out)
+    out = _ASSIGNED.sub(lambda m: f"{m.group(1)}{m.group(2)}{mask(m.group('value'))}{m.group(2)}", out)
+    out = _OPAQUE.sub(lambda m: f"{m.group(1)}{mask(m.group('value'))}{m.group(1)}", out)
     return out
 
 # A PEM body line: base64 with no separators. Matched per line so a key
@@ -152,7 +303,7 @@ _PEM_BEGIN = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")
 _PEM_END = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
 
 
-def redact_source(text: str) -> str:
+def redact_source(text: str, *, hints: bool = False) -> str:
     """redact(), but guaranteed not to change the number of lines.
 
     WHY THIS EXISTS SEPARATELY. Findings are LINE-ANCHORED: every one
@@ -181,11 +332,11 @@ def redact_source(text: str) -> str:
     for line in lines:
         if _PEM_BEGIN.search(line):
             in_pem = True
-            out.append(redact(line))
+            out.append(redact(line, hints=hints))
             continue
         if _PEM_END.search(line):
             in_pem = False
-            out.append(redact(line))
+            out.append(redact(line, hints=hints))
             continue
         if in_pem or _PEM_BODY_LINE.match(line):
             # Keep the indentation so the shape of the file survives; the
@@ -193,7 +344,7 @@ def redact_source(text: str) -> str:
             leading = line[: len(line) - len(line.lstrip())]
             out.append(f"{leading}{MASK}" if line.strip() else line)
             continue
-        out.append(redact(line))
+        out.append(redact(line, hints=hints))
 
     # splitlines() drops a trailing newline; rebuild it so the output is
     # byte-identical to the input wherever nothing was masked. A source file

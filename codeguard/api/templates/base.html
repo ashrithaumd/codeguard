@@ -132,9 +132,10 @@
 
 <main class="shell">
   {% block content %}{% endblock %}
-  <footer class="foot">
-    <span>Reviews are recorded per delivery — a re-review of the same PR is its own row.</span>
-  </footer>
+  {# Page-specific footnote. Empty by default: the per-delivery note is about
+     the Reviews list's rows, and it used to appear on every page, error
+     pages included. #}
+  {% block footer %}{% endblock %}
 </main>
 
 <script nonce="{{ csp_nonce }}">
@@ -218,8 +219,11 @@
     document.querySelectorAll("[data-tip]").forEach(function (el) {
       el.addEventListener("mouseenter", function () { show(el); });
       el.addEventListener("mouseleave", hide);
-      el.addEventListener("focus", function () { show(el); });
-      el.addEventListener("blur", hide);
+      // focusin, not focus: it also fires when a CHILD takes focus, so a
+      // tip wrapped around a button (Run audit) shows when the button is
+      // tabbed to.
+      el.addEventListener("focusin", function () { show(el); });
+      el.addEventListener("focusout", hide);
     });
     document.addEventListener("keydown", function (e) { if (e.key === "Escape") hide(); });
     window.addEventListener("scroll", hide, true);
@@ -372,6 +376,24 @@
       if (item) { cursor = Number(item.getAttribute("data-i")); go(); }
     });
   })();
+</script>
+{#
+  Local time. Every timestamp is rendered by m.when() as
+  <time datetime="...Z" data-local-time>Oct 08, 16:39 UTC</time> -- correct
+  and labelled with no script at all -- and this rewrites it into the
+  viewer's own time zone, keeping the UTC text as a tooltip. Nonce'd like
+  every inline script; the CSP is unchanged.
+#}
+<script nonce="{{ csp_nonce }}">
+(function () {
+  var fmt = { month: "short", day: "2-digit", hour: "2-digit", minute: "2-digit" };
+  document.querySelectorAll("time[data-local-time]").forEach(function (el) {
+    var d = new Date(el.getAttribute("datetime"));
+    if (isNaN(d.getTime())) { return; }
+    el.title = el.textContent;
+    el.textContent = d.toLocaleString(undefined, fmt);
+  });
+})();
 </script>
 </body>
 </html>

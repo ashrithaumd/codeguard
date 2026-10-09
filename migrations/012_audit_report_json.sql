@@ -1,0 +1,17 @@
+-- The audit's result as structured data, beside the markdown.
+--
+-- The audit page rendered report_markdown as escaped text in a <pre>: a
+-- raw dump. Parsing that markdown back into structure would mean either
+-- a markdown-to-HTML renderer on text a repository author influences
+-- (the thing the <pre> exists to avoid) or a hand-rolled parser that
+-- breaks the first time the report's wording changes. So run_audit hands
+-- over the data it rendered the markdown FROM (cli.build_report_data),
+-- and the page renders that with ordinary autoescaped templates.
+--
+-- Nullable, and NULL for every audit written before this: the page falls
+-- back to the raw report for those. report_markdown is kept, whole, as
+-- the "View raw report" view and as what --post-issue posts.
+--
+-- IDEMPOTENT, like every migration here: bootstrap_schema() re-applies
+-- every file on every api and worker startup.
+ALTER TABLE audits ADD COLUMN IF NOT EXISTS report_json JSONB;
