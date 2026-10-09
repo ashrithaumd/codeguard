@@ -36,6 +36,10 @@ Under **Subscribe to events**:
 Only `opened` and `synchronize` start a review. Every push to an open pull request is its own
 review, with its own cost.
 
+Reviews also have to be switched on per repository: **Repositories → PR reviews** (operators
+only). A repository starts **Off**; a delivery for it is acknowledged and nothing is queued, so
+it costs nothing. Full audits never start from a pull request, only from **Run audit**.
+
 ## 4. Generate a webhook secret and a private key
 
 Set a **Webhook secret** to a random string you generate yourself. Every delivery's

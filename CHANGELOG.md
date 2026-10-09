@@ -15,6 +15,26 @@ CodeGuard is marked **ACTION REQUIRED**.
   `SMEE_URL` in `.env`, the only variable the relay container receives.
   Signature checking is unchanged. Setup in `docs/github-app.md` section 6.
 
+#### Per-repository "PR reviews" switch
+
+**ACTION REQUIRED (operators):** migration `014_repo_settings.sql` adds
+`repo_settings`. Every repository without a row is **Off**: its pull request
+deliveries are acknowledged and nothing is queued. The migration turns
+**On** every repository that already has a real review, so those keep
+being reviewed; sample rows from `scripts/seed_demo.py` (`[SAMPLE]` titles,
+`SAMPLE DATA` bodies, the `codeguard-fixtures` owner) are excluded. Turn
+others on from Repositories → PR reviews.
+
+- An On/Off switch per row on Repositories, for operators only (the
+  audit allow-list). Anyone else gets 404 from the POST and never sees the
+  switch. CSRF-checked; repo access re-checked.
+- Checked twice: the webhook refuses to queue for a repository that is Off
+  (`{"status": "skipped", "reason": "pr_reviews_off"}`, counted in
+  `codeguard_pr_reviews_skipped_total`), and the worker re-checks before
+  minting a token, for a switch turned off while a job was queued.
+- Names match case-insensitively. A renamed repository starts Off under its
+  new name.
+
 ### Fix list from the 2026-10-08 feature tour
 
 **ACTION REQUIRED (operators):** migration `012_audit_report_json.sql` adds

@@ -34,7 +34,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from codeguard.api import access, audits, csrf, repo_url
+from codeguard.api import access, audits, csrf, repo_settings, repo_url
 from codeguard.api import dashboard_queries as q
 from codeguard.api.auth import client_principal, client_viewer
 from codeguard.api.display import (
@@ -489,6 +489,9 @@ async def repositories(request: Request) -> HTMLResponse:
         ]
 
     may_audit = settings.may_trigger_audit(viewer.user_id if viewer else None)
+    # The PR-reviews switch is operator-only, so nobody else's page view
+    # even reads it.
+    pr_switches = await repo_settings.pr_reviews_map(pool) if may_audit else {}
 
     # One concurrent pass, not a serial loop. Measured in production with
     # 11 repos installed: the loop took 11.79s and blocked the event loop
@@ -524,6 +527,7 @@ async def repositories(request: Request) -> HTMLResponse:
                           + float(audit_stat.get("total_cost", 0) or 0),
             "audit": audit,
             "audit_in_flight": bool(audit and audit["status"] in ("queued", "running")),
+            "pr_reviews": pr_switches.get((owner.lower(), name.lower()), False),
             # All three conditions, so the template never has to combine
             # them and get it wrong: allowed to audit at all, the repo is
             # public, and this person has nothing else running. The POST
@@ -642,6 +646,35 @@ async def trigger_audit(request: Request, owner: str, repo: str):
                 audit["id"], owner, repo, principal, job.id, created)
 
     return RedirectResponse(url=f"/dashboard/audits/{audit['id']}", status_code=303)
+
+
+@router.post("/repos/{owner}/{repo}/pr-reviews")
+async def set_pr_reviews(request: Request, owner: str, repo: str):
+    """Turn automatic PR reviews ON or OFF for one repository.
+
+    Same order of checks as trigger_audit, for the same reasons: identity
+    first and 404 (a 403 would confirm an operator facility exists), CSRF
+    second, then repo access. Turning reviews ON commits the operator's
+    Anthropic credit to every future pull request on the repo, so it is
+    exactly as privileged as running an audit.
+    """
+    pool = request.app.state.pool
+    viewer = client_viewer(request)
+    principal = viewer.login if viewer else None
+    settings = get_settings()
+
+    if not settings.may_trigger_audit(viewer.user_id if viewer else None):
+        logger.warning("PR-reviews switch refused for principal=%r on %s/%s", principal, owner, repo)
+        raise HTTPException(status_code=404, detail="not found")
+    await csrf.verify(request)
+    if not await asyncio.to_thread(access.can_access_repo, owner, repo, principal):
+        raise HTTPException(status_code=404, detail="not found")
+
+    form = await request.form()
+    enabled = str(form.get("enabled") or "") == "on"
+    await repo_settings.set_pr_reviews(pool, owner, repo, enabled=enabled, updated_by=principal)
+    logger.info("PR reviews %s for %s/%s by %s", "ON" if enabled else "OFF", owner, repo, principal)
+    return RedirectResponse(url="/dashboard/repos", status_code=303)
 
 
 def _installed_or_empty() -> list[dict]:

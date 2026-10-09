@@ -3,6 +3,7 @@ import logging
 from fastapi import APIRouter, Request, Response
 from prometheus_client import Counter, Histogram
 
+from codeguard.api import repo_settings
 from codeguard.api.signature import is_valid_signature
 from codeguard.config import get_settings
 from codeguard.pipeline.feedback import (
@@ -36,6 +37,11 @@ feedback_signals_total = Counter(
     "codeguard_feedback_signals_total",
     "Recognized feedback comments, by signal and which webhook event carried them.",
     ["signal", "source_event"],
+)
+pr_reviews_skipped_total = Counter(
+    "codeguard_pr_reviews_skipped_total",
+    "pull_request deliveries acknowledged without queueing a review, by reason.",
+    ["reason"],
 )
 feedback_suppressions_total = Counter(
     "codeguard_feedback_suppressions_total",
@@ -82,6 +88,18 @@ async def webhook(request: Request, response: Response):
             # redelivery of the same delivery is a no-op enqueue, not a
             # duplicate job.
             if action in ("opened", "synchronize"):
+                # The per-repo switch (migrations/014). OFF -- including a
+                # repository with no row -- is acknowledged and dropped:
+                # no job, so no token, no check run, no model call. After
+                # the signature check, so an unsigned request cannot
+                # learn anything from the answer.
+                owner = payload["repository"]["owner"]["login"]
+                repo = payload["repository"]["name"]
+                if not await repo_settings.pr_reviews_enabled(request.app.state.pool, owner, repo):
+                    pr_reviews_skipped_total.labels(reason="pr_reviews_off").inc()
+                    logger.info("pull_request %s/%s#%s skipped: PR reviews are off", owner, repo, pr_number)
+                    return {"status": "skipped", "reason": "pr_reviews_off"}
+
                 delivery_id = request.headers.get("X-GitHub-Delivery")
                 job_payload = {
                     "installation_id": payload["installation"]["id"],

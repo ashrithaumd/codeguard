@@ -37,6 +37,7 @@ from codeguard.api.audits import (
     finish_audit,
     mark_running,
 )
+from codeguard.api.repo_settings import pr_reviews_enabled
 from codeguard.cli import AuditOutcome, AuditStats, run_audit
 from codeguard.config import Settings, get_settings, verify_required_settings
 from codeguard.diff.filters import split_test_asserts
@@ -342,6 +343,14 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
 
     if not (head_sha and base_ref):
         logger.warning("job %s missing head_sha/base_ref, nothing to review", job.id)
+        return True
+
+    # The per-repo switch, re-checked (the webhook already refused to queue
+    # for a repo that was OFF). Covers a switch turned OFF between enqueue
+    # and claim. Before the token, so a repo that is OFF costs no GitHub
+    # call and no model call.
+    if not await pr_reviews_enabled(pool, owner, repo):
+        logger.info("job %s: PR reviews are off for %s/%s, skipping", job.id, owner, repo)
         return True
 
     # The review handler's own wall clock, for the `reviews` row. Started

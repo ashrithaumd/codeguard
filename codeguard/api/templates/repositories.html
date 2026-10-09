@@ -107,6 +107,7 @@
           <th class="num">Activity</th>
           <th class="num">Last activity</th>
           <th class="num">Total {{ m.term("Cost", "cost") }}</th>
+          {% if may_audit %}<th class="pr-col">PR reviews</th>{% endif %}
           {% if may_audit %}<th class="audit-col">Audit</th>{% endif %}
           <th class="chev"><span class="visually-hidden">Open</span></th>
         </tr>
@@ -149,6 +150,20 @@
           <td class="num">{% if r.review_count or r.audit_count %}{{ m.cost(r.total_cost) }}{% else %}<span class="dim">—</span>{% endif %}</td>
 
           {% if may_audit %}
+          {# The per-repo switch (migrations/014), operators only. One button
+             that posts the OTHER state, so the form never has to read the
+             current one back. OFF is also what a repo with no row is. #}
+          <td class="pr-col" data-no-rowlink>
+            <form class="pr-reviews-switch" method="post" action="/dashboard/repos/{{ r.owner }}/{{ r.repo }}/pr-reviews">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+              <input type="hidden" name="enabled" value="{{ 'off' if r.pr_reviews else 'on' }}">
+              <button class="switch{{ ' on' if r.pr_reviews }}" type="submit" aria-pressed="{{ 'true' if r.pr_reviews else 'false' }}"
+                      title="{{ 'Turn off automatic reviews of new pull requests' if r.pr_reviews else 'Review every new pull request automatically' }}">
+                <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
+                {{ 'On' if r.pr_reviews else 'Off' }}
+              </button>
+            </form>
+          </td>
           <td class="audit-col" data-no-rowlink>
             {% if r.audit_in_flight %}
               {# Already running: link to it rather than offering a second button
