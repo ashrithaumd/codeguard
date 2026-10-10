@@ -103,7 +103,7 @@ print("=== OK: every scanner ran, and B608 and F401 are both present ===")
 # the deployed ones.
 docker run --rm     -e ANTHROPIC_API_KEY=smoke-test-deliberately-not-a-real-key     "$IMAGE" python -c "$PROBE"
 
-# Semgrep is pinned at 1.45.0 (later releases drop the data-flow traces the
+# Semgrep is pinned at 1.95.0 (later releases drop the data-flow traces the
 # flow note reads) and must not touch the network. --metrics=off does NOT
 # stop its new-version check: measured, a plain scan with --metrics=off
 # makes 4 connection attempts to semgrep.dev. SEMGREP_ENABLE_VERSION_CHECK=0
@@ -144,15 +144,17 @@ def attempts():
     return ATTEMPTS.read_text().strip().splitlines() if ATTEMPTS.exists() else []
 os.environ["PYTHONPATH"] = str(guard)
 
-version = subprocess.run(["semgrep", "--version"], capture_output=True, text=True,
+version = subprocess.run([os.environ["SEMGREP_BIN"], "--version"], capture_output=True, text=True,
                          env={**os.environ, "SEMGREP_ENABLE_VERSION_CHECK": "0"}).stdout.strip().splitlines()[-1]
-if version != "1.45.0":
-    sys.exit("=== FAIL: semgrep is %r, expected 1.45.0 ===" % version)
+if not os.environ.get("SEMGREP_BIN", "").startswith("/opt/semgrep/"):
+    sys.exit("=== FAIL: SEMGREP_BIN is %r, expected /opt/semgrep/... ===" % os.environ.get("SEMGREP_BIN"))
+if version != "1.95.0":
+    sys.exit("=== FAIL: semgrep is %r, expected 1.95.0 ===" % version)
 
 if os.environ.get("CONTROL") == "1":
     reset()
     bare = {k: v for k, v in os.environ.items() if k not in ("SEMGREP_ENABLE_VERSION_CHECK", "SEMGREP_SEND_METRICS")}
-    subprocess.run(["semgrep", "--version"], env=bare, capture_output=True)
+    subprocess.run([os.environ["SEMGREP_BIN"], "--version"], env=bare, capture_output=True)
     if not LOADED.exists():
         sys.exit("=== FAIL: the network guard did not load in the semgrep process ===")
     if not attempts():

@@ -69,6 +69,7 @@ from codeguard.tools.gitleaks_runner import scan_secrets
 from codeguard.tools.models import Finding
 from codeguard.tools.osv_runner import check_dependency_updates
 from codeguard.tools.run_all import run_tools_on_files
+from codeguard.tools.semgrep_runner import version_warning as semgrep_version_warning
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("codeguard.audit")
@@ -792,6 +793,7 @@ def build_report_data(
     skipped_test_asserts: int = 0, models: dict[str, str] | None = None,
     not_covered: list[dict] | None = None,
     secret_placeholders: int = 0,
+    tool_warnings: list[str] | None = None,
 ) -> dict:
     """The audit's result as data: what the audit page renders, what is
     stored in audits.report_json, and what render_report turns into
@@ -820,6 +822,8 @@ def build_report_data(
         skipped_files=skipped_files, verdict_call_failures=verdict_call_failures,
         unavailable_tools=unavailable_tools,
     )
+    # A tool that ran but is not the version pinned (semgrep_runner.version_warning).
+    incomplete += list(tool_warnings or [])
     return {
         "version": REPORT_DATA_VERSION,
         "target": target,
@@ -1375,6 +1379,7 @@ def run_audit(
             tokens_in=tokens_in, tokens_out=tokens_out,
             estimated_cost_usd=estimated_cost_usd, elapsed_s=elapsed_s,
             skipped_test_asserts=skipped_test_asserts,
+            tool_warnings=[w for w in (semgrep_version_warning(),) if w],
             models={"security": settings.security_agent_model, "ai_aware": settings.ai_aware_agent_model},
             not_covered=uncovered,
             secret_placeholders=secrets.placeholders,

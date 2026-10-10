@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+from functools import lru_cache
 from pathlib import Path
 
 from codeguard.severity import Severity
@@ -23,8 +25,50 @@ _SEVERITY_MAP = {"ERROR": Severity.HIGH, "WARNING": Severity.MEDIUM, "INFO": Sev
 RULES_DIR = Path(__file__).resolve().parent.parent.parent / "rules"
 
 
+EXPECTED_VERSION = "1.95.0"
+
+
+def semgrep_command() -> list[str]:
+    """The Semgrep to run: SEMGREP_BIN when set (the image sets it to its own
+    /opt/semgrep environment), never a PATH lookup that could find another
+    semgrep; outside Docker, with it unset, the usual resolution."""
+    explicit = os.environ.get("SEMGREP_BIN")
+    return [explicit] if explicit else resolve_tool_command(TOOL_NAME)
+
+
+def semgrep_env() -> dict[str, str]:
+    """The environment every Semgrep call runs with: offline (no version
+    check, no metrics), and -- when SEMGREP_BIN is set -- that binary's own
+    directory FIRST on PATH, because Semgrep's front end launches its
+    companion `pysemgrep` by PATH lookup and it must be the one from the same
+    install, never another found elsewhere on the system."""
+    env = {**os.environ, **_OFFLINE_ENV}
+    explicit = os.environ.get("SEMGREP_BIN")
+    if explicit:
+        env["PATH"] = os.pathsep.join([os.path.dirname(explicit), env.get("PATH", "")])
+    return env
+
+
+@lru_cache(maxsize=1)
+def version_warning() -> str | None:
+    """"Semgrep version mismatch (found X, expected 1.95.0)", or None. Checked
+    once per process. A mismatch does not stop a review or an audit; it is
+    said in the same warning that says a tool did not run. A missing semgrep
+    is None here: the did-not-run warning already covers it."""
+    try:
+        proc = subprocess.run(semgrep_command() + ["--version"], capture_output=True, text=True, timeout=30,
+                              env=semgrep_env())
+    except (OSError, subprocess.SubprocessError):
+        return None
+    lines = proc.stdout.strip().splitlines()
+    found = lines[-1].strip() if lines else ""
+    if proc.returncode != 0 or not found or found == EXPECTED_VERSION:
+        return None
+    return f"Semgrep version mismatch (found {found}, expected {EXPECTED_VERSION})"
+
+
 def _build_cmd(tmp_dir: str) -> list[str]:
-    return resolve_tool_command(TOOL_NAME) + [
+    return semgrep_command() + [
         f"--config={RULES_DIR}", "--json", "--quiet", "--metrics=off",
         # Where a taint rule's value came from, not just where it ended up:
         # an injection finding names the line the prompt was built on.
@@ -65,7 +109,7 @@ def _taint_source_line(extra: dict) -> int:
         return 0
 
 
-# Pinned at 1.45.0 (pyproject.toml): later releases drop the data-flow
+# Pinned at 1.95.0 (pyproject.toml): later releases drop the data-flow
 # traces the flow note reads. --metrics=off does not stop Semgrep's own
 # new-version check, a separate network call on every run; this does, and
 # it is set here as well as in the image so it holds wherever this runs.
@@ -73,4 +117,4 @@ _OFFLINE_ENV = {"SEMGREP_ENABLE_VERSION_CHECK": "0", "SEMGREP_SEND_METRICS": "of
 
 
 def run_semgrep(files: dict[str, str], timeout: int = DEFAULT_TIMEOUT) -> list[Finding]:
-    return run_tool_on_pr(TOOL_NAME, _build_cmd, _parse, files, timeout, env={**os.environ, **_OFFLINE_ENV})
+    return run_tool_on_pr(TOOL_NAME, _build_cmd, _parse, files, timeout, env=semgrep_env())

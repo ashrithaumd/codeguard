@@ -62,15 +62,17 @@ Not worth doing: dropping the summary intro (a Haiku call, ~$0.001), or tighteni
 
 ## Semgrep engine upgrade
 
-Semgrep upgrade blocked: versions after ~1.95 drop data-flow traces used by the flow note (44 → 49).
-Revisit when traces return or the flow note can be rebuilt without them.
+Semgrep upgrade blocked past 1.95: later versions drop data-flow traces used by the flow note.
 
 Measured on 2026-10-09: 1.45.0, 1.76.0, 1.85.0, 1.90.0 and 1.95.0 emit `dataflow_trace` for the taint
 rules; 1.100.0, 1.120.0, 1.135.0, 1.150.0, 1.165.0 and 1.178.0 do not (the `--dataflow-traces` option is
 gone from `--help`). On 1.178.0 the free scanner-only gate (`evals/scanner_snapshot.py`) showed 48 of 49
 raw Python findings identical and the injection-through-a-variable finding's source line going from 20
-to 0. The vendored GitLab rules and the planned JS/TS LLM rules both run on 1.45.0 with identical results,
-so nothing currently needs the newer engine.
+to 0. CodeGuard was then on 1.45.0, which turned out to run five vendored Java rules not at all
+(WeakMessageDigest, OgnlInjection, CipherECBMode, CipherIntegrity, WeakTLSProtocol-SSLContext; 463
+findings on GitLab's samples vs 524). It moved to 1.95.0: the Python snapshot identical (49/49, source
+lines included), the 27 rule tests and the JS/TS LLM rules passing, Java and C# in full. Revisit when
+traces return or the flow note can be rebuilt without them.
 
 ## Impact analysis for JavaScript/TypeScript (skipped)
 

@@ -37,7 +37,10 @@ dependencies = [
     # non-reproducible — unlike an SDK/framework version bump, a rules
     # engine version bump is a behavior change we want to opt into
     # deliberately, not absorb silently on the next `pip install`.
-    "semgrep==1.45.0",
+    # Semgrep is NOT an app dependency: 1.95.0 pins opentelemetry-api~=1.25,
+    # which cannot coexist with mcp's >=1.28. The image installs it in its own
+    # environment (Dockerfile, /opt/semgrep) and the runner calls it by
+    # SEMGREP_BIN; outside Docker: `pipx install semgrep==1.95.0`.
     "bandit==1.7.9",
     "ruff==0.6.9",
     # Phase 11: codeguard/mcp/server.py. Pinned to the v2 API

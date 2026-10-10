@@ -62,10 +62,26 @@ CodeGuard is marked **ACTION REQUIRED**.
 
 #### Scanner engine pinned and kept offline
 
-- Semgrep stays at **1.45.0**. Versions after ~1.95 stop emitting the
-  data-flow traces the flow note reads ("Assigned at line 44, sent to the
-  model at line 49"); the upgrade is recorded as blocked in
-  `docs/backlog.md`.
+- Semgrep **1.45.0 → 1.95.0**, the newest release that still emits the
+  data-flow traces the flow note reads; later ones drop them (recorded as
+  blocked past 1.95 in `docs/backlog.md`). 1.45.0 ran five vendored Java
+  rules not at all (WeakMessageDigest, OgnlInjection, CipherECBMode,
+  CipherIntegrity, WeakTLSProtocol-SSLContext; 463 vs 524 findings on
+  GitLab's samples). Verified before the switch: the Python scanner
+  snapshot identical (49/49), the flow note byte-identical on
+  `regress_01` and on the codeguard-playground injection finding
+  ("Assigned at line 44, sent to the model at line 49."), 27/27 rule tests.
+- **Semgrep in its own environment** (`/opt/semgrep`, with
+  `setuptools==80.10.2`, which it needs but does not declare): its
+  `opentelemetry-api~=1.25` cannot coexist with `mcp`'s `>=1.28`, so it is
+  no longer an app dependency and the app's packages are unchanged. The
+  runner calls `SEMGREP_BIN` explicitly (the image sets it), with that
+  directory first on PATH for Semgrep's own `pysemgrep`; outside Docker it
+  falls back to PATH, and the Quickstart adds `pipx install semgrep==1.95.0`.
+- A Semgrep other than 1.95.0 does not stop anything; the audit's
+  incompleteness warning and the PR check summary's caution block say
+  "Semgrep version mismatch (found X, expected 1.95.0)". Checked once per
+  process.
 - No network from Semgrep at runtime. `--metrics=off` does not stop its
   new-version check, which a plain scan makes (measured: 4 connection
   attempts to semgrep.dev). `SEMGREP_ENABLE_VERSION_CHECK=0` and

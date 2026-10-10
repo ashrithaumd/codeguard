@@ -19,6 +19,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl git \
 # the route that works on every platform.
 ARG INSTALL_DEV=false
 
+# Semgrep in its own environment, pinned: 1.95.0 is the newest release that
+# still emits the data-flow traces the flow note reads (docs/backlog.md), and
+# it pins opentelemetry-api~=1.25, which cannot coexist with the app's mcp
+# (>=1.28). setuptools: undeclared by Semgrep but needed by it (its
+# OpenTelemetry dependency imports pkg_resources, removed in setuptools 81).
+# The runner calls SEMGREP_BIN explicitly, never a PATH lookup; the PATH
+# entry (appended, so the app's python stays first) is for people running
+# `semgrep --test` by hand.
+ARG SEMGREP_VERSION=1.95.0
+RUN python -m venv /opt/semgrep \
+    && /opt/semgrep/bin/pip install --no-cache-dir "semgrep==${SEMGREP_VERSION}" "setuptools==80.10.2" \
+    && PATH="/opt/semgrep/bin:${PATH}" /opt/semgrep/bin/semgrep --version
+ENV SEMGREP_BIN=/opt/semgrep/bin/semgrep \
+    PATH="${PATH}:/opt/semgrep/bin"
+
 # Gitleaks, pinned and verified: secrets in every non-Python file type
 # (codeguard/tools/gitleaks_runner.py). The binary is checked against the
 # release's own sha256 before it is unpacked; a mismatch fails the build.

@@ -69,6 +69,7 @@ from codeguard.queue.models import Job
 from codeguard.queue.queue import ack, claim_batch, extend_lease, nack, release
 from codeguard.tools.osv_runner import check_dependency_updates
 from codeguard.tools.run_all import run_tools_on_files
+from codeguard.tools.semgrep_runner import version_warning as semgrep_version_warning
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("codeguard.worker")
@@ -589,6 +590,7 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
         summary = render_check_summary(
             findings=all_findings,
             tool_findings=tool_findings,
+            tool_warnings=[w for w in (semgrep_version_warning(),) if w],
             blocking=blocking,
             gate_threshold=repo_config.gate_threshold,
             files_seen=diff_result.files_seen,

@@ -1,7 +1,7 @@
 """The free gate: the scanners alone, on every Python fixture, must produce
 exactly the committed snapshot (evals/scanner_snapshot_python.json).
 
-Taken with Semgrep 1.45.0, Bandit 1.7.9 and Ruff 0.6.9. Any change to a
+Taken with Semgrep 1.45.0 and identical on 1.95.0, Bandit 1.7.9, Ruff 0.6.9. Any change to a
 scanner, a rule, or the shared scan path that alters a single raw Python
 finding -- a rule, a line, a severity, a taint source line -- fails here,
 before any paid eval could be needed to notice it. No model, no network.
