@@ -74,14 +74,6 @@ findings on GitLab's samples vs 524). It moved to 1.95.0: the Python snapshot id
 lines included), the 27 rule tests and the JS/TS LLM rules passing, Java and C# in full. Revisit when
 traces return or the flow note can be rebuilt without them.
 
-## Vendored Go `math/rand` rule misses unaliased imports
-
-`go_crypto_rule-weakrandsource` (gosec G404, vendored unmodified) matches only an aliased import
-(`mrand "math/rand"`); a plain `import "math/rand"` with `rand.Int63()` raises nothing on 1.95.0. The
-eval fixture uses the aliased form. A real secret drawn from plain `math/rand` is a false negative
-today. Fix with a rule of our own in `rules_lang/` (as for `InsecureSkipVerify`), not by editing the
-vendored file.
-
 ## Impact analysis for JavaScript/TypeScript (skipped)
 
 Considered with tree-sitter (5–7 days) and skipped for now:

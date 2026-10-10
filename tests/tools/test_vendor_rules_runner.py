@@ -114,3 +114,30 @@ def test_our_findings_take_the_same_generic_review_path():
     findings = run_vendor_rules({"client/http.go": GO_TLS_OFF})
     t = triage(findings, {"client/http.go": GO_TLS_OFF}, max_files=10, max_findings_per_file=30)
     assert [f.rule_id for f in t.to_model["client/http.go"]] == [OUR_RULE]
+
+
+# codeguard-go-math-rand-secret: plain `import "math/rand"` for a secret
+# (the vendored weakrandsource rule matches only an aliased import).
+RAND_RULE = "codeguard-go-math-rand-secret"
+GO_TOKEN = ('package auth\n\nimport "{imp}"\n\n'
+            'func NewSessionToken() []byte {{\n\tb := make([]byte, 32)\n\t{alias}.Read(b)\n\treturn b\n}}\n')
+
+
+def test_math_rand_for_a_token_with_the_plain_import_is_found():
+    findings = run_vendor_rules({"auth/token.go": GO_TOKEN.format(imp="math/rand", alias="rand")})
+    assert [(f.rule_id, f.start_line, f.source_tool) for f in findings if f.rule_id == RAND_RULE] == [
+        (RAND_RULE, 7, "codeguard-rules")]
+
+
+def test_crypto_rand_for_a_token_is_left_alone():
+    findings = run_vendor_rules({"auth/token.go": GO_TOKEN.format(imp="crypto/rand", alias="rand")})
+    assert [f for f in findings if f.rule_id == RAND_RULE] == []
+
+
+def test_an_aliased_import_is_covered_too_including_what_the_vendored_rule_skips():
+    """Semgrep resolves Go import aliases, so `mrand "math/rand"` is ours as
+    well -- including Read and Intn, which the vendored weakrandsource rule
+    does not list."""
+    src = GO_TOKEN.format(imp="math/rand", alias="mrand").replace('import "math/rand"', 'import mrand "math/rand"')
+    findings = run_vendor_rules({"auth/token.go": src})
+    assert [(f.rule_id, f.start_line) for f in findings if f.rule_id == RAND_RULE] == [(RAND_RULE, 7)]

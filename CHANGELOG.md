@@ -41,8 +41,12 @@ CodeGuard is marked **ACTION REQUIRED**.
   `tests/tooling/test_lang_eval.py` runs the free half.
 - `scripts/smoke_image.sh`: vendored and own rules fire offline in the
   image.
-- Known gap (docs/backlog.md): the vendored Go `math/rand` rule matches only
-  an aliased import.
+- Own rule `codeguard-go-math-rand-secret`: `math/rand` used for a token,
+  key, secret, password, nonce, salt, session, uuid or invite/reset id
+  (by the variable, field or function name), with a plain or aliased
+  import. The vendored `math/rand` rule matches only an aliased import and
+  skips `Read` and `Intn`. Jitter, shuffling, picking and `crypto/rand` are
+  left alone.
 
 #### Secrets in every non-Python file (Gitleaks)
 

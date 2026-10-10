@@ -26,3 +26,6 @@ rules_lang/
   "gitlab-sast".
   * go-insecure-skip-verify.yaml (codeguard-go-tls-insecure-skip-verify):
     tls.Config with InsecureSkipVerify set to true, outside *_test.go files.
+  * go-math-rand-secret.yaml (codeguard-go-math-rand-secret):
+    math/rand used for a security-sensitive value (token, key, secret,
+    password, nonce, salt, session, uuid, invite/reset id).
