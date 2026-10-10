@@ -60,7 +60,7 @@ from codeguard.pipeline.eval_hygiene import review_eval_hygiene
 from codeguard.pipeline.guardrails import MAX_CHUNK_TOKENS
 from codeguard.pipeline.merge import bare_rule_id, flow_note, merge_same_bug, with_flow_note
 from codeguard.pipeline.models import DismissedFinding
-from codeguard.pipeline.generic_review import triage
+from codeguard.pipeline.generic_review import content_for_model, triage
 from codeguard.pipeline.nodes import (
     _build_findings_block,
     _file_touches_ai_markers,
@@ -69,7 +69,7 @@ from codeguard.pipeline.nodes import (
     review_security_generic,
 )
 from codeguard.pipeline.state import FileReviewState
-from codeguard.redact import mask_spans, redact
+from codeguard.redact import redact
 from codeguard.report_format import REPORT_DATA_VERSION, UNREVIEWED_NOTICE_TEXT
 from codeguard.severity import Severity
 from codeguard.tools.base import UNAVAILABLE_RULE_ID
@@ -1416,7 +1416,8 @@ def run_audit(
                                 max_findings_per_file=settings.generic_ai_findings_per_file)
         gen = _run_generic_layer(
             "audit", root.name,
-            {p: mask_spans(generic_files[p], secrets.spans.get(p, [])) for p in generic_triage.to_model},
+            {p: content_for_model(p, generic_files[p], secrets.spans.get(p, []), generic_triage)
+             for p in generic_triage.to_model},
             generic_triage.to_model, deadline=deadline,
         )
 

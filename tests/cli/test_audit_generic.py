@@ -97,3 +97,20 @@ def test_the_rejection_names_the_covered_languages_and_the_not_covered_list():
                  "configuration", "secret", "dependency", "not covered"):
         assert name in NO_COVERED_CODE_MESSAGE, name
     assert "currently analyzes Python repositories" not in NO_COVERED_CODE_MESSAGE
+
+
+def test_a_positional_db_password_never_reaches_the_agent(tmp_path):
+    """getConnection's password literal is not an assignment, so
+    redact_source cannot see it; the credential rule's line is masked."""
+    (tmp_path / "Db.java").write_text(
+        "import java.security.MessageDigest;\n"
+        "public class Db {\n"
+        "    void open(String u) throws Exception {\n"
+        '        java.sql.DriverManager.getConnection(u, "admin", "Tr0ub4dor-hunter22");\n'
+        '        MessageDigest.getInstance("MD5");\n'
+        "    }\n"
+        "}\n")
+    _, _, report, seen = _run(tmp_path)
+    [state] = seen
+    assert "Tr0ub4dor-hunter22" not in state["content"]
+    assert "Tr0ub4dor-hunter22" not in report

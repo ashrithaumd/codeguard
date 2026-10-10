@@ -90,3 +90,14 @@ async def test_what_goes_to_the_model_has_the_secret_spans_masked():
                                        generic_patches={"web/run.js": patch_text}), secrets, get_settings())
     sent = prep.state["generic_files"]["web/run.js"]
     assert key not in sent and "[redacted]" in sent
+
+
+async def test_a_credential_finding_line_is_masked_before_the_model():
+    content = ("import java.security.MessageDigest;\npublic class Db {\n    void open(String u) throws Exception {\n"
+               '        java.sql.DriverManager.getConnection(u, "admin", "Tr0ub4dor-hunter22");\n'
+               '        MessageDigest.getInstance("MD5");\n    }\n}\n')
+    patch_text = "@@ -0,0 +1,7 @@\n" + "".join(f"+{line}\n" for line in content.splitlines())
+    prep = await prepare_generic(_diff(generic_contents={"Db.java": content},
+                                       generic_patches={"Db.java": patch_text}), SecretScan(), get_settings())
+    sent = prep.state["generic_files"]["Db.java"]
+    assert "Tr0ub4dor-hunter22" not in sent

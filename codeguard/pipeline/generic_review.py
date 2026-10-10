@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from codeguard.redact import classify_secret, secret_values
+from codeguard.redact import classify_secret, mask_lines, mask_spans, secret_values
 from codeguard.severity import Severity
 from codeguard.tools.models import Finding
 
@@ -41,6 +41,9 @@ class Triage:
     unreviewed: list[Finding] = field(default_factory=list)
     capped_files: list[tuple[str, str]] = field(default_factory=list)
     placeholders: int = 0
+    # Lines a credential rule flagged, per file: masked whole before any
+    # content goes to the model (content_for_model).
+    masked_lines: dict[str, set[int]] = field(default_factory=dict)
 
 
 def _credential(finding: Finding, content: str) -> tuple[Finding | None, bool]:
@@ -73,6 +76,7 @@ def triage(findings: list[Finding], contents: dict[str, str], *, max_files: int,
     for f in findings:
         rule = f.rule_id.rsplit(".", 1)[-1]
         if rule in GENERIC_CREDENTIAL_RULES:
+            t.masked_lines.setdefault(f.file, set()).update(range(f.start_line, f.end_line + 1))
             kept, placeholder = _credential(f, contents.get(f.file, ""))
             t.placeholders += placeholder
             if kept is not None:
@@ -96,3 +100,10 @@ def triage(findings: list[Finding], contents: dict[str, str], *, max_files: int,
             t.capped_files.append(
                 (path, f"{len(extra)} finding(s) not reviewed by AI (cap: {max_findings_per_file} per file)"))
     return t
+
+
+def content_for_model(path: str, content: str, spans: list[tuple[int, int, int]], t: Triage) -> str:
+    """What security_generic may see of one file: the secrets scan's spans
+    masked, then every line a credential rule flagged masked whole. One
+    function for the audit and the PR path, so the two cannot drift."""
+    return mask_lines(mask_spans(content, spans), t.masked_lines.get(path, set()))

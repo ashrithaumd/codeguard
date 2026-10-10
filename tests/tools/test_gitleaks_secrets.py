@@ -193,3 +193,11 @@ def test_mask_spans_blanks_exactly_those_spans_and_keeps_the_line_count():
     assert masked.splitlines()[1] == f"token: {MASK}  # note"
     assert masked.count("\n") == content.count("\n")
     assert mask_spans(content, []) == content
+
+
+def test_mask_lines_blanks_whole_lines_keeping_indentation_and_line_count():
+    from codeguard.redact import MASK, mask_lines
+    text = "a\n    b secret\nc\n"
+    out = mask_lines(text, {2, 9})
+    assert out == f"a\n    {MASK}\nc\n"
+    assert mask_lines(text, set()) == text

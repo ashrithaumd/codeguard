@@ -78,3 +78,27 @@ def test_a_hardcoded_password_is_decided_by_its_shape_with_no_model():
 def test_nothing_in_means_nothing_out():
     t = triage([], {}, max_files=10, max_findings_per_file=30)
     assert (t.to_model, t.passthrough, t.unreviewed, t.capped_files, t.placeholders) == ({}, [], [], [], 0)
+
+
+# The credential line itself never reaches the model, even when the file goes
+# to it for another finding: the vendored credential rules flag positional
+# literals (getConnection(url, "admin", "hunter22")) that redact_source's
+# assignment pattern cannot see.
+
+def test_a_credential_finding_line_is_recorded_for_masking_placeholder_or_not():
+    content = 'class A {\n  void a() { java.sql.DriverManager.getConnection(u, "admin", "hunter22"); }\n}\n'
+    t = triage([_f("A.java", 2, Severity.MEDIUM, rule="java_password_rule-ConstantDBPassword"),
+                _f("A.java", 3, Severity.MEDIUM)], {"A.java": content}, max_files=10, max_findings_per_file=30)
+    assert t.masked_lines == {"A.java": {2}}
+    assert "A.java" in t.to_model
+
+
+def test_content_for_the_model_masks_secret_spans_and_credential_lines():
+    from codeguard.pipeline.generic_review import content_for_model
+    content = 'line one\n    getConnection(u, "admin", "hunter22");\nx = "abcdef";\n'
+    t = triage([_f("A.java", 2, Severity.MEDIUM, rule="java_password_rule-ConstantDBPassword")],
+               {"A.java": content}, max_files=10, max_findings_per_file=30)
+    sent = content_for_model("A.java", content, [(3, 5, 11)], t)
+    assert "hunter22" not in sent and "abcdef" not in sent
+    assert sent.splitlines()[0] == "line one" and sent.splitlines()[1].startswith("    [redacted")
+    assert sent.count("\n") == content.count("\n")

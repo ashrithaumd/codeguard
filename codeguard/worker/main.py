@@ -45,7 +45,6 @@ from codeguard.languages import NOT_COVERED_PREFIX
 from codeguard.diff.models import FilteredFile
 from codeguard.diff.parse import hash_content, parse_hunk_ranges
 from codeguard.line_refs import strip_line_refs
-from codeguard.redact import mask_spans
 from codeguard.diff.filters import split_test_asserts
 from codeguard.diff.ingest import ingest_pr_diff
 from codeguard.github.auth import get_installation_token
@@ -67,7 +66,7 @@ from codeguard.pipeline.graph import review_graph
 from codeguard.pipeline.hunk_cache import fetch_cache_hits, write_cache_records
 from codeguard.pipeline.impact import ImpactReport, analyze
 from codeguard.pipeline.merge import rule_label, with_flow_note
-from codeguard.pipeline.generic_review import triage
+from codeguard.pipeline.generic_review import content_for_model, triage
 from codeguard.pipeline.nodes import _exclude_suppressed, compute_cache_keys, verdict_cache_agent
 from codeguard.pipeline.reviews import record_review
 from codeguard.pipeline.state import ReviewState
@@ -368,7 +367,7 @@ async def prepare_generic(diff_result, secrets: SecretScan, settings: Settings) 
     on_changed = filter_findings_to_changed_lines(raw, ranges)
     t = triage(on_changed, contents, max_files=settings.generic_ai_files_per_pr,
                max_findings_per_file=settings.generic_ai_findings_per_file)
-    masked = {p: mask_spans(contents[p], secrets.spans.get(p, [])) for p in t.to_model}
+    masked = {p: content_for_model(p, contents[p], secrets.spans.get(p, []), t) for p in t.to_model}
     prep.state = {"generic_scanned": sorted(contents)}
     if t.to_model:
         prep.state.update(generic_files=masked, generic_findings=t.to_model)

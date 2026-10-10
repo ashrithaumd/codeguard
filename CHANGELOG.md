@@ -54,6 +54,12 @@ CodeGuard is marked **ACTION REQUIRED**.
   verdict-confirmed on the dashboard and in the PR summary, like `security`
   and `ai_aware`; one it never saw keeps its scanner's tag and stays
   unverified. Python's counts are unchanged (pinned in a test).
+- **Credential lines never reach the model**: a line a credential rule
+  flagged (e.g. `getConnection(url, "admin", "…")`, whose positional literal
+  no redaction pattern can see) is masked whole before the file goes to
+  `security_generic` for any other finding. One helper builds that content
+  for both the audit and the PR path. Found in review of this branch; no
+  model call had been made with such content.
 - `scripts/smoke_image.sh`: vendored and own rules fire offline in the
   image.
 - Own rule `codeguard-go-math-rand-secret`: `math/rand` used for a token,
