@@ -56,7 +56,7 @@ def test_semgrep_rule_tests_pass():
     pattern broke, and where.
     """
     proc = subprocess.run(
-        ["semgrep", "--test", "--metrics=off", str(RULES_DIR)],
+        ["semgrep", "--test", "--metrics=off", "--jobs", "1", "--max-memory", "1024", str(RULES_DIR)],
         capture_output=True, text=True, timeout=300,
     )
 
@@ -100,7 +100,7 @@ LANG_RULES_DIR = RULES_DIR.parent / "rules_lang"
 @pytest.mark.skipif(sys.platform == "win32", reason=_SEMGREP_WINDOWS_SKIP)
 def test_own_language_rule_tests_pass():
     proc = subprocess.run(
-        ["semgrep", "--test", "--metrics=off", str(LANG_RULES_DIR)],
+        ["semgrep", "--test", "--metrics=off", "--jobs", "1", "--max-memory", "1024", str(LANG_RULES_DIR)],
         capture_output=True, text=True, timeout=300,
     )
     assert proc.returncode == 0, f"semgrep --test failed:\n{proc.stdout}\n{proc.stderr}"
