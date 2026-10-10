@@ -54,6 +54,11 @@ class DiffIngestionResult(BaseModel):
     # review, since a version pin isn't reviewable code.
     dependency_patches: dict[str, str] = Field(default_factory=dict)
     dependency_contents: dict[str, str] = Field(default_factory=dict)
+    # Every changed NON-Python file with additions, as sparse added-lines
+    # content (tools/gitleaks_runner.sparse_from_patch): what the secrets
+    # scan reads. Built from the patches GitHub already sent, so no extra
+    # fetch; Python files are left to CodeGuard's own credential rules.
+    secret_scan_files: dict[str, str] = Field(default_factory=dict)
 
     @property
     def files_reviewed(self) -> list[str]:

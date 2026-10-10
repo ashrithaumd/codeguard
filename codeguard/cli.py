@@ -64,6 +64,8 @@ from codeguard.redact import redact
 from codeguard.report_format import REPORT_DATA_VERSION, UNREVIEWED_NOTICE_TEXT
 from codeguard.severity import Severity
 from codeguard.tools.base import UNAVAILABLE_RULE_ID
+from codeguard.tools.gitleaks_runner import _scannable as secret_scannable
+from codeguard.tools.gitleaks_runner import scan_secrets
 from codeguard.tools.models import Finding
 from codeguard.tools.osv_runner import check_dependency_updates
 from codeguard.tools.run_all import run_tools_on_files
@@ -258,6 +260,39 @@ def _not_covered_files(root: Path, repo_config: RepoConfig) -> list[dict]:
                 continue
             paths.append(abs_path.relative_to(root).as_posix())
     return not_covered(paths, repo_config)
+
+
+# Secrets scan read cap per file. Gitleaks gets the same cap
+# (--max-target-megabytes 2); a larger "config" file is data, not config.
+_SECRET_SCAN_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _collect_secret_scan_files(root: Path, repo_config: RepoConfig) -> dict[str, str]:
+    """Non-Python text files for the secrets scan (tools/gitleaks_runner.py),
+    read with the same hardening as _collect_repo_files: .git pruned, no
+    symlink followed or read, nothing that resolves outside the clone,
+    regular files only (a FIFO would block forever), size-capped before
+    reading, binary skipped. Which paths count is the runner's own rule
+    (_scannable): no Python, no vendored/generated/lockfiles, no
+    ignored_paths."""
+    files: dict[str, str] = {}
+    real_root = root.resolve()
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d != ".git" and not (Path(dirpath) / d).is_symlink()]
+        for name in filenames:
+            abs_path = Path(dirpath) / name
+            rel_path = abs_path.relative_to(root).as_posix()
+            if not secret_scannable(rel_path, repo_config) or abs_path.is_symlink():
+                continue
+            try:
+                if not abs_path.resolve().is_relative_to(real_root) or not abs_path.is_file():
+                    continue
+                if abs_path.stat().st_size > _SECRET_SCAN_MAX_BYTES:
+                    continue
+                files[rel_path] = abs_path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+    return files
 
 
 def _collect_repo_files(
@@ -756,6 +791,7 @@ def build_report_data(
     tokens_in: int, tokens_out: int, estimated_cost_usd: float, elapsed_s: float,
     skipped_test_asserts: int = 0, models: dict[str, str] | None = None,
     not_covered: list[dict] | None = None,
+    secret_placeholders: int = 0,
 ) -> dict:
     """The audit's result as data: what the audit page renders, what is
     stored in audits.report_json, and what render_report turns into
@@ -798,6 +834,9 @@ def build_report_data(
             "unreviewed": sum(1 for f in located if f.unreviewed),
             "verdict_calls_failed": len(verdict_call_failures),
             "not_covered": sum(len(g["paths"]) for g in not_covered or []),
+            # Placeholder-shaped values the secrets scan matched: not
+            # secrets, not reported, counted (tools/gitleaks_runner.py).
+            "secret_placeholders": secret_placeholders,
         },
         "incomplete": incomplete,
         "findings": [_finding_data(f) for f in located],
@@ -895,7 +934,8 @@ def render_report(**kwargs) -> str:
             lines.append(f"- `{d['file']}:{d['start_line']}` [{d['rule_id']}] {d['reason']}")
         lines.append("")
 
-    if data["skipped_files"] or data["verdict_call_failures"] or data.get("not_covered"):
+    if (data["skipped_files"] or data["verdict_call_failures"] or data.get("not_covered")
+            or data["summary"].get("secret_placeholders")):
         lines.append("## Skipped")
         lines.append("")
         if data["skipped_files"]:
@@ -915,6 +955,12 @@ def render_report(**kwargs) -> str:
             lines.append("")
             for v in data["verdict_call_failures"]:
                 lines.append(f"- `{v['path']}`: {v['reason']}")
+            lines.append("")
+        if data["summary"].get("secret_placeholders"):
+            lines.append(
+                f"**{data['summary']['secret_placeholders']} placeholder-shaped value(s)** matched by the "
+                "secrets scan: their shape says placeholder, so they are not reported as secrets."
+            )
             lines.append("")
         if data.get("not_covered"):
             lines.append(
@@ -1221,6 +1267,9 @@ def run_audit(
         print(f"{len(all_files)} reviewable file(s) found.", file=sys.stderr)
         # Names only: what the report must say nothing checked.
         uncovered = _not_covered_files(root, repo_config)
+        # Secrets in every non-Python file. Deterministic, no model: the
+        # value never leaves tools/gitleaks_runner.py.
+        secrets = scan_secrets(_collect_secret_scan_files(root, repo_config), repo_config)
 
         # No Python, no audit -- and crucially no model call. Checked here
         # rather than after the scanners so a repository of nothing but
@@ -1315,9 +1364,11 @@ def run_audit(
             stats.duration_s = elapsed_s
 
         unavailable = _audit_unavailable_tools(tool_findings)
+        if secrets.unavailable:
+            unavailable.append("gitleaks")
         report_kwargs = dict(
             target=safe_target, files_scanned=len(files), files_ai_aware=files_ai_aware,
-            ai_reviewed_findings=ai_reviewed_findings, passthrough_findings=passthrough_findings,
+            ai_reviewed_findings=ai_reviewed_findings, passthrough_findings=passthrough_findings + secrets.findings,
             dismissed=dismissed, eval_hygiene_findings=eval_hygiene_findings, osv_findings=osv_findings,
             skipped_files=skipped_files, verdict_call_failures=sec.call_failures + aa.call_failures,
             unavailable_tools=unavailable,
@@ -1326,6 +1377,7 @@ def run_audit(
             skipped_test_asserts=skipped_test_asserts,
             models={"security": settings.security_agent_model, "ai_aware": settings.ai_aware_agent_model},
             not_covered=uncovered,
+            secret_placeholders=secrets.placeholders,
         )
         report = render_report(**report_kwargs)
         if stats is not None:

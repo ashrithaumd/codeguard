@@ -215,13 +215,14 @@
 {%- set uncovered = report.not_covered or [] %}
 {%- set uncovered_n = namespace(n=0) %}
 {%- for g in uncovered %}{% set uncovered_n.n = uncovered_n.n + g.paths|length %}{% endfor %}
-{% if s.skipped_test_asserts or report.skipped_files or report.verdict_call_failures or uncovered %}
+{% if s.skipped_test_asserts or report.skipped_files or report.verdict_call_failures or uncovered or s.secret_placeholders %}
 <details class="panel fold">
   {%- set parts = [] %}
   {%- if s.skipped_test_asserts %}{% set _ = parts.append(s.skipped_test_asserts ~ " test assert" ~ ("" if s.skipped_test_asserts == 1 else "s")) %}{% endif %}
   {%- if report.skipped_files %}{% set _ = parts.append(report.skipped_files|length ~ " file" ~ ("" if report.skipped_files|length == 1 else "s")) %}{% endif %}
   {%- if report.verdict_call_failures %}{% set _ = parts.append(report.verdict_call_failures|length ~ " failed AI call" ~ ("" if report.verdict_call_failures|length == 1 else "s")) %}{% endif %}
   {%- if uncovered %}{% set _ = parts.append(uncovered_n.n ~ " file" ~ ("" if uncovered_n.n == 1 else "s") ~ " not covered") %}{% endif %}
+  {%- if s.secret_placeholders %}{% set _ = parts.append(s.secret_placeholders ~ " placeholder" ~ ("" if s.secret_placeholders == 1 else "s")) %}{% endif %}
   <summary class="panel-head">Skipped ({{ parts|join(", ") }})</summary>
   <ul class="fold-list">
     {% if s.skipped_test_asserts %}
@@ -230,6 +231,8 @@
     {% endif %}
     {% for f in report.skipped_files %}<li><code>{{ f.path }}</code> <span class="dim">{{ f.reason }}</span></li>{% endfor %}
     {% for f in report.verdict_call_failures %}<li><code>{{ f.path }}</code> <span class="dim">{{ f.reason|redact }}</span></li>{% endfor %}
+    {% if s.secret_placeholders %}<li>{{ s.secret_placeholders }} placeholder-shaped value{{ "" if s.secret_placeholders == 1 else "s" }} matched by the secrets scan —
+      the shape says placeholder, so not reported as secrets.</li>{% endif %}
     {% for g in uncovered %}<li>Not covered by any scanner — {{ g.language }} ({{ g.paths|length }}):
       {% for p in g.paths[:10] %}<code>{{ p }}</code>{% if not loop.last %}, {% endif %}{% endfor %}{% if g.paths|length > 10 %}<span class="dim">, +{{ g.paths|length - 10 }} more</span>{% endif %}</li>{% endfor %}
   </ul>

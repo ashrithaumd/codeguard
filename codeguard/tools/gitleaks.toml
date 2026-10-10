@@ -1,0 +1,19 @@
+# CodeGuard's Gitleaks configuration: Gitleaks' own default rules, plus the
+# paths CodeGuard never scans for secrets.
+#   .git/          object storage, not source
+#   *.py           Python is covered by CodeGuard's own credential rules
+#                  (rules/llm-security.yaml, Bandit B105-B107); scanning it
+#                  twice would change Python reviews
+# Vendored, generated, lockfiles and .codeguard.yml ignored_paths are left
+# out by the runner before Gitleaks sees anything.
+title = "CodeGuard secrets"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Not scanned by CodeGuard's secrets pass"
+paths = [
+  '''(^|/)\.git/''',
+  '''\.py$''',
+]

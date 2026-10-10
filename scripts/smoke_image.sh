@@ -176,6 +176,31 @@ print("=== OK: semgrep %s via the runner, scan ran, 0 network attempts (image en
 docker run --rm --network none -e CONTROL=1 "$IMAGE" python -c "$SEMGREP_PROBE"
 docker run --rm --network none --entrypoint env "$IMAGE" -u SEMGREP_ENABLE_VERSION_CHECK -u SEMGREP_SEND_METRICS python -c "$SEMGREP_PROBE"
 
+
+# Gitleaks: pinned (verified by sha256 at build) and offline. A key is
+# generated inside the container, scanned through our own runner, and must
+# be found -- and must appear NOWHERE in what the runner returns. Nothing
+# is printed but counts.
+echo "checking gitleaks is pinned, runs offline, and never returns a secret"
+GITLEAKS_PROBE='
+import json, secrets, string, sys
+from codeguard.config import RepoConfig
+from codeguard.tools.gitleaks_runner import scan_secrets
+import subprocess
+version = subprocess.run(["gitleaks", "version"], capture_output=True, text=True).stdout.strip()
+if version != "8.30.1":
+    sys.exit("=== FAIL: gitleaks is %r, expected 8.30.1 ===" % version)
+key = "ghp_" + "".join(secrets.choice(string.ascii_letters + string.digits) for _ in range(36))
+scan = scan_secrets({"config/app.yml": "app:" + chr(10) + "  token: " + chr(34) + key + chr(34) + chr(10)}, RepoConfig())
+if scan.unavailable or len(scan.findings) != 1:
+    sys.exit("=== FAIL: expected one finding, got %d (unavailable=%s) ===" % (len(scan.findings), scan.unavailable))
+kept = repr(scan) + json.dumps([f.model_dump() for f in scan.findings], default=str)
+if key in kept or key[4:20] in kept:
+    sys.exit("=== FAIL: the secret value appears in the scan result ===")
+print("=== OK: gitleaks %s offline, 1 finding, value absent from the result ===" % version)
+'
+docker run --rm --network none "$IMAGE" python -c "$GITLEAKS_PROBE"
+
 # The tokenizer must already be IN the image. tiktoken downloads
 # cl100k_base on first use and caches it; a container that has to fetch it
 # at runtime fails its first audit on any network that blocks the download,

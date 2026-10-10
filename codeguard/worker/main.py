@@ -55,6 +55,7 @@ from codeguard.github.outbound import escape_for_github, escape_one_line
 from codeguard.github.repo_config import load_repo_config
 from codeguard.github.reviews import fetch_review_comments, post_review
 from codeguard.github.tarball import TarballTooLarge, fetch_python_files
+from codeguard.tools.gitleaks_runner import SecretScan, scan_secrets
 from codeguard.pipeline.feedback import FINGERPRINT_MARKER_RE, fetch_suppressed_fingerprints, fingerprint_marker, record_posted_finding_comments
 from codeguard.pipeline.graph import review_graph
 from codeguard.pipeline.hunk_cache import fetch_cache_hits, write_cache_records
@@ -325,6 +326,13 @@ def _check_run_conclusion(all_findings, gate_threshold) -> tuple[str, str, list]
     return "failure", f"{len(blocking)} finding(s) at or above {gate_threshold.name}", blocking
 
 
+async def prepare_secrets(files: dict[str, str], repo_config: RepoConfig) -> SecretScan:
+    """Gitleaks over the PR's sparse non-Python files. Its findings go
+    straight into the review's results: never to a verdict agent, never to
+    the fix agent. A failure is `unavailable`, never an exception."""
+    return await asyncio.to_thread(scan_secrets, files, repo_config)
+
+
 def coverage_gaps(files_filtered) -> dict[str, int]:
     """Filtered files no scanner covers, counted by language, from the
     reason diff/filters.py recorded ("Not covered by any scanner (Go)")."""
@@ -481,6 +489,7 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
             token, owner, repo, head_sha, base_ref, diff_result.file_contents, diff_result.patches, settings))
         if impact_enabled(settings, repo_config) else None
     )
+    secrets_task = asyncio.ensure_future(prepare_secrets(diff_result.secret_scan_files, repo_config))
     if repo_config.enable_ai_aware:
         base_tree_task = asyncio.ensure_future(fetch_base_tree_python_files(token, owner, repo, base_ref))
     else:
@@ -489,6 +498,9 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
     tool_findings, skipped_test_asserts = _tool_findings_for_review(pr_number, tool_findings)
     osv_findings = await osv_task
     base_tree_files = await base_tree_task if base_tree_task is not None else {}
+    secrets = await secrets_task
+    if secrets.unavailable:
+        logger.warning("pr=%s: secrets scan did not run", pr_number)
     impact_report, impact_notes = await impact_task if impact_task is not None else (None, [])
     _log_findings(pr_number, tool_findings)
     if osv_findings:
@@ -521,7 +533,8 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
         "impact_report": impact_report, "impact_callers": [], "impact_notes": impact_notes,
         "coverage_gaps": coverage_gaps(diff_result.files_filtered),
         "touches_ai_code": False,
-        "findings": [], "repo_level_findings": osv_findings, "dismissed_findings": [], "fix_suggestions": [],
+        # Secrets go straight into the results (no agent, no model).
+        "findings": list(secrets.findings), "repo_level_findings": osv_findings, "dismissed_findings": [], "fix_suggestions": [],
         "should_fix": False, "summary": "", "inline_findings": [],
         "tokens_in": 0, "tokens_out": 0, "estimated_cost_usd": 0.0, "node_latencies": [],
     }

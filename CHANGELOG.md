@@ -7,6 +7,37 @@ CodeGuard is marked **ACTION REQUIRED**.
 
 ### Multi-language support (feat/multi-language)
 
+#### Secrets in every non-Python file (Gitleaks)
+
+- Gitleaks **8.30.1** (MIT) in the image, verified against the release's
+  sha256 at build; offline. Default rules plus `codeguard/tools/gitleaks.toml`
+  (no `.git/`, no `*.py`).
+- **The value never leaves memory.** Gitleaks runs with `--redact` (checked:
+  no value in any of its 18 output fields). The runner locates the value in
+  the content it already holds, by aligning the redacted Match against the
+  line (Gitleaks' columns are off by one in some contexts, so it takes the
+  token run, never a raw slice), classifies its shape, computes a keyed id,
+  and drops it. Kept: rule, file, line, shape hint ("40-char github-style
+  token, high-entropy"), id.
+- **Keyed id, not a plain hash**: HMAC-SHA256 truncated to 12 hex, keyed by
+  `SECRET_HASH_KEY` or a key derived from the Anthropic key; no key, no id.
+  An unkeyed hash of a weak value can be reversed by guessing.
+- **No model, ever.** The shape decides: placeholder-like is not reported,
+  only counted ("2 placeholder-shaped values" in the audit's existing
+  Skipped section); anything else is a HIGH finding. A "this is fake"
+  comment changes nothing. Gitleaks findings are never routed to a verdict
+  agent or the fix agent.
+- **Python unchanged**: `.py` files are not scanned here (their own rules
+  cover credentials); the scanner snapshot is identical.
+- PR reviews scan sparse added-lines files built from the patches GitHub
+  already sent (no extra fetch), so only secrets the PR adds are reported, at
+  their lines. Audits scan non-Python text files read with the usual
+  hardening (no symlinks, nothing outside the clone, regular files, 2 MB
+  cap, binary skipped). Vendored, generated, lockfiles and ignored_paths are
+  left out; docs are scanned. A Gitleaks failure makes the audit incomplete.
+- `scripts/smoke_image.sh`: pinned version, offline, one finding, value
+  absent from the result.
+
 #### "Files not reviewed" says which language, per file
 
 - `codeguard/languages.py`: one map from file to language and from

@@ -85,3 +85,11 @@ async def test_a_long_list_is_capped_with_a_count(client, pool, as_principal):
     many = [{"language": "Go", "paths": [f"pkg/f{i}.go" for i in range(25)]}]
     fold = _skipped_fold(await _page(client, pool, as_principal, _report(many)))
     assert "Go (25)" in fold and "pkg/f9.go" in fold and "pkg/f10.go" not in fold and "+15 more" in fold
+
+
+async def test_secret_placeholders_are_counted_inside_the_skipped_section(client, pool, as_principal):
+    report = _report()
+    report["summary"]["secret_placeholders"] = 2
+    fold = _skipped_fold(await _page(client, pool, as_principal, report))
+    assert re.search(r"Skipped \(2 placeholders\)", fold)
+    assert "2 placeholder-shaped values matched by the secrets scan" in fold

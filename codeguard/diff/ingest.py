@@ -25,6 +25,7 @@ from codeguard.diff.metrics import (
     files_reviewed_total,
     files_seen_total,
 )
+from codeguard.tools.gitleaks_runner import sparse_from_patch
 from codeguard.diff.models import DiffIngestionResult, FilteredFile, Hunk
 from codeguard.diff.parse import build_hunks
 from codeguard.github.diff import get_file_content, get_pr_files
@@ -174,6 +175,12 @@ async def ingest_pr_diff(
         dependency_patches={f["filename"]: f["patch"] for f in dependency_files},
         dependency_contents={
             f["filename"]: all_content_by_path[f["filename"]] for f in dependency_files if f["filename"] in all_content_by_path
+        },
+        secret_scan_files={
+            f["filename"]: sparse
+            for f in raw_files
+            if not f["filename"].endswith(".py") and f.get("additions", 0) and f.get("patch")
+            and (sparse := sparse_from_patch(f["patch"]))
         },
     )
 

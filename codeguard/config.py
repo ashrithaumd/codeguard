@@ -301,6 +301,12 @@ class Settings(BaseSettings):
     # and its cost and precision have not been measured against the eval
     # yet. A repository can also opt out in .codeguard.yml
     # (enable_impact_analysis: false); it cannot opt in past this switch.
+    # Keys the secret id (tools/gitleaks_runner.py): HMAC-SHA256 of a found
+    # secret, truncated, so the same secret is recognisable across files
+    # without the id being reversible by guessing. Optional: unset, the id is
+    # keyed by a value derived from the Anthropic key instead.
+    secret_hash_key: str = ""
+
     impact_analysis_enabled: bool = False
     impact_max_call_sites_per_symbol: int = 5
     impact_max_call_sites_per_pr: int = 15

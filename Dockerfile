@@ -19,6 +19,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl git \
 # the route that works on every platform.
 ARG INSTALL_DEV=false
 
+# Gitleaks, pinned and verified: secrets in every non-Python file type
+# (codeguard/tools/gitleaks_runner.py). The binary is checked against the
+# release's own sha256 before it is unpacked; a mismatch fails the build.
+# MIT licensed. No network at runtime: it scans files on disk and never
+# calls out.
+ARG GITLEAKS_VERSION=8.30.1
+ARG GITLEAKS_SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+RUN curl -sSfL -o /tmp/gitleaks.tgz         "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"     && echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tgz" | sha256sum -c -     && tar -xzf /tmp/gitleaks.tgz -C /usr/local/bin gitleaks     && rm /tmp/gitleaks.tgz     && gitleaks version
+
 COPY pyproject.toml ./
 COPY codeguard/ ./codeguard/
 RUN if [ "$INSTALL_DEV" = "true" ]; then \

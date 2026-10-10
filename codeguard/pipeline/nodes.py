@@ -1232,6 +1232,9 @@ def route_after_fanin(state: ReviewState) -> str | list[Send]:
     qualifying = [
         f for f in all_findings
         if f.severity >= threshold and f.file in state["files"] and not _is_model_located(f)
+        # Never a secret: the fix agent reads the file, and nothing about a
+        # secret goes to a model (tools/gitleaks_runner.py).
+        and f.source_tool != "gitleaks"
     ]
     if not qualifying:
         return "summarize"
