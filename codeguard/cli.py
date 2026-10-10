@@ -1467,6 +1467,7 @@ def run_audit(
         unavailable = _audit_unavailable_tools(tool_findings)
         if secrets.unavailable:
             unavailable.append("gitleaks")
+        unavailable += generic_triage.unavailable
         report_kwargs = dict(
             target=safe_target, files_scanned=len(files) + len(generic_files), files_ai_aware=files_ai_aware,
             ai_reviewed_findings=ai_reviewed_findings, passthrough_findings=passthrough_findings + secrets.findings,

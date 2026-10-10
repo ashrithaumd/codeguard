@@ -114,3 +114,14 @@ def test_a_positional_db_password_never_reaches_the_agent(tmp_path):
     [state] = seen
     assert "Tr0ub4dor-hunter22" not in state["content"]
     assert "Tr0ub4dor-hunter22" not in report
+
+
+def test_a_failed_non_python_scan_makes_the_audit_incomplete_and_lists_no_finding(tmp_path):
+    from codeguard.tools.base import unavailable_finding
+    (tmp_path / "run.js").write_text(JS_EVAL)
+    with patch("codeguard.cli.run_vendor_rules",
+               return_value=[unavailable_finding("semgrep-non-python", "timed out after 60s")]):
+        _, _, report, seen = _run(tmp_path)
+    assert seen == []
+    assert "semgrep-non-python did not run" in report
+    assert "<pr>" not in report

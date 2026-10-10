@@ -161,3 +161,10 @@ def test_the_one_line_exec_form_is_ours_and_the_variable_form_stays_vendored():
     got = sorted((f.file, f.rule_id, f.source_tool) for f in findings)
     assert got == [("a/Direct.java", EXEC_RULE, "codeguard-rules"),
                    ("b/ViaVar.java", "java_inject_rule-CommandInjection", "gitlab-sast")]
+
+
+def test_a_failed_run_is_named_apart_from_the_python_semgrep_run():
+    from codeguard.tools.base import UNAVAILABLE_RULE_ID
+    with patch("codeguard.tools.base.subprocess.run", side_effect=subprocess.TimeoutExpired("semgrep", 60)):
+        [f] = run_vendor_rules({"a.js": "x = 1\n"})
+    assert (f.rule_id, f.source_tool) == (UNAVAILABLE_RULE_ID, "semgrep-non-python")

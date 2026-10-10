@@ -102,3 +102,11 @@ def test_content_for_the_model_masks_secret_spans_and_credential_lines():
     assert "hunter22" not in sent and "abcdef" not in sent
     assert sent.splitlines()[0] == "line one" and sent.splitlines()[1].startswith("    [redacted")
     assert sent.count("\n") == content.count("\n")
+
+
+def test_a_scanner_that_did_not_run_is_named_never_reported_as_a_finding():
+    from codeguard.tools.base import unavailable_finding
+    t = triage([unavailable_finding("semgrep-non-python", "timed out after 60s"),
+                _f("a.js", 2, Severity.MEDIUM)], {"a.js": "x\ny\n"}, max_files=10, max_findings_per_file=30)
+    assert t.unavailable == ["semgrep-non-python"]
+    assert all(f.file != "<pr>" for f in t.passthrough + t.unreviewed + sum(t.to_model.values(), []))

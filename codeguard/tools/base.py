@@ -164,7 +164,7 @@ def _platform_hint(tool_name: str) -> str:
 UNAVAILABLE_RULE_ID = "internal.tool_unavailable"
 
 
-def _unavailable_finding(tool_name: str, reason: str) -> Finding:
+def unavailable_finding(tool_name: str, reason: str) -> Finding:
     return Finding.create(
         file="<pr>", start_line=0, end_line=0, severity=Severity.LOW,
         source_tool=tool_name, rule_id=UNAVAILABLE_RULE_ID,
@@ -204,7 +204,7 @@ def run_tool_on_pr(
     except subprocess.TimeoutExpired:
         tool_failures_total.labels(tool=tool_name).inc()
         logger.warning("%s timed out after %ds on %d file(s)", tool_name, timeout, len(files))
-        return [_unavailable_finding(tool_name, f"timed out after {timeout}s")]
+        return [unavailable_finding(tool_name, f"timed out after {timeout}s")]
     except Exception as exc:
         tool_failures_total.labels(tool=tool_name).inc()
         hint = _platform_hint(tool_name)
@@ -217,7 +217,7 @@ def run_tool_on_pr(
             tool_name, len(files), tool_name, exc, _exit_status(proc), _stderr_tail(proc), hint,
             exc_info=True,
         )
-        return [_unavailable_finding(tool_name, f"{exc}{hint}")]
+        return [unavailable_finding(tool_name, f"{exc}{hint}")]
     finally:
         tool_run_duration_seconds.labels(tool=tool_name).observe(time.perf_counter() - start)
         shutil.rmtree(tmp_dir, ignore_errors=True)

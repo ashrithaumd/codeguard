@@ -101,3 +101,20 @@ async def test_a_credential_finding_line_is_masked_before_the_model():
                                        generic_patches={"Db.java": patch_text}), SecretScan(), get_settings())
     sent = prep.state["generic_files"]["Db.java"]
     assert "Tr0ub4dor-hunter22" not in sent
+
+
+async def test_a_failed_non_python_scan_is_named_for_the_check_summary():
+    from codeguard.tools.base import unavailable_finding
+    with patch("codeguard.worker.main.run_vendor_rules",
+               return_value=[unavailable_finding("semgrep-non-python", "timed out after 60s")]):
+        prep = await prepare_generic(_diff(generic_contents={"web/run.js": JS},
+                                           generic_patches={"web/run.js": JS_PATCH}), SecretScan(), get_settings())
+    assert prep.unavailable == ["semgrep-non-python"] and prep.findings == []
+
+
+def test_the_check_summary_names_every_scanner_that_did_not_run():
+    from codeguard.worker.main import GenericPrep, _summary_tool_findings
+    out = _summary_tool_findings([], SecretScan(unavailable=True), GenericPrep(unavailable=["semgrep-non-python"]))
+    from codeguard.github.check_summary import unavailable_tools
+    assert unavailable_tools(out) == ["gitleaks", "semgrep-non-python"]
+    assert _summary_tool_findings([], SecretScan(), GenericPrep()) == []

@@ -131,6 +131,9 @@ def run_semgrep(files: dict[str, str], timeout: int = DEFAULT_TIMEOUT) -> list[F
 # agents, and the Python run's own config and output are untouched.
 
 VENDOR_TOOL_NAME = "gitlab-sast"
+# The run itself, as named when it fails ("semgrep-non-python did not run"),
+# so a failure here never reads as the Python run's.
+VENDOR_RUN_NAME = "semgrep-non-python"
 VENDOR_RULES_DIR = RULES_DIR.parent / "rules_vendor" / "gitlab-sast-rules"
 VENDOR_LANGUAGE_FILES = frozenset({"JavaScript", "TypeScript", "Go", "Java", "C#"})
 # CodeGuard's own rules for those languages (NOTICE), kept apart from the
@@ -168,5 +171,5 @@ def run_vendor_rules(files: dict[str, str], timeout: int = DEFAULT_TIMEOUT) -> l
     in_scope = {p: c for p, c in files.items() if language_of(p) in VENDOR_LANGUAGE_FILES}
     if not in_scope:
         return []
-    return run_tool_on_pr(TOOL_NAME, _build_vendor_cmd, _parse_vendor, in_scope, timeout,
+    return run_tool_on_pr(VENDOR_RUN_NAME, _build_vendor_cmd, _parse_vendor, in_scope, timeout,
                           env=semgrep_env())

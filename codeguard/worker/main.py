@@ -60,6 +60,7 @@ from codeguard.github.reviews import fetch_review_comments, post_review
 from codeguard.github.tarball import TarballTooLarge, fetch_python_files
 from codeguard.tools.gitleaks_runner import SecretScan, scan_secrets
 from codeguard.tools.line_filter import filter_findings_to_changed_lines
+from codeguard.tools.base import unavailable_finding
 from codeguard.tools.semgrep_runner import run_vendor_rules
 from codeguard.pipeline.feedback import FINGERPRINT_MARKER_RE, fetch_suppressed_fingerprints, fingerprint_marker, record_posted_finding_comments
 from codeguard.pipeline.graph import review_graph
@@ -351,6 +352,7 @@ class GenericPrep:
     capped: list = field(default_factory=list)
     cache_keys: list = field(default_factory=list)
     placeholders: int = 0
+    unavailable: list = field(default_factory=list)
 
 
 async def prepare_generic(diff_result, secrets: SecretScan, settings: Settings) -> GenericPrep:
@@ -374,8 +376,20 @@ async def prepare_generic(diff_result, secrets: SecretScan, settings: Settings) 
     prep.findings = t.passthrough + t.unreviewed
     prep.capped = t.capped_files
     prep.placeholders = t.placeholders
+    prep.unavailable = t.unavailable
     prep.cache_keys = [(p, hash_content(c), verdict_cache_agent("security_generic")) for p, c in masked.items()]
     return prep
+
+
+def _summary_tool_findings(tool_findings, secrets: SecretScan, generic: GenericPrep) -> list:
+    """The raw tool findings the check summary reads "did not run" from
+    (check_summary.unavailable_tools), plus one meta-finding for each
+    non-Python scanner that failed: Gitleaks and the second Semgrep pass
+    report failure outside tool_findings, and would otherwise say nothing."""
+    extra = [unavailable_finding(name, "did not run") for name in generic.unavailable]
+    if secrets.unavailable:
+        extra.append(unavailable_finding("gitleaks", "did not run"))
+    return list(tool_findings) + extra
 
 
 def coverage_gaps(files_filtered) -> dict[str, int]:
@@ -643,7 +657,7 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
         conclusion, title, blocking = _check_run_conclusion(all_findings, repo_config.gate_threshold)
         summary = render_check_summary(
             findings=all_findings,
-            tool_findings=tool_findings,
+            tool_findings=_summary_tool_findings(tool_findings, secrets, generic),
             tool_warnings=[w for w in (semgrep_version_warning(),) if w],
             blocking=blocking,
             gate_threshold=repo_config.gate_threshold,

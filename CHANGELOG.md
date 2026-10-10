@@ -60,6 +60,12 @@ CodeGuard is marked **ACTION REQUIRED**.
   `security_generic` for any other finding. One helper builds that content
   for both the audit and the PR path. Found in review of this branch; no
   model call had been made with such content.
+- **A non-Python scanner that did not run says so**: the second Semgrep
+  pass is named `semgrep-non-python`; if it fails, the audit is marked
+  incomplete ("semgrep-non-python did not run") instead of listing a
+  meta-finding on `<pr>`, and the PR check summary shows the same caution
+  block Python's scanners get. A Gitleaks failure on a PR, previously only
+  logged, now shows there too.
 - `scripts/smoke_image.sh`: vendored and own rules fire offline in the
   image.
 - Own rule `codeguard-go-math-rand-secret`: `math/rand` used for a token,

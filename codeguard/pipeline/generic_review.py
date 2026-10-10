@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 
 from codeguard.redact import classify_secret, mask_lines, mask_spans, secret_values
 from codeguard.severity import Severity
+from codeguard.tools.base import UNAVAILABLE_RULE_ID
 from codeguard.tools.models import Finding
 
 # Vendored rules whose finding IS "a credential value is hardcoded here".
@@ -44,6 +45,9 @@ class Triage:
     # Lines a credential rule flagged, per file: masked whole before any
     # content goes to the model (content_for_model).
     masked_lines: dict[str, set[int]] = field(default_factory=dict)
+    # Scanners that did not run (their meta-finding), by name: said in the
+    # incompleteness warning, never listed as a finding.
+    unavailable: list[str] = field(default_factory=list)
 
 
 def _credential(finding: Finding, content: str) -> tuple[Finding | None, bool]:
@@ -74,6 +78,10 @@ def triage(findings: list[Finding], contents: dict[str, str], *, max_files: int,
     t = Triage()
     by_file: dict[str, list[Finding]] = {}
     for f in findings:
+        if f.rule_id == UNAVAILABLE_RULE_ID:
+            if f.source_tool not in t.unavailable:
+                t.unavailable.append(f.source_tool)
+            continue
         rule = f.rule_id.rsplit(".", 1)[-1]
         if rule in GENERIC_CREDENTIAL_RULES:
             t.masked_lines.setdefault(f.file, set()).update(range(f.start_line, f.end_line + 1))
