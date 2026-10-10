@@ -40,6 +40,7 @@ from codeguard.api.audits import (
 from codeguard.api.repo_settings import pr_reviews_enabled
 from codeguard.cli import AuditOutcome, AuditStats, run_audit
 from codeguard.config import RepoConfig, Settings, get_settings, verify_required_settings
+from codeguard.languages import NOT_COVERED_PREFIX
 from codeguard.line_refs import strip_line_refs
 from codeguard.diff.filters import split_test_asserts
 from codeguard.diff.ingest import ingest_pr_diff
@@ -324,6 +325,18 @@ def _check_run_conclusion(all_findings, gate_threshold) -> tuple[str, str, list]
     return "failure", f"{len(blocking)} finding(s) at or above {gate_threshold.name}", blocking
 
 
+def coverage_gaps(files_filtered) -> dict[str, int]:
+    """Filtered files no scanner covers, counted by language, from the
+    reason diff/filters.py recorded ("Not covered by any scanner (Go)")."""
+    prefix = f"{NOT_COVERED_PREFIX} ("
+    counts: dict[str, int] = {}
+    for f in files_filtered:
+        if f.reason.startswith(prefix) and f.reason.endswith(")"):
+            language = f.reason[len(prefix):-1]
+            counts[language] = counts.get(language, 0) + 1
+    return counts
+
+
 _IMPACT_BASE_FETCH_CONCURRENCY = 5
 
 
@@ -506,6 +519,7 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
         "hunk_cache_hits": hunk_cache_hits, "cache_writes": [], "verdict_call_failures": [],
         "suppressed_fingerprints": suppressed_fingerprints,
         "impact_report": impact_report, "impact_callers": [], "impact_notes": impact_notes,
+        "coverage_gaps": coverage_gaps(diff_result.files_filtered),
         "touches_ai_code": False,
         "findings": [], "repo_level_findings": osv_findings, "dismissed_findings": [], "fix_suggestions": [],
         "should_fix": False, "summary": "", "inline_findings": [],

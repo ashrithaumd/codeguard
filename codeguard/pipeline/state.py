@@ -154,6 +154,12 @@ class ReviewState(TypedDict):
     impact_callers: Annotated[list[dict], operator.add]
     impact_notes: Annotated[list[str], operator.add]
 
+    # Changed source files in a language no scanner covers, counted by
+    # language ({"Go": 3}), for the summary's one coverage line
+    # (codeguard/languages.py). Set once by worker/main.py; absent or empty
+    # means no line.
+    coverage_gaps: NotRequired[dict[str, int]]
+
     # A verdict agent whose LLM call failed reports the file's raw tool
     # findings unverified rather than dropping them (see nodes.py's
     # _run_verdict_agent). This records that it happened, so "we found

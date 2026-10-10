@@ -7,6 +7,28 @@ CodeGuard is marked **ACTION REQUIRED**.
 
 ### Multi-language support (feat/multi-language)
 
+#### "Files not reviewed" says which language, per file
+
+- `codeguard/languages.py`: one map from file to language and from
+  language to coverage. Only Python is covered so far; each later item adds
+  its languages. Ruby and PHP are deliberately not covered and are listed
+  like any other.
+- PR reviews: a changed file in an uncovered language is recorded as "Not
+  covered by any scanner (Go)" instead of "non-Python (v1 scope is
+  Python-only)"; a file that is not source code says "not source code". The
+  review page already groups "Files not reviewed" by reason, so each
+  language is its own group inside that section. Stored reviews keep the
+  reason they were recorded with. Python files are handled exactly as
+  before.
+- PR summary: one line, "Not covered by any scanner: Go 3, Kotlin 1.", only
+  when there is something to say.
+- Audits: a path-only walk (no file opened; .git, symlinks, lockfiles,
+  generated, docs, vendored and ignored_paths left out) records
+  `not_covered` in the report. The audit page lists it inside the existing
+  Skipped section ("Skipped (83 test asserts, 3 files not covered)"), ten
+  paths per language and "+N more"; the markdown report likewise. Audits
+  stored before have no such field and render as before.
+
 #### Scanner engine pinned and kept offline
 
 - Semgrep stays at **1.45.0**. Versions after ~1.95 stop emitting the

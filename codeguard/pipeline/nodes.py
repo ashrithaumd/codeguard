@@ -34,6 +34,7 @@ from langgraph.types import Send
 from codeguard.config import get_settings
 from codeguard.diff.parse import build_hunks, hash_content, parse_hunk_ranges
 from codeguard.github.outbound import escape_for_github, escape_one_line
+from codeguard.languages import summary_line as coverage_summary_line
 from codeguard.line_refs import strip_line_refs
 from codeguard.pipeline.eval_hygiene import review_eval_hygiene
 from codeguard.pipeline.llm_call import call_agent
@@ -1925,6 +1926,14 @@ def _skipped_test_asserts_lines(state: ReviewState) -> list[str]:
     return [f"Skipped {n} test asserts (Bandit B101 in test files, where an assert is the test)."]
 
 
+def _coverage_lines(state: ReviewState) -> list[str]:
+    """"Not covered by any scanner: Go 3, Kotlin 1." -- changed source files
+    in a language no scanner covers (codeguard/languages.py). Nothing at all
+    when there are none, so such a PR's summary is exactly what it was."""
+    line = coverage_summary_line(state.get("coverage_gaps") or {})
+    return [line] if line else []
+
+
 def _impact_section(state: ReviewState) -> list[str]:
     """The "Callers outside this diff" lines (impact_review.py). Imported
     here, not at module level: impact_review imports this module."""
@@ -1984,6 +1993,7 @@ def summarize(state: ReviewState) -> dict:
 
     if not deduped:
         body_lines = ([intro, ""] if intro else []) + [f"CodeGuard reviewed {file_count} file(s), no issues found."]
+        body_lines += _coverage_lines(state)
         body_lines += _skipped_test_asserts_lines(state)
         if state["budget_exceeded"]:
             body_lines += ["", *_BUDGET_EXCEEDED_NOTE_LINES]
@@ -2021,6 +2031,7 @@ def summarize(state: ReviewState) -> dict:
     overflow = inlineable[settings.max_inline_comments:]
 
     body_lines = ([intro, ""] if intro else []) + [f"CodeGuard reviewed {file_count} file(s), found {len(deduped)} issue(s)."]
+    body_lines += _coverage_lines(state)
     body_lines += _skipped_test_asserts_lines(state)
     unreviewed = sum(1 for f in deduped if f.unreviewed)
     if unreviewed:

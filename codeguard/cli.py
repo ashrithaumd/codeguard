@@ -53,6 +53,7 @@ from codeguard.diff.filters import (
     is_test_path,
     split_test_asserts,
 )
+from codeguard.languages import not_covered
 from codeguard.pipeline.eval_hygiene import review_eval_hygiene
 from codeguard.pipeline.guardrails import MAX_CHUNK_TOKENS
 from codeguard.pipeline.merge import bare_rule_id, flow_note, merge_same_bug, with_flow_note
@@ -235,6 +236,28 @@ def _synthetic_whole_file_patch(content: str) -> str:
     """
     line_count = max(len(content.splitlines()), 1)
     return f"@@ -0,0 +1,{line_count} @@"
+
+
+# How many paths each language lists before "+N more", in the markdown
+# report and on the audit page.
+NOT_COVERED_SHOWN = 10
+
+
+def _not_covered_files(root: Path, repo_config: RepoConfig) -> list[dict]:
+    """Source files no scanner covers, by language (codeguard/languages.py).
+
+    A walk over NAMES only -- no file is opened -- with the same exclusions
+    as _collect_repo_files: .git is pruned, and no symlink is followed or
+    listed, file or directory."""
+    paths: list[str] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d != ".git" and not (Path(dirpath) / d).is_symlink()]
+        for name in filenames:
+            abs_path = Path(dirpath) / name
+            if abs_path.is_symlink():
+                continue
+            paths.append(abs_path.relative_to(root).as_posix())
+    return not_covered(paths, repo_config)
 
 
 def _collect_repo_files(
@@ -732,6 +755,7 @@ def build_report_data(
     unavailable_tools: list[str],
     tokens_in: int, tokens_out: int, estimated_cost_usd: float, elapsed_s: float,
     skipped_test_asserts: int = 0, models: dict[str, str] | None = None,
+    not_covered: list[dict] | None = None,
 ) -> dict:
     """The audit's result as data: what the audit page renders, what is
     stored in audits.report_json, and what render_report turns into
@@ -773,6 +797,7 @@ def build_report_data(
             "skipped_test_asserts": skipped_test_asserts,
             "unreviewed": sum(1 for f in located if f.unreviewed),
             "verdict_calls_failed": len(verdict_call_failures),
+            "not_covered": sum(len(g["paths"]) for g in not_covered or []),
         },
         "incomplete": incomplete,
         "findings": [_finding_data(f) for f in located],
@@ -787,6 +812,8 @@ def build_report_data(
         ],
         "skipped_files": [{"path": p, "reason": r} for p, r in skipped_files],
         "verdict_call_failures": [{"path": p, "reason": r} for p, r in verdict_call_failures],
+        # Source files no scanner covers, by language (codeguard/languages.py).
+        "not_covered": list(not_covered or []),
         "technical": {
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,
@@ -868,7 +895,7 @@ def render_report(**kwargs) -> str:
             lines.append(f"- `{d['file']}:{d['start_line']}` [{d['rule_id']}] {d['reason']}")
         lines.append("")
 
-    if data["skipped_files"] or data["verdict_call_failures"]:
+    if data["skipped_files"] or data["verdict_call_failures"] or data.get("not_covered"):
         lines.append("## Skipped")
         lines.append("")
         if data["skipped_files"]:
@@ -888,6 +915,18 @@ def render_report(**kwargs) -> str:
             lines.append("")
             for v in data["verdict_call_failures"]:
                 lines.append(f"- `{v['path']}`: {v['reason']}")
+            lines.append("")
+        if data.get("not_covered"):
+            lines.append(
+                f"**{data['summary']['not_covered']} file(s) not covered by any scanner** "
+                "(no scanner for their language, so nothing in them was checked):"
+            )
+            lines.append("")
+            for group in data["not_covered"]:
+                shown = ", ".join(f"`{p}`" for p in group["paths"][:NOT_COVERED_SHOWN])
+                more = len(group["paths"]) - NOT_COVERED_SHOWN
+                lines.append(f"- Not covered by any scanner — {group['language']} ({len(group['paths'])}): "
+                             f"{shown}{f', +{more} more' if more > 0 else ''}")
             lines.append("")
 
     tech = data["technical"]
@@ -1180,6 +1219,8 @@ def run_audit(
 
         all_files, dependency_contents, dependency_patches = _collect_repo_files(root, repo_config)
         print(f"{len(all_files)} reviewable file(s) found.", file=sys.stderr)
+        # Names only: what the report must say nothing checked.
+        uncovered = _not_covered_files(root, repo_config)
 
         # No Python, no audit -- and crucially no model call. Checked here
         # rather than after the scanners so a repository of nothing but
@@ -1284,6 +1325,7 @@ def run_audit(
             estimated_cost_usd=estimated_cost_usd, elapsed_s=elapsed_s,
             skipped_test_asserts=skipped_test_asserts,
             models={"security": settings.security_agent_model, "ai_aware": settings.ai_aware_agent_model},
+            not_covered=uncovered,
         )
         report = render_report(**report_kwargs)
         if stats is not None:
