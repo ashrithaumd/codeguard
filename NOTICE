@@ -21,6 +21,8 @@ rules/
 
 rules_lang/
   Rules CodeGuard wrote for the non-Python languages, run alongside the
-  vendored pack. Not derived from it.
+  vendored pack. Not derived from it. Every rule id starts with
+  "codeguard-", and their findings are tagged "codeguard-rules", never
+  "gitlab-sast".
   * go-insecure-skip-verify.yaml (codeguard-go-tls-insecure-skip-verify):
     tls.Config with InsecureSkipVerify set to true, outside *_test.go files.

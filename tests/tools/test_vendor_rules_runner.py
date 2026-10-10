@@ -10,6 +10,7 @@ Offline, like every Semgrep run (the runner's own environment).
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 from codeguard.tools.semgrep_runner import VENDOR_LANGUAGE_FILES, run_vendor_rules
@@ -75,7 +76,7 @@ def test_our_go_rule_finds_certificate_verification_turned_off():
     findings = run_vendor_rules({"client/http.go": GO_TLS_OFF})
     hits = [f for f in findings if f.rule_id == OUR_RULE]
     assert [(f.file, f.start_line) for f in hits] == [("client/http.go", 9)]
-    assert hits[0].source_tool == "gitlab-sast"  # same routing as the vendored findings
+    assert hits[0].source_tool == "codeguard-rules"  # ours, named apart from the vendored pack
 
 
 def test_our_go_rule_leaves_false_and_test_files_alone():
@@ -87,3 +88,29 @@ def test_our_rules_are_kept_apart_from_the_vendored_pack():
     from codeguard.tools.semgrep_runner import OWN_LANG_RULES_DIR, VENDOR_RULES_DIR
     assert OWN_LANG_RULES_DIR.name == "rules_lang" and OWN_LANG_RULES_DIR.is_dir()
     assert not (VENDOR_RULES_DIR / "go" / "go-insecure-skip-verify.yaml").exists()
+
+
+def test_one_run_names_each_finding_by_where_its_rule_came_from():
+    findings = run_vendor_rules({"web/run.js": JS_EVAL, "client/http.go": GO_TLS_OFF})
+    tools = {f.rule_id: f.source_tool for f in findings}
+    assert tools["javascript_eval_rule-eval-with-expression"] == "gitlab-sast"
+    assert tools[OUR_RULE] == "codeguard-rules"
+
+
+def test_every_own_rule_id_carries_the_prefix_the_runner_names_it_by():
+    import yaml
+    from codeguard.tools.semgrep_runner import OWN_LANG_RULES_DIR, OWN_RULE_PREFIX
+    ids = [r["id"] for y in OWN_LANG_RULES_DIR.glob("*.yaml")
+           for r in yaml.safe_load(y.read_text(encoding="utf-8"))["rules"]]
+    assert ids and all(i.startswith(OWN_RULE_PREFIX) for i in ids)
+    vendored = Path(__file__).resolve().parents[2] / "rules_vendor" / "gitlab-sast-rules"
+    assert not any(OWN_RULE_PREFIX in y.read_text(encoding="utf-8") for y in vendored.rglob("*.yml"))
+
+
+def test_our_findings_take_the_same_generic_review_path():
+    """Triage routes by file, not by tool: a codeguard-rules finding of
+    MEDIUM or above goes to the model exactly like a gitlab-sast one."""
+    from codeguard.pipeline.generic_review import triage
+    findings = run_vendor_rules({"client/http.go": GO_TLS_OFF})
+    t = triage(findings, {"client/http.go": GO_TLS_OFF}, max_files=10, max_findings_per_file=30)
+    assert [f.rule_id for f in t.to_model["client/http.go"]] == [OUR_RULE]

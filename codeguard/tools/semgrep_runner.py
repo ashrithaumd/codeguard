@@ -134,7 +134,11 @@ VENDOR_TOOL_NAME = "gitlab-sast"
 VENDOR_RULES_DIR = RULES_DIR.parent / "rules_vendor" / "gitlab-sast-rules"
 VENDOR_LANGUAGE_FILES = frozenset({"JavaScript", "TypeScript", "Go", "Java", "C#"})
 # CodeGuard's own rules for those languages (NOTICE), kept apart from the
-# vendored pack so its manifest stays byte-exact; same run, same source_tool.
+# vendored pack so its manifest stays byte-exact. Same run and the same
+# generic review path (routed by file, not by tool), but named apart: a
+# finding says whose rule raised it. Every own rule id carries the prefix.
+OWN_TOOL_NAME = "codeguard-rules"
+OWN_RULE_PREFIX = "codeguard-"
 OWN_LANG_RULES_DIR = RULES_DIR.parent / "rules_lang"
 
 
@@ -145,12 +149,15 @@ def _build_vendor_cmd(tmp_dir: str) -> list[str]:
 
 
 def _parse_vendor(stdout: str, tmp_dir: str) -> list[Finding]:
-    """_parse, then re-labelled: the vendor tool name, and the rule's own id
-    (the last segment of Semgrep's path-prefixed check_id)."""
-    return [
-        f.model_copy(update={"source_tool": VENDOR_TOOL_NAME, "rule_id": f.rule_id.rsplit(".", 1)[-1]})
-        for f in _parse(stdout, tmp_dir)
-    ]
+    """_parse, then re-labelled: the rule's own id (the last segment of
+    Semgrep's path-prefixed check_id), and the tool by where that rule came
+    from -- codeguard-rules for ours, gitlab-sast for the vendored pack."""
+    findings = []
+    for f in _parse(stdout, tmp_dir):
+        rule = f.rule_id.rsplit(".", 1)[-1]
+        tool = OWN_TOOL_NAME if rule.startswith(OWN_RULE_PREFIX) else VENDOR_TOOL_NAME
+        findings.append(f.model_copy(update={"source_tool": tool, "rule_id": rule}))
+    return findings
 
 
 def run_vendor_rules(files: dict[str, str], timeout: int = DEFAULT_TIMEOUT) -> list[Finding]:

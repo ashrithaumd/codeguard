@@ -15,8 +15,10 @@ CodeGuard is marked **ACTION REQUIRED**.
   (`tls.Config{InsecureSkipVerify: true}`; `false` and `*_test.go` are left
   alone), since no vendored rule covers certificate verification.
 - **A separate Semgrep run** over those languages only, same pinned engine,
-  offline. Its findings carry `source_tool` "gitlab-sast", so the Python
-  agents can never claim them, and the Python run's config and output are
+  offline. Its findings carry `source_tool` "gitlab-sast" (vendored rules)
+  or "codeguard-rules" (ours, every id prefixed `codeguard-`), so a finding
+  says whose rule raised it; both take the same generic review path, which
+  routes by file. The Python agents can never claim them, and the Python run's config and output are
   untouched (scanner snapshot identical; Python prompt fingerprints pinned in
   a test).
 - **Verdicts**: a new `security_generic` agent, one call per file, whole
