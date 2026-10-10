@@ -20,10 +20,16 @@ from collections.abc import Iterable
 
 from codeguard.config import RepoConfig
 
-# Python by CodeGuard's own pipeline; the rest by the vendored GitLab rules
-# (tools/semgrep_runner.run_vendor_rules) and the security_generic verdict
-# agent.
-COVERED_LANGUAGES: frozenset[str] = frozenset({"Python", "JavaScript", "TypeScript", "Go", "Java", "C#"})
+# Python by CodeGuard's own pipeline; the rest through the generic path
+# (tools/generic.run_generic_scanners: the vendored GitLab rules and our own
+# rules_lang/, including the Dockerfile rules, plus zizmor for GitHub
+# Actions) and the security_generic verdict agent.
+COVERED_LANGUAGES: frozenset[str] = frozenset({
+    "Python", "JavaScript", "TypeScript", "Go", "Java", "C#", "Dockerfile", "GitHub Actions",
+})
+# Everything covered that is not Python: collected, capped and triaged
+# together (cli._collect_generic_files, diff/ingest.py).
+GENERIC_LANGUAGES: frozenset[str] = COVERED_LANGUAGES - {"Python"}
 
 _EXTENSIONS = {
     ".py": "Python",

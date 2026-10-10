@@ -48,8 +48,8 @@ async def test_files_beyond_the_scan_cap_are_listed_not_dropped():
     result = await _ingest(raw, {f"src/m{i}.ts": "export {}\n" for i in range(4)}, generic_scan_files_per_pr=2)
     assert sorted(result.generic_contents) == ["src/m0.ts", "src/m1.ts"]
     assert [(f.path, f.reason) for f in result.files_filtered] == [
-        ("src/m2.ts", "not scanned (cap: 2 JS/TS, Go, Java, C# files per PR)"),
-        ("src/m3.ts", "not scanned (cap: 2 JS/TS, Go, Java, C# files per PR)")]
+        ("src/m2.ts", "not scanned (cap: 2 non-Python files per PR)"),
+        ("src/m3.ts", "not scanned (cap: 2 non-Python files per PR)")]
 
 
 def _diff(**over):
@@ -105,7 +105,7 @@ async def test_a_credential_finding_line_is_masked_before_the_model():
 
 async def test_a_failed_non_python_scan_is_named_for_the_check_summary():
     from codeguard.tools.base import unavailable_finding
-    with patch("codeguard.worker.main.run_vendor_rules",
+    with patch("codeguard.worker.main.run_generic_scanners",
                return_value=[unavailable_finding("semgrep-non-python", "timed out after 60s")]):
         prep = await prepare_generic(_diff(generic_contents={"web/run.js": JS},
                                            generic_patches={"web/run.js": JS_PATCH}), SecretScan(), get_settings())

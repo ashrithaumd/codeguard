@@ -11,5 +11,10 @@
   "go/near_miss_math_rand_jitter_aliased.go": {"rules": ["go_crypto_rule-weakrandsource"], "verdict": "dismissed"},
   "java/planted_command_injection.java": {"rules": ["codeguard-java-runtime-exec-injection"], "verdict": "confirmed"},
   "java/planted_command_injection_runtime_var.java": {"rules": ["java_inject_rule-CommandInjection"], "verdict": "confirmed"},
-  "java/near_miss_md5_cache_key.java": {"rules": ["java_crypto_rule-WeakMessageDigest"], "verdict": "dismissed"}
+  "java/near_miss_md5_cache_key.java": {"rules": ["java_crypto_rule-WeakMessageDigest"], "verdict": "dismissed"},
+  "docker/planted_curl_pipe_bash.Dockerfile": {"rules": ["codeguard-dockerfile-curl-pipe-shell"], "verdict": "confirmed"},
+  "docker/near_miss_add_verified.Dockerfile": {"rules": ["codeguard-dockerfile-add-remote-url"], "verdict": "dismissed"},
+  "docker/planted_env_secret.Dockerfile": {"rules": ["codeguard-dockerfile-secret-in-env"], "verdict": "decided_by_shape"},
+  ".github/workflows/planted_issue_title_injection.yml": {"rules": ["template-injection"], "verdict": "confirmed"},
+  ".github/workflows/near_miss_labeler_target.yml": {"rules": [], "verdict": "not_raised"}
 }

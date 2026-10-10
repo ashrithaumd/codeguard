@@ -42,7 +42,16 @@ def test_language_of(path, language):
 
 
 def test_covered_languages():
-    assert COVERED_LANGUAGES == frozenset({"Python", "JavaScript", "TypeScript", "Go", "Java", "C#"})
+    assert COVERED_LANGUAGES == frozenset({"Python", "JavaScript", "TypeScript", "Go", "Java", "C#",
+                                           "Dockerfile", "GitHub Actions"})
+
+
+def test_dockerfiles_and_workflows_take_the_generic_path_not_pythons():
+    from codeguard.languages import GENERIC_LANGUAGES
+    assert GENERIC_LANGUAGES == COVERED_LANGUAGES - {"Python"}
+    assert coverage_reason("Dockerfile") is None and coverage_reason(".github/workflows/ci.yml") is None
+    # Any other YAML is still not covered by a code scanner (its secrets are, by Gitleaks).
+    assert coverage_reason("k8s/deploy.yaml") == "Not covered by any scanner (YAML)"
 
 
 def test_coverage_reason():

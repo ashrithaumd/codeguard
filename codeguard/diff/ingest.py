@@ -29,9 +29,8 @@ from codeguard.diff.metrics import (
 from codeguard.diff.models import DiffIngestionResult, FilteredFile, Hunk
 from codeguard.diff.parse import build_hunks
 from codeguard.github.diff import get_file_content, get_pr_files
-from codeguard.languages import language_of
+from codeguard.languages import GENERIC_LANGUAGES, language_of
 from codeguard.tools.gitleaks_runner import sparse_from_patch
-from codeguard.tools.semgrep_runner import VENDOR_LANGUAGE_FILES as GENERIC_LANGUAGES
 
 logger = logging.getLogger(__name__)
 _tokenizer = tiktoken.get_encoding("cl100k_base")
@@ -154,7 +153,7 @@ async def ingest_pr_diff(
     cap = settings.generic_scan_files_per_pr
     generic_files = generic_candidates[:cap]
     for f in generic_candidates[cap:]:
-        filtered.append(FilteredFile(path=f["filename"], reason=f"not scanned (cap: {cap} JS/TS, Go, Java, C# files per PR)"))
+        filtered.append(FilteredFile(path=f["filename"], reason=f"not scanned (cap: {cap} non-Python files per PR)"))
 
     # Bounded-concurrent content fetches — see CONTENT_FETCH_CONCURRENCY.
     # Dependency manifests ride along in the same batched fetch rather

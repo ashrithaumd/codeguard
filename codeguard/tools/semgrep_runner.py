@@ -135,7 +135,9 @@ VENDOR_TOOL_NAME = "gitlab-sast"
 # so a failure here never reads as the Python run's.
 VENDOR_RUN_NAME = "semgrep-non-python"
 VENDOR_RULES_DIR = RULES_DIR.parent / "rules_vendor" / "gitlab-sast-rules"
-VENDOR_LANGUAGE_FILES = frozenset({"JavaScript", "TypeScript", "Go", "Java", "C#"})
+# The languages this pass scans: the vendored rules' five, plus Dockerfiles
+# (our own rules only; no vendored rule targets them).
+VENDOR_LANGUAGE_FILES = frozenset({"JavaScript", "TypeScript", "Go", "Java", "C#", "Dockerfile"})
 # CodeGuard's own rules for those languages (NOTICE), kept apart from the
 # vendored pack so its manifest stays byte-exact. Same run and the same
 # generic review path (routed by file, not by tool), but named apart: a

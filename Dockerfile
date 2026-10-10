@@ -34,6 +34,20 @@ RUN python -m venv /opt/semgrep \
 ENV SEMGREP_BIN=/opt/semgrep/bin/semgrep \
     PATH="${PATH}:/opt/semgrep/bin"
 
+# zizmor, pinned and verified: GitHub Actions workflows
+# (codeguard/tools/zizmor_runner.py). MIT licensed. Its wheel is one static
+# binary with no Python dependencies, installed in its own environment with
+# --require-hashes, so a wheel that does not match the sha256 below fails
+# the build. Always run offline, with no GitHub token.
+ARG ZIZMOR_VERSION=1.30.1
+ARG ZIZMOR_SHA256=eee12266b793cb87ad4a7e3af2e72404f8a63e3de5eb099b80bf7b1cfd232a8e
+RUN python -m venv /opt/zizmor \
+    && echo "zizmor==${ZIZMOR_VERSION} --hash=sha256:${ZIZMOR_SHA256}" > /tmp/zizmor-req.txt \
+    && /opt/zizmor/bin/pip install --no-cache-dir --no-deps --require-hashes -r /tmp/zizmor-req.txt \
+    && rm /tmp/zizmor-req.txt \
+    && /opt/zizmor/bin/zizmor --version
+ENV ZIZMOR_BIN=/opt/zizmor/bin/zizmor
+
 # Gitleaks, pinned and verified: secrets in every non-Python file type
 # (codeguard/tools/gitleaks_runner.py). The binary is checked against the
 # release's own sha256 before it is unpacked; a mismatch fails the build.

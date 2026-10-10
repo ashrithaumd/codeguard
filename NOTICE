@@ -31,3 +31,15 @@ rules_lang/
     password, nonce, salt, session, uuid, invite/reset id).
   * java-runtime-exec-injection.yaml (codeguard-java-runtime-exec-injection):
     a request value or String parameter reaching Runtime.getRuntime().exec.
+  * dockerfile-security.yaml (codeguard-dockerfile-*): nine Dockerfile
+    checks -- a :latest base image, curl/wget piped into a shell, ADD from a
+    URL with no checksum, certificate or signature checks turned off, a
+    credential in ENV/ARG, a credential passed as a build argument,
+    chmod 777, an SSH private key copied in, and a final USER root.
+
+Third-party scanners (run, not vendored)
+----------------------------------------
+
+zizmor 1.30.1 (MIT), https://github.com/zizmorcore/zizmor
+  GitHub Actions workflows. Installed in the image by hash
+  (Dockerfile, /opt/zizmor), run offline, never given a GitHub token.

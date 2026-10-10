@@ -45,7 +45,7 @@ def test_python_and_other_files_are_never_handed_to_the_vendored_rules():
 
 
 def test_the_scope_is_exactly_the_covered_languages():
-    assert VENDOR_LANGUAGE_FILES == frozenset({"JavaScript", "TypeScript", "Go", "Java", "C#"})
+    assert VENDOR_LANGUAGE_FILES == frozenset({"JavaScript", "TypeScript", "Go", "Java", "C#", "Dockerfile"})
 
 
 def test_it_runs_offline_like_every_semgrep_call():
@@ -168,3 +168,29 @@ def test_a_failed_run_is_named_apart_from_the_python_semgrep_run():
     with patch("codeguard.tools.base.subprocess.run", side_effect=subprocess.TimeoutExpired("semgrep", 60)):
         [f] = run_vendor_rules({"a.js": "x = 1\n"})
     assert (f.rule_id, f.source_tool) == (UNAVAILABLE_RULE_ID, "semgrep-non-python")
+
+
+# Dockerfiles: our own rules (rules_lang/dockerfile-security.yaml), same pass.
+DOCKERFILE = "FROM node:latest\nRUN curl -fsSL https://get.example.com/i.sh | sh\nUSER node\n"
+
+
+def test_a_dockerfile_is_scanned_by_our_rules_in_the_same_pass():
+    findings = run_vendor_rules({"Dockerfile": DOCKERFILE})
+    assert sorted((f.rule_id, f.start_line, f.source_tool) for f in findings) == [
+        ("codeguard-dockerfile-curl-pipe-shell", 2, "codeguard-rules"),
+        ("codeguard-dockerfile-latest-tag", 1, "codeguard-rules"),
+    ]
+
+
+def test_the_generic_scanners_are_the_semgrep_pass_plus_zizmor():
+    from codeguard.tools.generic import run_generic_scanners
+    files = {"a.js": "x\n", ".github/workflows/ci.yml": "on: push\n"}
+    seen = {}
+
+    def record(name):
+        return lambda f: seen.setdefault(name, f) and []
+
+    with patch("codeguard.tools.generic.run_vendor_rules", side_effect=record("semgrep")), \
+         patch("codeguard.tools.generic.run_zizmor", side_effect=record("zizmor")):
+        assert run_generic_scanners(files) == []
+    assert seen == {"semgrep": files, "zizmor": files}

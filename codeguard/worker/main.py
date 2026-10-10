@@ -61,7 +61,7 @@ from codeguard.github.tarball import TarballTooLarge, fetch_python_files
 from codeguard.tools.gitleaks_runner import SecretScan, scan_secrets
 from codeguard.tools.line_filter import filter_findings_to_changed_lines
 from codeguard.tools.base import unavailable_finding
-from codeguard.tools.semgrep_runner import run_vendor_rules
+from codeguard.tools.generic import run_generic_scanners
 from codeguard.pipeline.feedback import FINGERPRINT_MARKER_RE, fetch_suppressed_fingerprints, fingerprint_marker, record_posted_finding_comments
 from codeguard.pipeline.graph import review_graph
 from codeguard.pipeline.hunk_cache import fetch_cache_hits, write_cache_records
@@ -364,7 +364,7 @@ async def prepare_generic(diff_result, secrets: SecretScan, settings: Settings) 
     contents = diff_result.generic_contents
     if not contents:
         return prep
-    raw = await asyncio.to_thread(run_vendor_rules, contents)
+    raw = await asyncio.to_thread(run_generic_scanners, contents)
     ranges = {p: parse_hunk_ranges(patch) for p, patch in diff_result.generic_patches.items()}
     on_changed = filter_findings_to_changed_lines(raw, ranges)
     t = triage(on_changed, contents, max_files=settings.generic_ai_files_per_pr,

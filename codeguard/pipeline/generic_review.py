@@ -19,6 +19,7 @@ the cost and noise control in front of it, all deterministic:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from codeguard.redact import classify_secret, mask_lines, mask_spans, secret_values
@@ -32,7 +33,21 @@ from codeguard.tools.models import Finding
 GENERIC_CREDENTIAL_RULES = frozenset({
     "java_password_rule-HardcodePassword",
     "java_password_rule-ConstantDBPassword",
+    # Ours (rules_lang/dockerfile-security.yaml): ENV/ARG NAME=value.
+    "codeguard-dockerfile-secret-in-env",
 })
+
+# ENV/ARG NAME=value or NAME value, the value quoted or not. Unquoted, it is
+# invisible to redact's assignment pattern, so it is read here instead.
+_DOCKERFILE_ASSIGNED = re.compile(
+    r"""^\s*(?:ENV|ARG)\s+[A-Za-z_][A-Za-z0-9_]*(?:\s*=\s*|\s+)(?P<q>["']?)(?P<value>.+?)(?P=q)\s*$""",
+    re.IGNORECASE,
+)
+
+
+def dockerfile_assigned_value(line: str) -> str | None:
+    m = _DOCKERFILE_ASSIGNED.match(line)
+    return m.group("value") if m else None
 
 
 @dataclass
@@ -56,6 +71,8 @@ def _credential(finding: Finding, content: str) -> tuple[Finding | None, bool]:
     lines = content.splitlines()
     line = lines[finding.start_line - 1] if 0 < finding.start_line <= len(lines) else ""
     values = secret_values(line)
+    if not values and (value := dockerfile_assigned_value(line)):
+        values = [value]
     if not values:
         return finding, False
     shapes = [classify_secret(v) for v in values]

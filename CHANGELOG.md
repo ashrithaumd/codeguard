@@ -7,6 +7,39 @@ CodeGuard is marked **ACTION REQUIRED**.
 
 ### Multi-language support (feat/multi-language)
 
+#### Dockerfiles and GitHub Actions workflows
+
+- **Covered now**, through the same generic path as JS/TS, Go, Java and C#:
+  scanned, triaged, capped, and MEDIUM-and-up findings confirmed or
+  dismissed by `security_generic` (LOW passes through with no call). Other
+  YAML is still listed as not covered by any scanner; its secrets are
+  Gitleaks'.
+- **Dockerfiles**: nine of our own Semgrep rules
+  (`rules_lang/dockerfile-security.yaml`, NOTICE), run in the same
+  `semgrep-non-python` pass: a `:latest` base image, curl/wget piped into a
+  shell, `ADD` from a URL with no `--checksum`, certificate or signature
+  checks turned off, a credential in `ENV`/`ARG`, a credential passed as a
+  build argument, `chmod 777`, an SSH private key copied in, a final
+  `USER root`.
+- **A credential in `ENV`/`ARG` never reaches the model**: like Java's
+  hardcoded-password rules it is decided by the value's shape (quoted or
+  not, `NAME=value` or `NAME value`); a placeholder is counted, not
+  reported; its line is masked if the file goes to the model for another
+  finding.
+- **GitHub Actions**: zizmor **1.30.1** (MIT), installed by hash in its own
+  environment (`/opt/zizmor`, `ZIZMOR_BIN`), always `--offline`, no
+  config from the repository, no GitHub token (stripped from its
+  environment): template injection, dangerous triggers, unpinned actions,
+  excessive permissions, persisted checkout credentials and the rest of its
+  offline audits. A malformed workflow is skipped and the others are still
+  audited; a zizmor failure says "zizmor did not run".
+- `security_generic`'s prompt names the two new file kinds and scanners.
+  Python's prompts are unchanged (fingerprints pinned).
+- The PR cap reason reads "not scanned (cap: N non-Python files per PR)".
+- Eval: Dockerfile and workflow fixtures (planted and near miss) in
+  `evals/fixtures_lang/`; smoke: zizmor pinned and finding template
+  injection in a container with no network.
+
 #### JavaScript/TypeScript, Go, Java and C#: scanners find, the AI confirms or dismisses
 
 - **Rules**: GitLab sast-rules v2.10.1, vendored unmodified (MIT; the Go

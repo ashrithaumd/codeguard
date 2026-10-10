@@ -22,12 +22,19 @@ def test_every_fixture_fires_exactly_its_rules_and_only_raised_ones_reach_the_mo
 
 def test_every_language_has_a_planted_bug_and_a_near_miss():
     expected, _ = lang_eval.load()
-    for lang in ("javascript", "typescript", "go", "java"):
+    for lang in ("javascript", "typescript", "go", "java", "docker", ".github/workflows"):
         verdicts = {v["verdict"] for p, v in expected.items() if p.startswith(lang + "/")}
-        assert {"confirmed", "dismissed"} <= verdicts <= {"confirmed", "dismissed", "not_raised"}, lang
+        assert verdicts <= {"confirmed", "dismissed", "not_raised", "decided_by_shape"}, lang
+        assert "confirmed" in verdicts and verdicts & {"dismissed", "not_raised"}, lang
 
 
 def test_not_raised_means_no_rule_and_raised_means_at_least_one():
     expected, _ = lang_eval.load()
     for path, want in expected.items():
         assert (want["rules"] == []) == (want["verdict"] == "not_raised"), path
+
+
+def test_a_shape_decided_credential_is_reported_and_never_reaches_the_model():
+    det = lang_eval.deterministic_result()
+    [row] = [r for r in det["rows"] if r["file"] == "docker/planted_env_secret.Dockerfile"]
+    assert row["ok"] and not row["to_model"]

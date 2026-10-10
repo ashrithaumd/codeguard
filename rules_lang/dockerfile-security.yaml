@@ -1,0 +1,99 @@
+# CodeGuard's own Dockerfile rules (not vendored; see NOTICE). No vendored
+# pack covers Dockerfiles. Regex-based on purpose: each check is about one
+# instruction's text, and a regex says exactly what it matches.
+# codeguard-dockerfile-secret-in-env is a credential rule
+# (pipeline/generic_review.GENERIC_CREDENTIAL_RULES): decided by the value's
+# shape, its line masked before any content reaches a model.
+rules:
+  - id: codeguard-dockerfile-latest-tag
+    languages: [dockerfile]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-1357: Reliance on Insufficiently Trustworthy Component"
+    message: >
+      The base image is pinned to :latest, so every build may pull a
+      different image. Pin a version tag, ideally with its @sha256 digest.
+    pattern-regex: (?mi)^[ \t]*FROM[ \t]+(?:--platform=\S+[ \t]+)?[^\s:@]+:latest\b
+
+  - id: codeguard-dockerfile-curl-pipe-shell
+    languages: [dockerfile]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-494: Download of Code Without Integrity Check"
+    message: >
+      A script is downloaded and piped straight into a shell, with nothing
+      checking what was downloaded. Download it, verify its checksum, then
+      run it.
+    pattern-regex: (?i)\b(?:curl|wget)\b[^|\n]*\|[ \t]*(?:sudo[ \t]+)?(?:\S*/)?(?:ba|z|da|k)?sh\b
+
+  - id: codeguard-dockerfile-add-remote-url
+    languages: [dockerfile]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-494: Download of Code Without Integrity Check"
+    message: >
+      ADD fetches a remote URL with no integrity check. Add
+      --checksum=sha256:... or download and verify it in a RUN step.
+    pattern-regex: (?mi)^[ \t]*ADD[ \t]+(?![^\n]*--checksum=)(?:--\S+[ \t]+)*https?://
+
+  - id: codeguard-dockerfile-insecure-download
+    languages: [dockerfile]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-295: Improper Certificate Validation"
+    message: >
+      A download turns off certificate or signature verification, so
+      anyone on the network path can swap what is installed.
+    pattern-regex: (?i)\bcurl\b[^\n]*[ \t](?:--insecure|-[a-z]*k[a-z]*)\b|--no-check-certificate|--allow-unauthenticated|--force-yes|--trusted-host\b
+
+  - id: codeguard-dockerfile-secret-in-env
+    languages: [dockerfile]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-798: Use of Hard-coded Credentials"
+    message: >
+      A credential is set in ENV or ARG. It is stored in the image's
+      layers and history, readable by anyone who can pull the image. Use a
+      build secret (RUN --mount=type=secret) or set it at runtime.
+    pattern-regex: (?mi)^[ \t]*(?:ENV|ARG)[ \t]+(?![A-Z0-9_]*_(?:FILE|PATH|DIR)\b)[A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|PRIVATE_?KEY|ACCESS_?KEY)[A-Z0-9_]*[ \t]*(?:=|[ \t])[ \t]*(?!\$)\S
+
+  - id: codeguard-dockerfile-secret-build-arg
+    languages: [dockerfile]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-214: Invocation of Process Using Visible Sensitive Information"
+    message: >
+      A credential is passed as a build argument. Build arguments are kept
+      in the image's history. Use a build secret (RUN --mount=type=secret)
+      instead.
+    pattern-regex: (?mi)^[ \t]*ARG[ \t]+[A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_?KEY|PRIVATE_?KEY|ACCESS_?KEY)[A-Z0-9_]*[ \t]*$
+
+  - id: codeguard-dockerfile-world-writable
+    languages: [dockerfile]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-732: Incorrect Permission Assignment for Critical Resource"
+    message: >
+      Files are made writable by every user in the container. Grant write
+      access to the user that needs it only.
+    pattern-regex: (?i)\bchmod\b[^\n]*[ \t](?:[0-7]?777|[ao]?\+w|o=rwx)\b
+
+  - id: codeguard-dockerfile-private-key-copied
+    languages: [dockerfile]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-312: Cleartext Storage of Sensitive Information"
+    message: >
+      A private SSH key is copied into the image, where anyone who can
+      pull it can read it. Use RUN --mount=type=ssh instead.
+    pattern-regex: (?mi)^[ \t]*(?:COPY|ADD)[ \t][^\n]*\bid_(?:rsa|dsa|ecdsa|ed25519)\b(?!\.pub)
+
+  - id: codeguard-dockerfile-user-root
+    languages: [dockerfile]
+    severity: WARNING
+    metadata:
+      cwe: "CWE-250: Execution with Unnecessary Privileges"
+    message: >
+      The image's last USER is root, so the container's process runs as
+      root. Switch to an unprivileged user after the steps that need root.
+    pattern-regex: (?mi)^[ \t]*USER[ \t]+(?:root|0)(?::\S+)?[ \t]*$(?![\s\S]*^[ \t]*USER[ \t])

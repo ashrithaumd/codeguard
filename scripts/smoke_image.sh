@@ -216,6 +216,30 @@ print("=== OK: gitleaks %s offline, 1 finding, value absent from the result ==="
 '
 docker run --rm --network none "$IMAGE" python -c "$GITLEAKS_PROBE"
 
+
+# zizmor: pinned (installed by hash at build), offline. A Rust binary, so the
+# Python socket guard above cannot reach inside it; the proof is that it runs
+# and finds the injection in a container with no network at all, with every
+# GitHub token variable set (the runner must strip them).
+echo "checking zizmor is pinned and finds template injection with no network"
+ZIZMOR_PROBE='
+import os, subprocess, sys
+NL = chr(10)
+version = subprocess.run([os.environ["ZIZMOR_BIN"], "--version"], capture_output=True, text=True).stdout.strip()
+if version != "zizmor 1.30.1":
+    sys.exit("=== FAIL: zizmor is %r, expected zizmor 1.30.1 ===" % version)
+from codeguard.tools.zizmor_runner import run_zizmor
+wf = NL.join(["on:", "  issues:", "    types: [opened]", "permissions: {}", "jobs:", "  a:", "    runs-on: ubuntu-latest",
+              "    steps:", "      - run: echo \"${{ github.event.issue.title }}\"", ""])
+findings = run_zizmor({".github/workflows/ci.yml": wf})
+if [f for f in findings if f.rule_id == "internal.tool_unavailable"]:
+    sys.exit("=== FAIL: zizmor did not run offline: %s ===" % findings)
+if not any(f.rule_id == "template-injection" for f in findings):
+    sys.exit("=== FAIL: template-injection not found: %s ===" % sorted(f.rule_id for f in findings))
+print("=== OK: %s offline, template-injection found ===" % version)
+'
+docker run --rm --network none -e GH_TOKEN=smoke -e GITHUB_TOKEN=smoke "$IMAGE" python -c "$ZIZMOR_PROBE"
+
 # The tokenizer must already be IN the image. tiktoken downloads
 # cl100k_base on first use and caches it; a container that has to fetch it
 # at runtime fails its first audit on any network that blocks the download,

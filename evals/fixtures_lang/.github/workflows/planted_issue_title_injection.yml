@@ -1,0 +1,14 @@
+# Planted: an issue title, which anyone can set, expanded straight into a shell step.
+name: triage
+on:
+  issues:
+    types: [opened]
+permissions:
+  issues: write
+jobs:
+  greet:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Log the new issue
+        run: |
+          echo "New issue: ${{ github.event.issue.title }}"

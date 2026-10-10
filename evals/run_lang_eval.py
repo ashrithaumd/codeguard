@@ -4,8 +4,10 @@ Each fixture is one JavaScript, TypeScript, Go or Java file written as real
 code is written, never reshaped to fit a rule: a planted bug the model must
 confirm, a near miss a rule fires on that the model must dismiss, or a near
 miss no rule raises at all ("not_raised": nothing reaches the model, which
-is the right outcome). expected.json gives, per file, the exact rule ids the
-scanners must raise and the verdict expected for them.
+is the right outcome), or a credential decided by its shape alone
+("decided_by_shape": reported, and never sent to the model). expected.json
+gives, per file, the exact rule ids the scanners must raise and the verdict
+expected for them. Dockerfiles and GitHub Actions workflows are included.
 
 Two parts:
 
@@ -32,7 +34,7 @@ ROOT = Path(__file__).resolve().parent / "fixtures_lang"
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from codeguard.pipeline.generic_review import triage  # noqa: E402
-from codeguard.tools.semgrep_runner import run_vendor_rules  # noqa: E402
+from codeguard.tools.generic import run_generic_scanners  # noqa: E402
 
 
 def load() -> tuple[dict, dict[str, str]]:
@@ -43,7 +45,7 @@ def load() -> tuple[dict, dict[str, str]]:
 
 def deterministic_result() -> dict:
     expected, files = load()
-    findings = run_vendor_rules(files)
+    findings = run_generic_scanners(files)
     fired: dict[str, list[str]] = {p: [] for p in files}
     for f in findings:
         fired.setdefault(f.file, []).append(f.rule_id)
@@ -51,10 +53,15 @@ def deterministic_result() -> dict:
     rows = []
     for path, want in expected.items():
         got = sorted(set(fired.get(path, [])))
-        # A raised finding must reach the model; a not_raised one must not.
+        # A raised finding reaches the model, unless nothing was raised or a
+        # credential was decided by its shape -- reported, never sent.
         reaches = path in t.to_model
+        if want["verdict"] == "decided_by_shape":
+            placed = not reaches and any(f.file == path for f in t.passthrough)
+        else:
+            placed = reaches == (want["verdict"] != "not_raised")
         rows.append({"file": path, "expected_rules": sorted(want["rules"]), "fired": got, "to_model": reaches,
-                     "ok": got == sorted(want["rules"]) and reaches == (want["verdict"] != "not_raised")})
+                     "ok": got == sorted(want["rules"]) and placed})
     return {"rows": rows, "findings": findings, "triage": t, "files": files, "expected": expected,
             "ok": all(r["ok"] for r in rows)}
 

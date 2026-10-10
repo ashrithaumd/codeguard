@@ -55,7 +55,7 @@ from codeguard.diff.filters import (
     is_test_path,
     split_test_asserts,
 )
-from codeguard.languages import language_of, not_covered
+from codeguard.languages import GENERIC_LANGUAGES, language_of, not_covered
 from codeguard.pipeline.eval_hygiene import review_eval_hygiene
 from codeguard.pipeline.guardrails import MAX_CHUNK_TOKENS
 from codeguard.pipeline.merge import bare_rule_id, flow_note, merge_same_bug, with_flow_note
@@ -78,7 +78,7 @@ from codeguard.tools.gitleaks_runner import scan_secrets
 from codeguard.tools.models import Finding
 from codeguard.tools.osv_runner import check_dependency_updates
 from codeguard.tools.run_all import run_tools_on_files
-from codeguard.tools.semgrep_runner import VENDOR_LANGUAGE_FILES, run_vendor_rules
+from codeguard.tools.generic import run_generic_scanners
 from codeguard.tools.semgrep_runner import version_warning as semgrep_version_warning
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s %(message)s")
@@ -325,7 +325,7 @@ def _collect_generic_files(root: Path, repo_config: RepoConfig) -> tuple[dict[st
         for name in filenames:
             abs_path = Path(dirpath) / name
             rel_path = abs_path.relative_to(root).as_posix()
-            if language_of(rel_path) not in VENDOR_LANGUAGE_FILES or abs_path.is_symlink():
+            if language_of(rel_path) not in GENERIC_LANGUAGES or abs_path.is_symlink():
                 continue
             if any(fnmatch.fnmatch(rel_path, p) for p in BUILTIN_IGNORED_PATTERNS):
                 continue
@@ -1411,7 +1411,7 @@ def run_audit(
 
         # JS/TS, Go, Java and C#. Nothing here for a Python-only repository.
         deadline.check("before the generic verdict layer")
-        generic_triage = triage(run_vendor_rules(generic_files), generic_files,
+        generic_triage = triage(run_generic_scanners(generic_files), generic_files,
                                 max_files=settings.generic_ai_files_per_audit,
                                 max_findings_per_file=settings.generic_ai_findings_per_file)
         gen = _run_generic_layer(
