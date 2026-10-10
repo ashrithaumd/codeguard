@@ -11,7 +11,7 @@ import fnmatch
 
 from codeguard.config import RepoConfig
 from codeguard.diff.models import FilteredFile
-from codeguard.languages import NOT_SOURCE, coverage_reason
+from codeguard.languages import coverage_reason
 from codeguard.tools.models import Finding
 
 REVIEWABLE_EXTENSIONS = {".py"}
@@ -99,7 +99,13 @@ def filter_files(files: list[dict], repo_config: RepoConfig) -> tuple[list[dict]
         if _extension(path) not in REVIEWABLE_EXTENSIONS:
             # Which language, and that no scanner covers it -- or that it is
             # not source code at all (codeguard/languages.py).
-            filtered.append(FilteredFile(path=path, reason=coverage_reason(path) or NOT_SOURCE))
+            reason = coverage_reason(path)
+            if reason is None:
+                # A covered language other than Python: reviewed by its own
+                # path (diff/ingest.py, the vendored rules), never handed to
+                # the Python agents, and not "not reviewed" either.
+                continue
+            filtered.append(FilteredFile(path=path, reason=reason))
             continue
 
         if f.get("patch") is None:

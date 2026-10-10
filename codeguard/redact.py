@@ -399,3 +399,18 @@ def redact_source(text: str, *, hints: bool = False) -> str:
     if text.endswith("\n"):
         joined += "\n"
     return joined
+
+
+def mask_spans(text: str, spans: list[tuple[int, int, int]]) -> str:
+    """Replace exact spans with MASK: [(line, start, end)], 1-based line,
+    0-based [start, end) within it -- positions a scanner reported, never
+    values. Line count and every other byte unchanged, so findings stay
+    anchored (see redact_source). Used for content a model will see."""
+    if not text or not spans:
+        return text
+    lines = text.split("\n")
+    for lineno, start, end in sorted(spans, key=lambda s: (s[0], -s[1])):
+        if 0 < lineno <= len(lines) and 0 <= start < end <= len(lines[lineno - 1]):
+            line = lines[lineno - 1]
+            lines[lineno - 1] = line[:start] + MASK + line[end:]
+    return "\n".join(lines)

@@ -48,10 +48,12 @@ from codeguard.pipeline.nodes import (
     review_quality,
     review_repo_level,
     review_security,
+    review_security_generic,
     review_test,
     route_after_fanin,
     route_to_ai_aware_reviews,
     route_to_file_reviews,
+    route_to_generic_security_reviews,
     route_to_quality_reviews,
     route_to_security_reviews,
     route_to_test_reviews,
@@ -72,6 +74,7 @@ def build_review_graph():
     graph.add_node("review_test", review_test)
     graph.add_node("review_repo_level", review_repo_level)
     graph.add_node("review_impact", review_impact)
+    graph.add_node("review_security_generic", review_security_generic)
     graph.add_node("check_findings", check_findings)
     graph.add_node("propose_fix", propose_fix)
     graph.add_node("summarize", summarize)
@@ -86,6 +89,9 @@ def build_review_graph():
     # Impact analysis: once per PR, from the report the worker computed
     # (absent when it is off, and then this does nothing).
     graph.add_edge("classify", "review_impact")
+    # JS/TS, Go, Java, C#: one verdict per file the triage chose; nothing
+    # for a Python-only review.
+    graph.add_conditional_edges("classify", route_to_generic_security_reviews, ["review_security_generic"])
 
     graph.add_edge("review_file", "check_findings")
     graph.add_edge("review_security", "check_findings")
@@ -94,6 +100,7 @@ def build_review_graph():
     graph.add_edge("review_test", "check_findings")
     graph.add_edge("review_repo_level", "check_findings")
     graph.add_edge("review_impact", "check_findings")
+    graph.add_edge("review_security_generic", "check_findings")
 
     graph.add_conditional_edges("check_findings", route_after_fanin, ["propose_fix", "summarize"])
     graph.add_edge("propose_fix", "summarize")

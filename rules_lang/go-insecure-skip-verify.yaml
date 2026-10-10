@@ -1,0 +1,20 @@
+# CodeGuard's own rule (not vendored; see NOTICE). The vendored gosec-derived
+# rule-badtlssettings covers cipher suites and versions, not certificate
+# verification, so nothing in rules_vendor/ catches this.
+rules:
+  - id: codeguard-go-tls-insecure-skip-verify
+    languages: [go]
+    severity: ERROR
+    metadata:
+      cwe: "CWE-295: Improper Certificate Validation"
+      owasp: "A07:2021 Identification and Authentication Failures"
+    message: >
+      TLS certificate verification is turned off (InsecureSkipVerify: true).
+      Any host on the network path can present its own certificate and read
+      or alter the traffic. Fix the trust store (RootCAs) instead.
+    paths:
+      exclude:
+        - "*_test.go"
+    pattern-either:
+      - pattern: "tls.Config{..., InsecureSkipVerify: true, ...}"
+      - pattern: "$CFG.InsecureSkipVerify = true"

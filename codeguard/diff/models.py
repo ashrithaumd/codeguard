@@ -59,6 +59,12 @@ class DiffIngestionResult(BaseModel):
     # scan reads. Built from the patches GitHub already sent, so no extra
     # fetch; Python files are left to CodeGuard's own credential rules.
     secret_scan_files: dict[str, str] = Field(default_factory=dict)
+    # Changed JS/TS, Go, Java and C# files (codeguard/languages.py covers them
+    # through the vendored rules): content at head and patch, capped by
+    # Settings.generic_scan_files_per_pr. Kept apart from file_contents /
+    # patches, which are Python's and feed the Python agents.
+    generic_contents: dict[str, str] = Field(default_factory=dict)
+    generic_patches: dict[str, str] = Field(default_factory=dict)
 
     @property
     def files_reviewed(self) -> list[str]:

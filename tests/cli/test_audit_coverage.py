@@ -27,21 +27,21 @@ def _tree(tmp_path, files):
 
 def test_the_walk_groups_uncovered_source_files_by_language(tmp_path):
     root = _tree(tmp_path, {
-        "app.py": "x = 1", "cmd/main.go": "package main", "web/index.ts": "export {}",
-        "README.md": "#", "node_modules/a/index.js": "", ".git/hooks/x.go": "", "skip/me.go": "",
-        "data.json": "{}",
+        "app.py": "x = 1", "cmd/main.go": "package main", "src/App.kt": "fun main() {}",
+        "lib/user.rb": "x = 1", "README.md": "#", "node_modules/a/App.kt": "", ".git/hooks/x.kt": "",
+        "skip/me.kt": "", "data.json": "{}",
     })
     groups = _not_covered_files(root, RepoConfig(ignored_paths=["skip/*"]))
-    assert groups == [{"language": "Go", "paths": ["cmd/main.go"]},
-                      {"language": "TypeScript", "paths": ["web/index.ts"]}]
+    assert groups == [{"language": "Kotlin", "paths": ["src/App.kt"]},
+                      {"language": "Ruby", "paths": ["lib/user.rb"]}]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="symlinks need privileges on Windows")
 def test_symlinks_are_not_followed_or_listed(tmp_path):
-    root = _tree(tmp_path, {"real.go": "package x"})
-    (root / "link.go").symlink_to(root / "real.go")
+    root = _tree(tmp_path, {"real.kt": "fun x() {}"})
+    (root / "link.kt").symlink_to(root / "real.kt")
     (root / "linkdir").symlink_to(tmp_path)
-    assert _not_covered_files(root, RepoConfig()) == [{"language": "Go", "paths": ["real.go"]}]
+    assert _not_covered_files(root, RepoConfig()) == [{"language": "Kotlin", "paths": ["real.kt"]}]
 
 
 def _kwargs(not_covered):

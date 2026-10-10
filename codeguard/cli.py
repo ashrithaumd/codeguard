@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import ast
 import asyncio
+import fnmatch
 import logging
 import os
 import re
@@ -48,19 +49,27 @@ import yaml
 
 from codeguard.config import Budget, RepoConfig, effective_budget, get_settings, verify_required_settings
 from codeguard.diff.filters import (
+    BUILTIN_IGNORED_PATTERNS,
     is_dependency_manifest,
     is_reviewable_path,
     is_test_path,
     split_test_asserts,
 )
-from codeguard.languages import not_covered
+from codeguard.languages import language_of, not_covered
 from codeguard.pipeline.eval_hygiene import review_eval_hygiene
 from codeguard.pipeline.guardrails import MAX_CHUNK_TOKENS
 from codeguard.pipeline.merge import bare_rule_id, flow_note, merge_same_bug, with_flow_note
 from codeguard.pipeline.models import DismissedFinding
-from codeguard.pipeline.nodes import _build_findings_block, _file_touches_ai_markers, review_ai_aware, review_security
+from codeguard.pipeline.generic_review import triage
+from codeguard.pipeline.nodes import (
+    _build_findings_block,
+    _file_touches_ai_markers,
+    review_ai_aware,
+    review_security,
+    review_security_generic,
+)
 from codeguard.pipeline.state import FileReviewState
-from codeguard.redact import redact
+from codeguard.redact import mask_spans, redact
 from codeguard.report_format import REPORT_DATA_VERSION, UNREVIEWED_NOTICE_TEXT
 from codeguard.severity import Severity
 from codeguard.tools.base import UNAVAILABLE_RULE_ID
@@ -69,6 +78,7 @@ from codeguard.tools.gitleaks_runner import scan_secrets
 from codeguard.tools.models import Finding
 from codeguard.tools.osv_runner import check_dependency_updates
 from codeguard.tools.run_all import run_tools_on_files
+from codeguard.tools.semgrep_runner import VENDOR_LANGUAGE_FILES, run_vendor_rules
 from codeguard.tools.semgrep_runner import version_warning as semgrep_version_warning
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s %(message)s")
@@ -294,6 +304,74 @@ def _collect_secret_scan_files(root: Path, repo_config: RepoConfig) -> dict[str,
             except (UnicodeDecodeError, OSError):
                 continue
     return files
+
+
+# A JS/TS, Go, Java or C# file over this is listed, not scanned: it goes to
+# the model whole, and a 300 KB generated bundle is not worth the tokens.
+_GENERIC_MAX_BYTES = 256 * 1024
+
+
+def _collect_generic_files(root: Path, repo_config: RepoConfig) -> tuple[dict[str, str], list[tuple[str, str]]]:
+    """JS/TS, Go, Java and C# files for the vendored rules, read with the
+    same hardening as _collect_repo_files (.git pruned, no symlink followed
+    or read, nothing resolving outside the clone, regular files only, binary
+    skipped), size-capped before reading. Returns (files, skipped) where
+    skipped is [(path, reason)] for the report's Skipped section."""
+    files: dict[str, str] = {}
+    skipped: list[tuple[str, str]] = []
+    real_root = root.resolve()
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d != ".git" and not (Path(dirpath) / d).is_symlink()]
+        for name in filenames:
+            abs_path = Path(dirpath) / name
+            rel_path = abs_path.relative_to(root).as_posix()
+            if language_of(rel_path) not in VENDOR_LANGUAGE_FILES or abs_path.is_symlink():
+                continue
+            if any(fnmatch.fnmatch(rel_path, p) for p in BUILTIN_IGNORED_PATTERNS):
+                continue
+            if any(fnmatch.fnmatch(rel_path, p) for p in repo_config.ignored_paths):
+                continue
+            try:
+                if not abs_path.resolve().is_relative_to(real_root) or not abs_path.is_file():
+                    continue
+                if abs_path.stat().st_size > _GENERIC_MAX_BYTES:
+                    skipped.append((rel_path, f"too large to scan (over {_GENERIC_MAX_BYTES // 1024} KB)"))
+                    continue
+                files[rel_path] = abs_path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+    return files, skipped
+
+
+def _run_generic_layer(
+    owner: str, repo: str, files: dict[str, str], findings_by_file: dict[str, list[Finding]],
+    deadline: "_Deadline | None" = None,
+) -> VerdictLayerResult:
+    """review_security_generic once per file, whole file (JS/TS, Go, Java
+    and C# are not chunked by Python's AST; files are size-capped instead).
+    Same accounting, deadline and failure reporting as _run_verdict_layer."""
+    confirmed: list[Finding] = []
+    dismissed: list[DismissedFinding] = []
+    call_failures: list[tuple[str, str]] = []
+    tokens_in = tokens_out = 0
+    cost = 0.0
+    for path, findings in findings_by_file.items():
+        if not findings:
+            continue
+        if deadline is not None and deadline.expired:
+            raise DeadlineExceeded(f"during the generic verdict layer, at {path}",
+                                   tokens_in=tokens_in, tokens_out=tokens_out, cost=cost)
+        result = review_security_generic({"owner": owner, "repo": repo, "path": path, "content": files[path],
+                                          "patch": "", "findings": findings, "hunk_cache_hits": {}})
+        for failure in result.get("verdict_call_failures", []):
+            call_failures.append((failure.path, f"{failure.agent} call failed ({failure.reason}); "
+                                                "raw finding(s) reported unverified"))
+        confirmed.extend(result.get("findings", []))
+        dismissed.extend(result.get("dismissed_findings", []))
+        tokens_in += result.get("tokens_in", 0)
+        tokens_out += result.get("tokens_out", 0)
+        cost += result.get("estimated_cost_usd", 0.0)
+    return VerdictLayerResult(confirmed, dismissed, tokens_in, tokens_out, cost, call_failures)
 
 
 def _collect_repo_files(
@@ -1171,9 +1249,11 @@ TIMEOUT_MESSAGE = (
     "exceed the time limit; try a smaller one."
 )
 
-NO_PYTHON_MESSAGE = (
-    "CodeGuard currently analyzes Python repositories, and this one has no "
-    "Python files to review."
+NO_COVERED_CODE_MESSAGE = (
+    "CodeGuard reviews Python, JavaScript/TypeScript, Go, Java and C# code, with "
+    "configuration, secret and dependency checks alongside it, and this repository "
+    "has none of that code to review. Files in other languages are listed as not "
+    "covered by any scanner."
 )
 
 
@@ -1274,12 +1354,14 @@ def run_audit(
         # Secrets in every non-Python file. Deterministic, no model: the
         # value never leaves tools/gitleaks_runner.py.
         secrets = scan_secrets(_collect_secret_scan_files(root, repo_config), repo_config)
+        # JS/TS, Go, Java and C#: the vendored rules and security_generic.
+        generic_files, generic_skipped = _collect_generic_files(root, repo_config)
 
-        # No Python, no audit -- and crucially no model call. Checked here
-        # rather than after the scanners so a repository of nothing but
+        # No code we cover, no audit -- and crucially no model call. Checked
+        # here rather than after the scanners so a repository of nothing but
         # Markdown costs one clone and nothing else.
-        if not all_files:
-            error = NO_PYTHON_MESSAGE
+        if not all_files and not generic_files:
+            error = NO_COVERED_CODE_MESSAGE
             print(error, file=sys.stderr)
             _record(stats, AuditOutcome.REJECTED, error)
             return 1, error
@@ -1327,7 +1409,18 @@ def run_audit(
         else:
             aa = VerdictLayerResult([], [], 0, 0, 0.0, [])
 
-        ai_reviewed_findings = sec.confirmed + aa.confirmed
+        # JS/TS, Go, Java and C#. Nothing here for a Python-only repository.
+        deadline.check("before the generic verdict layer")
+        generic_triage = triage(run_vendor_rules(generic_files), generic_files,
+                                max_files=settings.generic_ai_files_per_audit,
+                                max_findings_per_file=settings.generic_ai_findings_per_file)
+        gen = _run_generic_layer(
+            "audit", root.name,
+            {p: mask_spans(generic_files[p], secrets.spans.get(p, [])) for p in generic_triage.to_model},
+            generic_triage.to_model, deadline=deadline,
+        )
+
+        ai_reviewed_findings = sec.confirmed + aa.confirmed + gen.confirmed
         # Passthrough: every tool finding not claimed by a verdict agent above.
         # Bandit findings are always claimed when present (review_security has
         # no touches_ai_code gate). Semgrep findings are claimed only on files
@@ -1346,10 +1439,13 @@ def run_audit(
             and not (f.source_tool == "semgrep" and f.file in claimed_semgrep_files)
         ]
 
-        dismissed = sec.dismissed + aa.dismissed
-        tokens_in = sec.tokens_in + aa.tokens_in
-        tokens_out = sec.tokens_out + aa.tokens_out
-        estimated_cost_usd = sec.cost + aa.cost
+        passthrough_findings += generic_triage.passthrough + generic_triage.unreviewed
+        skipped_files = skipped_files + generic_skipped + generic_triage.capped_files
+
+        dismissed = sec.dismissed + aa.dismissed + gen.dismissed
+        tokens_in = sec.tokens_in + aa.tokens_in + gen.tokens_in
+        tokens_out = sec.tokens_out + aa.tokens_out + gen.tokens_out
+        estimated_cost_usd = sec.cost + aa.cost + gen.cost
         elapsed_s = time.monotonic() - start
 
         # Hand the numbers back before the report is rendered, so a
@@ -1371,18 +1467,21 @@ def run_audit(
         if secrets.unavailable:
             unavailable.append("gitleaks")
         report_kwargs = dict(
-            target=safe_target, files_scanned=len(files), files_ai_aware=files_ai_aware,
+            target=safe_target, files_scanned=len(files) + len(generic_files), files_ai_aware=files_ai_aware,
             ai_reviewed_findings=ai_reviewed_findings, passthrough_findings=passthrough_findings + secrets.findings,
             dismissed=dismissed, eval_hygiene_findings=eval_hygiene_findings, osv_findings=osv_findings,
-            skipped_files=skipped_files, verdict_call_failures=sec.call_failures + aa.call_failures,
+            skipped_files=skipped_files, verdict_call_failures=sec.call_failures + aa.call_failures + gen.call_failures,
             unavailable_tools=unavailable,
             tokens_in=tokens_in, tokens_out=tokens_out,
             estimated_cost_usd=estimated_cost_usd, elapsed_s=elapsed_s,
             skipped_test_asserts=skipped_test_asserts,
             tool_warnings=[w for w in (semgrep_version_warning(),) if w],
-            models={"security": settings.security_agent_model, "ai_aware": settings.ai_aware_agent_model},
+            models={"security": settings.security_agent_model, "ai_aware": settings.ai_aware_agent_model,
+                    # Only when it could have run: a Python-only audit's
+                    # Technical details are exactly what they were.
+                    **({"security_generic": settings.security_generic_agent_model} if generic_files else {})},
             not_covered=uncovered,
-            secret_placeholders=secrets.placeholders,
+            secret_placeholders=secrets.placeholders + generic_triage.placeholders,
         )
         report = render_report(**report_kwargs)
         if stats is not None:

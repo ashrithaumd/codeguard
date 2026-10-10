@@ -174,6 +174,19 @@ if not any("unpinned-model-alias" in f.rule_id for f in findings):
     sys.exit("=== FAIL: the probe rule did not fire; the scan did not really run ===")
 print("=== OK: semgrep %s via the runner, scan ran, 0 network attempts (image env: %s) ===" % (
     version, os.environ.get("SEMGREP_ENABLE_VERSION_CHECK", "removed")))
+
+# The vendored GitLab rules and our own rules_lang/, in the same offline run.
+reset()
+from codeguard.tools.semgrep_runner import run_vendor_rules
+lang = {"web/run.js": NL.join(["function run(userInput) {", "  return eval(userInput);", "}", ""]),
+        "client/http.go": NL.join(["package client", "", "import \"crypto/tls\"", "",
+                                   "func C() *tls.Config {", "\treturn &tls.Config{InsecureSkipVerify: true}", "}", ""])}
+rules = {f.rule_id for f in run_vendor_rules(lang)}
+if attempts():
+    sys.exit("=== FAIL: the vendored-rules run attempted network connections: %s ===" % attempts())
+if "javascript_eval_rule-eval-with-expression" not in rules or "codeguard-go-tls-insecure-skip-verify" not in rules:
+    sys.exit("=== FAIL: vendored or own language rules did not fire: %s ===" % sorted(rules))
+print("=== OK: vendored + own language rules ran offline, both probes fired ===")
 '
 docker run --rm --network none -e CONTROL=1 "$IMAGE" python -c "$SEMGREP_PROBE"
 docker run --rm --network none --entrypoint env "$IMAGE" -u SEMGREP_ENABLE_VERSION_CHECK -u SEMGREP_SEND_METRICS python -c "$SEMGREP_PROBE"

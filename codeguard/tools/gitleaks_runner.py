@@ -75,6 +75,11 @@ class SecretScan:
     # only counted (the audit's Skipped section says how many).
     placeholders: int = 0
     unavailable: bool = False
+    # Where each matched value is, never what it is: path -> [(line, start,
+    # end)], 1-based line, 0-based columns into that line. What the generic
+    # verdict agent's content is masked with (redact.mask_spans) before it
+    # reaches a model. Placeholders included: masking costs nothing.
+    spans: dict[str, list[tuple[int, int, int]]] = field(default_factory=dict)
 
 
 def sparse_from_patch(patch: str) -> str:
@@ -104,6 +109,12 @@ def extract_value(line: str, *, match: str, start_col: int, end_col: int) -> str
     """The secret on `line`, located from Gitleaks' REDACTED Match and its
     1-based columns. None when the two cannot be aligned: a finding we cannot
     classify is reported by its rule alone rather than guessed at."""
+    span = locate_value(line, match=match, start_col=start_col, end_col=end_col)
+    return line[span[0]:span[1]] if span else None
+
+
+def locate_value(line: str, *, match: str, start_col: int, end_col: int) -> tuple[int, int] | None:
+    """Where the secret is on `line`: 0-based [start, end), or None."""
     if _REDACTED not in match:
         return None
     prefix, suffix = match.split(_REDACTED, 1)
@@ -117,7 +128,7 @@ def extract_value(line: str, *, match: str, start_col: int, end_col: int) -> str
             (m for m in _TOKEN_CHARS.finditer(line) if m.start() < hi and m.end() > lo),
             key=lambda m: min(m.end(), hi) - max(m.start(), lo), default=None,
         )
-        return best.group(0) if best else None
+        return (best.start(), best.end()) if best else None
     if prefix:
         found = line.find(prefix, max(0, start_col - 3))
         if found < 0:
@@ -129,11 +140,10 @@ def extract_value(line: str, *, match: str, start_col: int, end_col: int) -> str
         end = line.find(suffix, start)
         if end < 0:
             return None
-        value = line[start:end]
     else:
         token = _TOKEN_CHARS.match(line, start)
-        value = token.group(0) if token else ""
-    return value or None
+        end = token.end() if token else start
+    return (start, end) if end > start else None
 
 
 def _id_key() -> bytes | None:
@@ -225,8 +235,11 @@ def scan_secrets(files: dict[str, str], repo_config: RepoConfig, timeout: int = 
         lines = content.splitlines()
         start = int(hit.get("StartLine") or 0)
         line = lines[start - 1] if 0 < start <= len(lines) else ""
-        value = extract_value(line, match=str(hit.get("Match", "")),
-                              start_col=int(hit.get("StartColumn") or 1), end_col=int(hit.get("EndColumn") or 0))
+        span = locate_value(line, match=str(hit.get("Match", "")),
+                            start_col=int(hit.get("StartColumn") or 1), end_col=int(hit.get("EndColumn") or 0))
+        value = line[span[0]:span[1]] if span else None
+        if span:
+            scan.spans.setdefault(rel, []).append((start, span[0], span[1]))
         if value is not None:
             shape = classify_secret(value)
             secret_id = _secret_id(value, key)

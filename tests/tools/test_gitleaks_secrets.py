@@ -168,3 +168,28 @@ def test_settings_that_cannot_load_mean_no_id_never_a_failed_scan(monkeypatch):
     monkeypatch.setattr(gitleaks_runner, "get_settings", broken)
     scan = scan_secrets({"a.yml": f"t: {_key(11)}\n"}, RepoConfig())
     assert len(scan.findings) == 1 and "secret id" not in scan.findings[0].message
+
+
+# --------------------------------------------------------------------------
+# Positions, for masking content before it reaches a model
+# --------------------------------------------------------------------------
+
+def test_the_scan_records_where_each_secret_is_but_never_what_it_is():
+    key = _key(12)
+    line = f'  github_token: "{key}"'
+    scan = scan_secrets({"config/app.yml": f"app:\n{line}\n"}, RepoConfig())
+    [(lineno, start, end)] = scan.spans["config/app.yml"]
+    assert lineno == 2 and line[start:end] == key
+    assert key not in repr(scan.spans)
+
+
+def test_mask_spans_blanks_exactly_those_spans_and_keeps_the_line_count():
+    from codeguard.redact import MASK, mask_spans
+    key = _key(13)
+    content = f"a: 1\ntoken: {key}  # note\nb: 2\n"
+    start = content.splitlines()[1].index(key)
+    masked = mask_spans(content, [(2, start, start + len(key))])
+    assert key not in masked
+    assert masked.splitlines()[1] == f"token: {MASK}  # note"
+    assert masked.count("\n") == content.count("\n")
+    assert mask_spans(content, []) == content

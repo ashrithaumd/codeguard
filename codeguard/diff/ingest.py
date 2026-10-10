@@ -13,22 +13,25 @@ budget-exceeded path in tests/diff/test_budget.py.
 from __future__ import annotations
 
 import asyncio
+import fnmatch
 import logging
 
 import tiktoken
 
 from codeguard.config import Budget, RepoConfig, Settings, effective_budget
-from codeguard.diff.filters import filter_files, is_dependency_manifest
+from codeguard.diff.filters import BUILTIN_IGNORED_PATTERNS, filter_files, is_dependency_manifest
 from codeguard.diff.metrics import (
     budget_exceeded_total,
     files_filtered_total,
     files_reviewed_total,
     files_seen_total,
 )
-from codeguard.tools.gitleaks_runner import sparse_from_patch
 from codeguard.diff.models import DiffIngestionResult, FilteredFile, Hunk
 from codeguard.diff.parse import build_hunks
 from codeguard.github.diff import get_file_content, get_pr_files
+from codeguard.languages import language_of
+from codeguard.tools.gitleaks_runner import sparse_from_patch
+from codeguard.tools.semgrep_runner import VENDOR_LANGUAGE_FILES as GENERIC_LANGUAGES
 
 logger = logging.getLogger(__name__)
 _tokenizer = tiktoken.get_encoding("cl100k_base")
@@ -139,10 +142,24 @@ async def ingest_pr_diff(
         f for f in raw_files if is_dependency_manifest(f["filename"]) and f.get("patch") is not None
     ]
 
+    # Changed JS/TS, Go, Java and C# files: their own list, fetched in the
+    # same batch, never among `kept` (Python's, which feeds the Python
+    # agents). Over the cap, listed with the reason, not dropped.
+    generic_candidates = [
+        f for f in raw_files
+        if language_of(f["filename"]) in GENERIC_LANGUAGES and f.get("additions", 0) and f.get("patch")
+        and not any(fnmatch.fnmatch(f["filename"], p) for p in BUILTIN_IGNORED_PATTERNS)
+        and not any(fnmatch.fnmatch(f["filename"], p) for p in repo_config.ignored_paths)
+    ]
+    cap = settings.generic_scan_files_per_pr
+    generic_files = generic_candidates[:cap]
+    for f in generic_candidates[cap:]:
+        filtered.append(FilteredFile(path=f["filename"], reason=f"not scanned (cap: {cap} JS/TS, Go, Java, C# files per PR)"))
+
     # Bounded-concurrent content fetches — see CONTENT_FETCH_CONCURRENCY.
     # Dependency manifests ride along in the same batched fetch rather
     # than a second round-trip.
-    fetch_targets = kept + [f for f in dependency_files if f["filename"] not in {k["filename"] for k in kept}]
+    fetch_targets = kept + [f for f in dependency_files if f["filename"] not in {k["filename"] for k in kept}] + generic_files
     semaphore = asyncio.Semaphore(CONTENT_FETCH_CONCURRENCY)
     fetch_results = await asyncio.gather(*(
         _fetch_file_content(semaphore, token, owner, repo, f["filename"], head_sha) for f in fetch_targets
@@ -176,6 +193,9 @@ async def ingest_pr_diff(
         dependency_contents={
             f["filename"]: all_content_by_path[f["filename"]] for f in dependency_files if f["filename"] in all_content_by_path
         },
+        generic_contents={f["filename"]: all_content_by_path[f["filename"]] for f in generic_files
+                          if f["filename"] in all_content_by_path},
+        generic_patches={f["filename"]: f["patch"] for f in generic_files},
         secret_scan_files={
             f["filename"]: sparse
             for f in raw_files

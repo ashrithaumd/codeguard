@@ -20,7 +20,10 @@ from collections.abc import Iterable
 
 from codeguard.config import RepoConfig
 
-COVERED_LANGUAGES: frozenset[str] = frozenset({"Python"})
+# Python by CodeGuard's own pipeline; the rest by the vendored GitLab rules
+# (tools/semgrep_runner.run_vendor_rules) and the security_generic verdict
+# agent.
+COVERED_LANGUAGES: frozenset[str] = frozenset({"Python", "JavaScript", "TypeScript", "Go", "Java", "C#"})
 
 _EXTENSIONS = {
     ".py": "Python",

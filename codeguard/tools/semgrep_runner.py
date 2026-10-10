@@ -118,3 +118,48 @@ _OFFLINE_ENV = {"SEMGREP_ENABLE_VERSION_CHECK": "0", "SEMGREP_SEND_METRICS": "of
 
 def run_semgrep(files: dict[str, str], timeout: int = DEFAULT_TIMEOUT) -> list[Finding]:
     return run_tool_on_pr(TOOL_NAME, _build_cmd, _parse, files, timeout, env=semgrep_env())
+
+
+# --------------------------------------------------------------------------
+# The vendored GitLab rules, for the languages they cover
+# --------------------------------------------------------------------------
+#
+# rules_vendor/gitlab-sast-rules (MIT; the Go rules from gosec, Apache-2.0;
+# pinned with a SHA-256 manifest). A separate run from the Python one above,
+# with its own source_tool: the Python pipeline routes on source_tool, so
+# "gitlab-sast" findings can never be claimed by the AI-aware or security
+# agents, and the Python run's own config and output are untouched.
+
+VENDOR_TOOL_NAME = "gitlab-sast"
+VENDOR_RULES_DIR = RULES_DIR.parent / "rules_vendor" / "gitlab-sast-rules"
+VENDOR_LANGUAGE_FILES = frozenset({"JavaScript", "TypeScript", "Go", "Java", "C#"})
+# CodeGuard's own rules for those languages (NOTICE), kept apart from the
+# vendored pack so its manifest stays byte-exact; same run, same source_tool.
+OWN_LANG_RULES_DIR = RULES_DIR.parent / "rules_lang"
+
+
+def _build_vendor_cmd(tmp_dir: str) -> list[str]:
+    return semgrep_command() + [
+        f"--config={VENDOR_RULES_DIR}", f"--config={OWN_LANG_RULES_DIR}", "--json", "--quiet", "--metrics=off", "--dataflow-traces", tmp_dir,
+    ]
+
+
+def _parse_vendor(stdout: str, tmp_dir: str) -> list[Finding]:
+    """_parse, then re-labelled: the vendor tool name, and the rule's own id
+    (the last segment of Semgrep's path-prefixed check_id)."""
+    return [
+        f.model_copy(update={"source_tool": VENDOR_TOOL_NAME, "rule_id": f.rule_id.rsplit(".", 1)[-1]})
+        for f in _parse(stdout, tmp_dir)
+    ]
+
+
+def run_vendor_rules(files: dict[str, str], timeout: int = DEFAULT_TIMEOUT) -> list[Finding]:
+    """The vendored rules over the files in their languages only; anything
+    else (Python included) is never handed to them."""
+    from codeguard.languages import language_of
+
+    in_scope = {p: c for p, c in files.items() if language_of(p) in VENDOR_LANGUAGE_FILES}
+    if not in_scope:
+        return []
+    return run_tool_on_pr(TOOL_NAME, _build_vendor_cmd, _parse_vendor, in_scope, timeout,
+                          env=semgrep_env())

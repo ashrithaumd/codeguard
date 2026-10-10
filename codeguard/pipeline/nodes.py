@@ -147,6 +147,19 @@ You will be given the file's content and Bandit's own findings for it, grouped b
 {_VERDICT_CONTRACT}
 """
 
+# The verdict agent for the vendored GitLab rules (JS/TS, Go, Java, C#):
+# the same contract as the Python agents, its own prompt and cache key.
+# Python's _SECURITY_SYSTEM_PROMPT is untouched (pinned by
+# tests/pipeline/test_python_pipeline_unchanged.py).
+_SECURITY_GENERIC_SYSTEM_PROMPT = f"""You are a security-focused code reviewer. Your only job is to judge security findings a deterministic scanner (Semgrep, running a community security ruleset) already produced for one source file in JavaScript, TypeScript, Go, Java or C# — you do not invent new findings, and you do not comment on style, naming, tests, or anything outside security.
+
+You will be given the file's content and the scanner's own findings for it, grouped by rule_id. Secret values in the file have been replaced with [redacted]; never guess at them, and never confirm or dismiss anything on the basis of what a redacted value might be.
+
+{_DATA_FRAMING}
+
+{_VERDICT_CONTRACT}
+"""
+
 _AI_AWARE_SYSTEM_PROMPT = f"""You are a security-focused code reviewer specializing in LLM-integration code. Your only job is to judge findings a deterministic scanner (Semgrep, a custom LLM-security ruleset) already produced for one source file — you do not invent new findings, and you do not comment on anything outside LLM/AI-integration security.
 
 You will be given the file's content and Semgrep's own findings for it, grouped by rule_id.
@@ -735,7 +748,7 @@ def _enforce_credential_shape(
 def _run_verdict_agent(
     *, agent: str, owner: str, repo: str, path: str, content: str, findings: list[Finding],
     system_prompt: str, model: str, max_tokens: int, timeout: float, dismissals_enabled: bool,
-    hunk_cache_hits: dict[CacheKey, CachedAgentResult], content_first_line: int = 1,
+    hunk_cache_hits: dict[CacheKey, CachedAgentResult], content_first_line: int = 1, hints: bool = True,
 ) -> dict:
     """Shared body for review_security and review_ai_aware: check the
     file-content-hash cache first (a hit means no LLM call at all), and
@@ -767,7 +780,9 @@ def _run_verdict_agent(
     # pass leaves a hint intact (see redact._ASSIGNED). Verdict agents only:
     # the fix agent echoes source into suggestion blocks, where a hint
     # would be written into somebody's code.
-    hinted = redact_source(content, hints=True)
+    # hints=False for security_generic: plain masks, so nothing about a
+    # secret -- not even its shape -- reaches that agent.
+    hinted = redact_source(content, hints=hints)
     user_content = f'<file_content path="{path}">\n{hinted}\n</file_content>\n\n{_build_findings_block(findings)}'
     result = call_agent(
         agent=agent, api_key=settings.anthropic_api_key, system_prompt=system_prompt,
@@ -889,6 +904,37 @@ _MAX_MESSAGE_CHARS = 2_000
 # — it is abandoned rather than trusted. Verdict-contract agents
 # (security, ai_aware) are unaffected and keep their bare agent key.
 _GENERATIVE_CONTRACT_VERSION = 2
+
+
+def route_to_generic_security_reviews(state: ReviewState) -> list[Send]:
+    """One review_security_generic per file the triage chose
+    (pipeline/generic_review.py) -- JS/TS, Go, Java, C#. Python files are
+    never here: they live in state["files"], this reads state["generic_files"]."""
+    files = state.get("generic_files") or {}
+    findings = state.get("generic_findings") or {}
+    return [
+        Send("review_security_generic", {
+            "owner": state["owner"], "repo": state["repo"], "path": path, "content": content,
+            "patch": state["patches"].get(path, ""), "findings": findings[path],
+            "hunk_cache_hits": state["hunk_cache_hits"],
+        })
+        for path, content in files.items() if findings.get(path)
+    ]
+
+
+def review_security_generic(state: FileReviewState) -> dict:
+    """The vendored rules' findings for one file, verdict contract, Sonnet
+    tier, plain masks (hints=False). `content` arrives with the secrets
+    scan's spans already masked (redact.mask_spans)."""
+    settings = get_settings()
+    return _run_verdict_agent(
+        agent="security_generic", owner=state["owner"], repo=state["repo"], path=state["path"],
+        content=state["content"], findings=state["findings"],
+        system_prompt=_SECURITY_GENERIC_SYSTEM_PROMPT, model=settings.security_generic_agent_model,
+        max_tokens=settings.security_generic_agent_max_tokens, timeout=settings.security_generic_agent_timeout_s,
+        dismissals_enabled=settings.security_agent_dismissals_enabled,
+        hunk_cache_hits=state["hunk_cache_hits"], hints=False,
+    )
 
 
 def generative_cache_agent(agent: str) -> str:
@@ -1988,7 +2034,9 @@ def summarize(state: ReviewState) -> dict:
     # same principle already applied to dismissed_count above.
     deduped = _fold_cross_agent_duplicates(deduped)
 
-    file_count = len(state["files"])
+    # Python files plus any JS/TS, Go, Java or C# files scanned by the vendored
+    # rules (0 for a Python-only review, so its summary is unchanged).
+    file_count = len(state["files"]) + len(state.get("generic_scanned") or ())
     intro, summary_update = _generate_summary_intro(
         owner=state["owner"], repo=state["repo"], file_count=file_count,
         deduped=deduped, dismissed_count=len(grouped_dismissed),

@@ -1,0 +1,26 @@
+CodeGuard
+=========
+
+Scanner rules shipped with CodeGuard come from two places. They are kept in
+separate directories and never mixed.
+
+Third-party rules (vendored, unmodified)
+----------------------------------------
+
+rules_vendor/gitlab-sast-rules/
+  GitLab sast-rules v2.10.1: JavaScript/TypeScript, Go, Java and C# rules.
+  MIT (c) GitLab Inc.; the Go rules derived from gosec are Apache-2.0.
+  Source, archive checksum, what was and was not taken, and the full license
+  text: rules_vendor/gitlab-sast-rules/NOTICE and LICENSE.
+
+CodeGuard's own rules
+---------------------
+
+rules/
+  The Python AI-aware ruleset (rules/llm-security.yaml).
+
+rules_lang/
+  Rules CodeGuard wrote for the non-Python languages, run alongside the
+  vendored pack. Not derived from it.
+  * go-insecure-skip-verify.yaml (codeguard-go-tls-insecure-skip-verify):
+    tls.Config with InsecureSkipVerify set to true, outside *_test.go files.

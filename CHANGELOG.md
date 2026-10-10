@@ -7,6 +7,41 @@ CodeGuard is marked **ACTION REQUIRED**.
 
 ### Multi-language support (feat/multi-language)
 
+#### JavaScript/TypeScript, Go, Java and C#: scanners find, the AI confirms or dismisses
+
+- **Rules**: GitLab sast-rules v2.10.1, vendored unmodified (MIT; the Go
+  rules gosec-derived, Apache-2.0), plus our own `rules_lang/` (labelled
+  apart in `NOTICE`). First own rule: `codeguard-go-tls-insecure-skip-verify`
+  (`tls.Config{InsecureSkipVerify: true}`; `false` and `*_test.go` are left
+  alone), since no vendored rule covers certificate verification.
+- **A separate Semgrep run** over those languages only, same pinned engine,
+  offline. Its findings carry `source_tool` "gitlab-sast", so the Python
+  agents can never claim them, and the Python run's config and output are
+  untouched (scanner snapshot identical; Python prompt fingerprints pinned in
+  a test).
+- **Verdicts**: a new `security_generic` agent, one call per file, whole
+  file. Same contract as Python: it can only confirm or dismiss what a
+  scanner raised. Before the content goes out, secret spans Gitleaks found
+  are masked (positions only; the value is never held). LOW findings are
+  reported without a call. Java's hardcoded-password rules are decided by
+  the credential's shape, never by the model.
+- **Caps**, each said where it applies: 30 such files scanned per PR, 10
+  sent to the model per PR and 40 per audit, 30 findings per file. Anything
+  over a cap is reported unreviewed and its file listed with the reason.
+- **No UI change**: findings appear in the existing sections; the audit's
+  Technical details lists the `security_generic` model only when such files
+  were present. A repository with none of the covered code is still refused
+  before any model call, now naming the covered languages and saying others
+  are listed as not covered.
+- **Eval**: `evals/fixtures_lang/` (a planted bug and a near miss per
+  language) with `expected.json`; `evals/run_lang_eval.py` checks the
+  scanners and triage for free and, with `--with-model`, the verdicts.
+  `tests/tooling/test_lang_eval.py` runs the free half.
+- `scripts/smoke_image.sh`: vendored and own rules fire offline in the
+  image.
+- Known gap (docs/backlog.md): the vendored Go `math/rand` rule matches only
+  an aliased import.
+
 #### Secrets in every non-Python file (Gitleaks)
 
 - Gitleaks **8.30.1** (MIT) in the image, verified against the release's

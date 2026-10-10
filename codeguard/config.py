@@ -307,6 +307,18 @@ class Settings(BaseSettings):
     # keyed by a value derived from the Anthropic key instead.
     secret_hash_key: str = ""
 
+    # The verdict agent for the vendored GitLab rules (JS/TS, Go, Java, C#),
+    # Sonnet like the Python security agent. And the caps in front of it
+    # (pipeline/generic_review.py): files sent to it per PR / per audit, and
+    # findings per file; everything beyond is listed, marked unreviewed.
+    security_generic_agent_model: str = "claude-sonnet-4-5"
+    security_generic_agent_max_tokens: int = 1024
+    security_generic_agent_timeout_s: float = 30.0
+    generic_scan_files_per_pr: int = 30
+    generic_ai_files_per_pr: int = 10
+    generic_ai_files_per_audit: int = 40
+    generic_ai_findings_per_file: int = 30
+
     impact_analysis_enabled: bool = False
     impact_max_call_sites_per_symbol: int = 5
     impact_max_call_sites_per_pr: int = 15

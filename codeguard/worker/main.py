@@ -20,6 +20,7 @@ further work on a job it no longer owns.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
 import logging
 import shutil
 import signal
@@ -41,7 +42,10 @@ from codeguard.api.repo_settings import pr_reviews_enabled
 from codeguard.cli import AuditOutcome, AuditStats, run_audit
 from codeguard.config import RepoConfig, Settings, get_settings, verify_required_settings
 from codeguard.languages import NOT_COVERED_PREFIX
+from codeguard.diff.models import FilteredFile
+from codeguard.diff.parse import hash_content, parse_hunk_ranges
 from codeguard.line_refs import strip_line_refs
+from codeguard.redact import mask_spans
 from codeguard.diff.filters import split_test_asserts
 from codeguard.diff.ingest import ingest_pr_diff
 from codeguard.github.auth import get_installation_token
@@ -56,12 +60,15 @@ from codeguard.github.repo_config import load_repo_config
 from codeguard.github.reviews import fetch_review_comments, post_review
 from codeguard.github.tarball import TarballTooLarge, fetch_python_files
 from codeguard.tools.gitleaks_runner import SecretScan, scan_secrets
+from codeguard.tools.line_filter import filter_findings_to_changed_lines
+from codeguard.tools.semgrep_runner import run_vendor_rules
 from codeguard.pipeline.feedback import FINGERPRINT_MARKER_RE, fetch_suppressed_fingerprints, fingerprint_marker, record_posted_finding_comments
 from codeguard.pipeline.graph import review_graph
 from codeguard.pipeline.hunk_cache import fetch_cache_hits, write_cache_records
 from codeguard.pipeline.impact import ImpactReport, analyze
 from codeguard.pipeline.merge import rule_label, with_flow_note
-from codeguard.pipeline.nodes import _exclude_suppressed, compute_cache_keys
+from codeguard.pipeline.generic_review import triage
+from codeguard.pipeline.nodes import _exclude_suppressed, compute_cache_keys, verdict_cache_agent
 from codeguard.pipeline.reviews import record_review
 from codeguard.pipeline.state import ReviewState
 from codeguard.queue.db import bootstrap_schema, create_pool
@@ -334,6 +341,44 @@ async def prepare_secrets(files: dict[str, str], repo_config: RepoConfig) -> Sec
     return await asyncio.to_thread(scan_secrets, files, repo_config)
 
 
+@dataclass
+class GenericPrep:
+    """What prepare_generic adds to a review: state for the security_generic
+    agent, findings that go straight into the results (LOW, credential
+    shape verdicts, over-the-cap ones marked unreviewed), files named with a
+    cap reason, and the cache keys to prefetch."""
+    state: dict = field(default_factory=dict)
+    findings: list = field(default_factory=list)
+    capped: list = field(default_factory=list)
+    cache_keys: list = field(default_factory=list)
+    placeholders: int = 0
+
+
+async def prepare_generic(diff_result, secrets: SecretScan, settings: Settings) -> GenericPrep:
+    """The changed JS/TS, Go, Java and C# files: the vendored rules, findings
+    on changed lines only, the triage (pipeline/generic_review.py), and the
+    content for the model with every secrets-scan span masked. Empty for a
+    Python-only PR, so its review is exactly what it was."""
+    prep = GenericPrep()
+    contents = diff_result.generic_contents
+    if not contents:
+        return prep
+    raw = await asyncio.to_thread(run_vendor_rules, contents)
+    ranges = {p: parse_hunk_ranges(patch) for p, patch in diff_result.generic_patches.items()}
+    on_changed = filter_findings_to_changed_lines(raw, ranges)
+    t = triage(on_changed, contents, max_files=settings.generic_ai_files_per_pr,
+               max_findings_per_file=settings.generic_ai_findings_per_file)
+    masked = {p: mask_spans(contents[p], secrets.spans.get(p, [])) for p in t.to_model}
+    prep.state = {"generic_scanned": sorted(contents)}
+    if t.to_model:
+        prep.state.update(generic_files=masked, generic_findings=t.to_model)
+    prep.findings = t.passthrough + t.unreviewed
+    prep.capped = t.capped_files
+    prep.placeholders = t.placeholders
+    prep.cache_keys = [(p, hash_content(c), verdict_cache_agent("security_generic")) for p, c in masked.items()]
+    return prep
+
+
 def coverage_gaps(files_filtered) -> dict[str, int]:
     """Filtered files no scanner covers, counted by language, from the
     reason diff/filters.py recorded ("Not covered by any scanner (Go)")."""
@@ -502,6 +547,9 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
     secrets = await secrets_task
     if secrets.unavailable:
         logger.warning("pr=%s: secrets scan did not run", pr_number)
+    generic = await prepare_generic(diff_result, secrets, settings)
+    if generic.capped:
+        diff_result.files_filtered.extend(FilteredFile(path=p, reason=r) for p, r in generic.capped)
     impact_report, impact_notes = await impact_task if impact_task is not None else (None, [])
     _log_findings(pr_number, tool_findings)
     if osv_findings:
@@ -513,6 +561,7 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
     # so this is exactly what's needed, not a broader guess. A hit means
     # the corresponding node skips its LLM call entirely.
     cache_keys = compute_cache_keys(diff_result.file_contents, diff_result.patches, tool_findings, repo_config.enable_ai_aware)
+    cache_keys += generic.cache_keys
     hunk_cache_hits = await fetch_cache_hits(pool, owner, repo, cache_keys)
     logger.info("hunk cache pr=%s: %d key(s) checked, %d hit", pr_number, len(cache_keys), len(hunk_cache_hits))
 
@@ -525,7 +574,11 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
     initial_state: ReviewState = {
         "owner": owner, "repo": repo, "pr_number": pr_number, "head_sha": head_sha,
         "installation_id": installation_id, "repo_config": repo_config,
-        "files": diff_result.file_contents, "patches": diff_result.patches,
+        "files": diff_result.file_contents,
+        # Python's patches plus the JS/TS, Go, Java and C# ones: only the
+        # summary reads the latter (inline anchoring); every Python route
+        # iterates state["files"] and looks patches up by its own paths.
+        "patches": {**diff_result.patches, **diff_result.generic_patches},
         "budget_exceeded": diff_result.budget_exceeded,
         "tool_findings": tool_findings, "base_tree_files": base_tree_files,
         "skipped_test_asserts": skipped_test_asserts,
@@ -533,9 +586,11 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
         "suppressed_fingerprints": suppressed_fingerprints,
         "impact_report": impact_report, "impact_callers": [], "impact_notes": impact_notes,
         "coverage_gaps": coverage_gaps(diff_result.files_filtered),
+        **generic.state,
         "touches_ai_code": False,
-        # Secrets go straight into the results (no agent, no model).
-        "findings": list(secrets.findings), "repo_level_findings": osv_findings, "dismissed_findings": [], "fix_suggestions": [],
+        # Secrets, and the vendored rules' findings that need no verdict, go
+        # straight into the results (no agent, no model).
+        "findings": list(secrets.findings) + generic.findings, "repo_level_findings": osv_findings, "dismissed_findings": [], "fix_suggestions": [],
         "should_fix": False, "summary": "", "inline_findings": [],
         "tokens_in": 0, "tokens_out": 0, "estimated_cost_usd": 0.0, "node_latencies": [],
     }

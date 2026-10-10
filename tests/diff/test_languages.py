@@ -41,12 +41,13 @@ def test_language_of(path, language):
     assert language_of(path) == language
 
 
-def test_only_python_is_covered_so_far():
-    assert COVERED_LANGUAGES == frozenset({"Python"})
+def test_covered_languages():
+    assert COVERED_LANGUAGES == frozenset({"Python", "JavaScript", "TypeScript", "Go", "Java", "C#"})
 
 
 def test_coverage_reason():
-    assert coverage_reason("cmd/main.go") == "Not covered by any scanner (Go)"
+    assert coverage_reason("cmd/main.go") is None
+    assert coverage_reason("Main.kt") == "Not covered by any scanner (Kotlin)"
     assert coverage_reason("index.php") == "Not covered by any scanner (PHP)"
     assert coverage_reason("logo.png") == "not source code"
     assert coverage_reason("app.py") is None
@@ -56,11 +57,7 @@ def test_not_covered_groups_by_language_and_leaves_out_python_docs_and_ignored_p
     paths = ["app.py", "cmd/main.go", "pkg/util.go", "web/index.ts", "README.md", "notes.txt",
              "node_modules/x/index.js", "vendor/y.go", "app/user.rb", "logo.png", "skip/me.go"]
     groups = not_covered(paths, RepoConfig(ignored_paths=["skip/*"]))
-    assert groups == [
-        {"language": "Go", "paths": ["cmd/main.go", "pkg/util.go"]},
-        {"language": "Ruby", "paths": ["app/user.rb"]},
-        {"language": "TypeScript", "paths": ["web/index.ts"]},
-    ]
+    assert groups == [{"language": "Ruby", "paths": ["app/user.rb"]}]
 
 
 def test_not_covered_is_empty_for_a_python_only_repo():
@@ -75,9 +72,16 @@ def _file(name, additions=1):
     return {"filename": name, "additions": additions, "patch": "@@ -1 +1 @@\n+x"}
 
 
-def test_a_changed_go_file_says_which_language_no_scanner_covers():
-    kept, filtered = filter_files([_file("cmd/main.go")], RepoConfig())
-    assert kept == [] and [(f.path, f.reason) for f in filtered] == [("cmd/main.go", "Not covered by any scanner (Go)")]
+def test_a_changed_kotlin_file_says_which_language_no_scanner_covers():
+    kept, filtered = filter_files([_file("App.kt")], RepoConfig())
+    assert kept == [] and [(f.path, f.reason) for f in filtered] == [("App.kt", "Not covered by any scanner (Kotlin)")]
+
+
+def test_a_changed_go_file_is_neither_a_python_file_nor_not_reviewed():
+    """Covered by the vendored rules: reviewed by its own path (diff/ingest),
+    never handed to the Python agents, never listed as not reviewed."""
+    kept, filtered = filter_files([_file("cmd/main.go"), _file("web/a.ts")], RepoConfig())
+    assert kept == [] and filtered == []
 
 
 def test_a_changed_non_source_file_says_so():
