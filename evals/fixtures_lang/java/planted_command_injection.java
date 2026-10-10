@@ -5,7 +5,6 @@ import javax.servlet.http.HttpServletRequest;
 public class Ping {
     public void ping(HttpServletRequest request) throws IOException {
         String host = request.getParameter("host");
-        Runtime runtime = Runtime.getRuntime();
-        runtime.exec("ping -c 1 " + host);
+        Runtime.getRuntime().exec("ping -c 1 " + host);
     }
 }

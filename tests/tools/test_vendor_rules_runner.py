@@ -141,3 +141,23 @@ def test_an_aliased_import_is_covered_too_including_what_the_vendored_rule_skips
     src = GO_TOKEN.format(imp="math/rand", alias="mrand").replace('import "math/rand"', 'import mrand "math/rand"')
     findings = run_vendor_rules({"auth/token.go": src})
     assert [(f.rule_id, f.start_line) for f in findings if f.rule_id == RAND_RULE] == [(RAND_RULE, 7)]
+
+
+# codeguard-java-runtime-exec-injection: the one-line Runtime.getRuntime().exec
+# form the vendored CommandInjection rule (typed-variable sink) misses.
+JAVA_PING = ('import java.io.IOException;\nimport javax.servlet.http.HttpServletRequest;\n\n'
+             'public class Ping {{\n'
+             '    public void ping(HttpServletRequest request) throws IOException {{\n'
+             '        String host = request.getParameter("host");\n'
+             '{call}\n    }}\n}}\n')
+EXEC_RULE = "codeguard-java-runtime-exec-injection"
+
+
+def test_the_one_line_exec_form_is_ours_and_the_variable_form_stays_vendored():
+    direct = JAVA_PING.format(call='        Runtime.getRuntime().exec("ping -c 1 " + host);')
+    via_var = JAVA_PING.format(call='        Runtime runtime = Runtime.getRuntime();\n'
+                                    '        runtime.exec("ping -c 1 " + host);')
+    findings = run_vendor_rules({"a/Direct.java": direct, "b/ViaVar.java": via_var})
+    got = sorted((f.file, f.rule_id, f.source_tool) for f in findings)
+    assert got == [("a/Direct.java", EXEC_RULE, "codeguard-rules"),
+                   ("b/ViaVar.java", "java_inject_rule-CommandInjection", "gitlab-sast")]

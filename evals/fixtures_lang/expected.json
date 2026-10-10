@@ -6,7 +6,10 @@
   "typescript/near_miss_sanitized_html.tsx": {"rules": ["javascript_react_rule-dangerouslysetinnerhtml"], "verdict": "dismissed"},
   "go/planted_sql_concat.go": {"rules": ["go_sql_rule-concat-sqli"], "verdict": "confirmed"},
   "go/planted_insecure_tls.go": {"rules": ["codeguard-go-tls-insecure-skip-verify"], "verdict": "confirmed"},
-  "go/near_miss_math_rand_jitter.go": {"rules": ["go_crypto_rule-weakrandsource"], "verdict": "dismissed"},
-  "java/planted_command_injection.java": {"rules": ["java_inject_rule-CommandInjection"], "verdict": "confirmed"},
+  "go/planted_math_rand_token.go": {"rules": ["codeguard-go-math-rand-secret"], "verdict": "confirmed"},
+  "go/near_miss_math_rand_jitter.go": {"rules": [], "verdict": "not_raised"},
+  "go/near_miss_math_rand_jitter_aliased.go": {"rules": ["go_crypto_rule-weakrandsource"], "verdict": "dismissed"},
+  "java/planted_command_injection.java": {"rules": ["codeguard-java-runtime-exec-injection"], "verdict": "confirmed"},
+  "java/planted_command_injection_runtime_var.java": {"rules": ["java_inject_rule-CommandInjection"], "verdict": "confirmed"},
   "java/near_miss_md5_cache_key.java": {"rules": ["java_crypto_rule-WeakMessageDigest"], "verdict": "dismissed"}
 }

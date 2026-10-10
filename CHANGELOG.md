@@ -35,10 +35,17 @@ CodeGuard is marked **ACTION REQUIRED**.
   were present. A repository with none of the covered code is still refused
   before any model call, now naming the covered languages and saying others
   are listed as not covered.
-- **Eval**: `evals/fixtures_lang/` (a planted bug and a near miss per
-  language) with `expected.json`; `evals/run_lang_eval.py` checks the
-  scanners and triage for free and, with `--with-model`, the verdicts.
+- **Eval**: `evals/fixtures_lang/` (13 files: planted bugs and near misses
+  per language, written as real code is written, never reshaped to fit a
+  rule) with `expected.json`; `evals/run_lang_eval.py` checks the scanners
+  and triage for free and, with `--with-model`, the verdicts. A near miss
+  no rule raises is recorded as `not_raised` (nothing reaches the model).
   `tests/tooling/test_lang_eval.py` runs the free half.
+- Own rule `codeguard-java-runtime-exec-injection`: a request value or
+  String parameter reaching `Runtime.getRuntime().exec(...)`. The vendored
+  CommandInjection rule sinks only on a typed `Runtime` variable and missed
+  this common one-line form; the variable form stays the vendored rule's,
+  so the two never fire on the same line.
 - `scripts/smoke_image.sh`: vendored and own rules fire offline in the
   image.
 - Own rule `codeguard-go-math-rand-secret`: `math/rand` used for a token,

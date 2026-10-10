@@ -29,3 +29,5 @@ rules_lang/
   * go-math-rand-secret.yaml (codeguard-go-math-rand-secret):
     math/rand used for a security-sensitive value (token, key, secret,
     password, nonce, salt, session, uuid, invite/reset id).
+  * java-runtime-exec-injection.yaml (codeguard-java-runtime-exec-injection):
+    a request value or String parameter reaching Runtime.getRuntime().exec.

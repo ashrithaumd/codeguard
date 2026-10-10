@@ -1,9 +1,11 @@
 """Multi-language eval: evals/fixtures_lang/ + expected.json.
 
-Each fixture is one JavaScript, TypeScript, Go or Java file: a planted bug
-the model must confirm, or a near miss the same rule fires on that the model
-must dismiss. expected.json gives, per file, the exact rule ids the scanners
-must raise and the verdict expected for them.
+Each fixture is one JavaScript, TypeScript, Go or Java file written as real
+code is written, never reshaped to fit a rule: a planted bug the model must
+confirm, a near miss a rule fires on that the model must dismiss, or a near
+miss no rule raises at all ("not_raised": nothing reaches the model, which
+is the right outcome). expected.json gives, per file, the exact rule ids the
+scanners must raise and the verdict expected for them.
 
 Two parts:
 
@@ -49,8 +51,10 @@ def deterministic_result() -> dict:
     rows = []
     for path, want in expected.items():
         got = sorted(set(fired.get(path, [])))
-        rows.append({"file": path, "expected_rules": sorted(want["rules"]), "fired": got,
-                     "to_model": path in t.to_model, "ok": got == sorted(want["rules"]) and path in t.to_model})
+        # A raised finding must reach the model; a not_raised one must not.
+        reaches = path in t.to_model
+        rows.append({"file": path, "expected_rules": sorted(want["rules"]), "fired": got, "to_model": reaches,
+                     "ok": got == sorted(want["rules"]) and reaches == (want["verdict"] != "not_raised")})
     return {"rows": rows, "findings": findings, "triage": t, "files": files, "expected": expected,
             "ok": all(r["ok"] for r in rows)}
 

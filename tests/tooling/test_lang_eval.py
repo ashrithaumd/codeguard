@@ -14,7 +14,7 @@ lang_eval = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(lang_eval)
 
 
-def test_every_fixture_fires_exactly_its_rules_and_reaches_the_model():
+def test_every_fixture_fires_exactly_its_rules_and_only_raised_ones_reach_the_model():
     det = lang_eval.deterministic_result()
     bad = [r for r in det["rows"] if not r["ok"]]
     assert bad == []
@@ -24,4 +24,10 @@ def test_every_language_has_a_planted_bug_and_a_near_miss():
     expected, _ = lang_eval.load()
     for lang in ("javascript", "typescript", "go", "java"):
         verdicts = {v["verdict"] for p, v in expected.items() if p.startswith(lang + "/")}
-        assert verdicts == {"confirmed", "dismissed"}, lang
+        assert {"confirmed", "dismissed"} <= verdicts <= {"confirmed", "dismissed", "not_raised"}, lang
+
+
+def test_not_raised_means_no_rule_and_raised_means_at_least_one():
+    expected, _ = lang_eval.load()
+    for path, want in expected.items():
+        assert (want["rules"] == []) == (want["verdict"] == "not_raised"), path
