@@ -118,3 +118,11 @@ def test_the_check_summary_names_every_scanner_that_did_not_run():
     from codeguard.github.check_summary import unavailable_tools
     assert unavailable_tools(out) == ["gitleaks", "semgrep-non-python"]
     assert _summary_tool_findings([], SecretScan(), GenericPrep()) == []
+
+
+async def test_a_malformed_workflow_is_listed_among_files_not_reviewed():
+    broken = "on: [push\njobs: : :\n"
+    prep = await prepare_generic(_diff(generic_contents={".github/workflows/broken.yml": broken},
+                                       generic_patches={".github/workflows/broken.yml": "@@ -0,0 +1,2 @@\n+x\n+y\n"}),
+                                 SecretScan(), get_settings())
+    assert (".github/workflows/broken.yml", "not scanned (invalid YAML)") in prep.capped

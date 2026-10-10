@@ -139,3 +139,28 @@ def test_template_injection_in_a_real_workflow_is_found_at_its_line():
 def test_a_malformed_workflow_beside_a_good_one_does_not_stop_the_scan():
     findings = run_zizmor({WORKFLOW: INJECTION, ".github/workflows/broken.yml": "on: [push\njobs: : :\n"})
     assert any(f.rule_id == "template-injection" for f in findings)
+
+
+# A malformed workflow: zizmor skips it with a warning that does not name the
+# file, so it is found first (a YAML parse) and listed, never handed over.
+BROKEN = "on: [push\njobs: : :\n"
+
+
+def test_a_malformed_workflow_is_named_as_not_scanned():
+    from codeguard.tools.zizmor_runner import INVALID_YAML, invalid_workflows
+    files = {WORKFLOW: INJECTION, ".github/workflows/broken.yml": BROKEN, "a.js": "{{{\n"}
+    assert invalid_workflows(files) == [(".github/workflows/broken.yml", INVALID_YAML)]
+    assert INVALID_YAML == "not scanned (invalid YAML)"
+
+
+def test_a_malformed_workflow_is_never_handed_to_zizmor():
+    handed = []
+
+    def fake_run(cmd, **kwargs):
+        root = Path(cmd[-1])
+        handed.extend(sorted(p.relative_to(root).as_posix() for p in root.rglob("*.yml")))
+        return subprocess.CompletedProcess(cmd, 0, stdout="[]", stderr="")
+
+    with patch("codeguard.tools.base.subprocess.run", side_effect=fake_run):
+        run_zizmor({WORKFLOW: INJECTION, ".github/workflows/broken.yml": BROKEN})
+    assert handed == [WORKFLOW]

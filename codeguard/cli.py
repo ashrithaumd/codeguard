@@ -78,7 +78,7 @@ from codeguard.tools.gitleaks_runner import scan_secrets
 from codeguard.tools.models import Finding
 from codeguard.tools.osv_runner import check_dependency_updates
 from codeguard.tools.run_all import run_tools_on_files
-from codeguard.tools.generic import run_generic_scanners
+from codeguard.tools.generic import run_generic_scanners, unscannable
 from codeguard.tools.semgrep_runner import version_warning as semgrep_version_warning
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s %(message)s")
@@ -1441,7 +1441,7 @@ def run_audit(
         ]
 
         passthrough_findings += generic_triage.passthrough + generic_triage.unreviewed
-        skipped_files = skipped_files + generic_skipped + generic_triage.capped_files
+        skipped_files = skipped_files + generic_skipped + unscannable(generic_files) + generic_triage.capped_files
 
         dismissed = sec.dismissed + aa.dismissed + gen.dismissed
         tokens_in = sec.tokens_in + aa.tokens_in + gen.tokens_in

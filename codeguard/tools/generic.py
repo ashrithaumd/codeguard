@@ -7,8 +7,14 @@ from __future__ import annotations
 
 from codeguard.tools.models import Finding
 from codeguard.tools.semgrep_runner import run_vendor_rules
-from codeguard.tools.zizmor_runner import run_zizmor
+from codeguard.tools.zizmor_runner import invalid_workflows, run_zizmor
 
 
 def run_generic_scanners(files: dict[str, str]) -> list[Finding]:
     return run_vendor_rules(files) + run_zizmor(files)
+
+
+def unscannable(files: dict[str, str]) -> list[tuple[str, str]]:
+    """[(path, reason)] for files a scanner could not read (a malformed
+    workflow), listed with the files not reviewed instead of passing as clean."""
+    return invalid_workflows(files)

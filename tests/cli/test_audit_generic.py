@@ -125,3 +125,13 @@ def test_a_failed_non_python_scan_makes_the_audit_incomplete_and_lists_no_findin
     assert seen == []
     assert "semgrep-non-python did not run" in report
     assert "<pr>" not in report
+
+
+def test_a_malformed_workflow_is_listed_as_not_scanned(tmp_path):
+    wf = tmp_path / ".github" / "workflows"
+    wf.mkdir(parents=True)
+    (wf / "broken.yml").write_text("on: [push\njobs: : :\n")
+    (tmp_path / "run.js").write_text(JS_EVAL)
+    _, _, report, _ = _run(tmp_path)
+    assert ".github/workflows/broken.yml" in report
+    assert "not scanned (invalid YAML)" in report

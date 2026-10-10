@@ -18,6 +18,8 @@ from __future__ import annotations
 import json
 import os
 
+import yaml
+
 from codeguard.severity import Severity
 from codeguard.tools.base import resolve_original_path, resolve_tool_command, run_tool_on_pr
 from codeguard.tools.models import Finding
@@ -80,10 +82,33 @@ def _parse(stdout: str, tmp_dir: str) -> list[Finding]:
     return findings
 
 
-def run_zizmor(files: dict[str, str], timeout: int = DEFAULT_TIMEOUT) -> list[Finding]:
+INVALID_YAML = "not scanned (invalid YAML)"
+
+
+def _workflows(files: dict[str, str]) -> dict[str, str]:
     from codeguard.languages import language_of
 
-    in_scope = {p: c for p, c in files.items() if language_of(p) == "GitHub Actions"}
+    return {p: c for p, c in files.items() if language_of(p) == "GitHub Actions"}
+
+
+def _parses(content: str) -> bool:
+    try:
+        yaml.safe_load(content)
+    except yaml.YAMLError:
+        return False
+    return True
+
+
+def invalid_workflows(files: dict[str, str]) -> list[tuple[str, str]]:
+    """[(path, reason)] for each workflow that is not valid YAML. zizmor
+    skips such a file with a warning that does not name it, so it is found
+    here first and listed with the files not reviewed (GitHub will not run
+    it either)."""
+    return [(p, INVALID_YAML) for p, c in sorted(_workflows(files).items()) if not _parses(c)]
+
+
+def run_zizmor(files: dict[str, str], timeout: int = DEFAULT_TIMEOUT) -> list[Finding]:
+    in_scope = {p: c for p, c in _workflows(files).items() if _parses(c)}
     if not in_scope:
         return []
     return run_tool_on_pr(TOOL_NAME, _build_cmd, _parse, in_scope, timeout, env=zizmor_env())

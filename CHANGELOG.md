@@ -31,7 +31,9 @@ CodeGuard is marked **ACTION REQUIRED**.
   config from the repository, no GitHub token (stripped from its
   environment): template injection, dangerous triggers, unpinned actions,
   excessive permissions, persisted checkout credentials and the rest of its
-  offline audits. A malformed workflow is skipped and the others are still
+  offline audits. A malformed workflow is listed with the files not
+  reviewed as "not scanned (invalid YAML)" (zizmor's own warning does not
+  name the file, so a YAML parse finds it first) and the others are still
   audited; a zizmor failure says "zizmor did not run".
 - `security_generic`'s prompt names the two new file kinds and scanners.
   Python's prompts are unchanged (fingerprints pinned).
