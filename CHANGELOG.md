@@ -46,6 +46,10 @@ CodeGuard is marked **ACTION REQUIRED**.
   CommandInjection rule sinks only on a typed `Runtime` variable and missed
   this common one-line form; the variable form stays the vendored rule's,
   so the two never fire on the same line.
+- **Same bug, two rules, one finding**: each own rule and the vendored rule
+  it overlaps are an equivalence pair in the existing merge (the one that
+  joins B307 and `llm-output-to-dangerous-sink`), so an overlap is reported
+  once, listing both rule ids. Python's pairs are unchanged.
 - `scripts/smoke_image.sh`: vendored and own rules fire offline in the
   image.
 - Own rule `codeguard-go-math-rand-secret`: `math/rand` used for a token,

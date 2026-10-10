@@ -4,7 +4,7 @@
 # `Runtime.getRuntime().exec(...)` raised nothing. This rule covers exactly
 # that form, with the same kind of sources (request values and String
 # parameters), and leaves the variable form to the vendored rule so the two
-# never fire on the same line.
+# never fire on the same line (and are merged in pipeline/merge.py if they do).
 rules:
   - id: codeguard-java-runtime-exec-injection
     languages: [java]
