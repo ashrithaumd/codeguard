@@ -1,0 +1,443 @@
+[
+ {
+  "file": "fixtures/fixture_01_unpinned_model_and_missing_max_tokens.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-call-missing-max-tokens",
+  "severity": "MEDIUM",
+  "start": 12,
+  "end": 12,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/fixture_01_unpinned_model_and_missing_max_tokens.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-unpinned-model-alias",
+  "severity": "MEDIUM",
+  "start": 12,
+  "end": 12,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/fixture_02_missing_system_and_hardcoded_key.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-hardcoded-api-key",
+  "severity": "HIGH",
+  "start": 14,
+  "end": 14,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/fixture_02_missing_system_and_hardcoded_key.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-missing-system-user-separation",
+  "severity": "MEDIUM",
+  "start": 18,
+  "end": 18,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/fixture_03_prompt_injection_and_logging_response.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-logging-full-prompt-or-response",
+  "severity": "MEDIUM",
+  "start": 17,
+  "end": 17,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/fixture_03_prompt_injection_and_logging_response.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-prompt-injection-concatenation",
+  "severity": "HIGH",
+  "start": 12,
+  "end": 12,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/fixture_04_output_to_eval_and_sql.py",
+  "tool": "bandit",
+  "rule": "B307",
+  "severity": "MEDIUM",
+  "start": 18,
+  "end": 18,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/fixture_04_output_to_eval_and_sql.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-output-to-dangerous-sink",
+  "severity": "HIGH",
+  "start": 18,
+  "end": 18,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/fixture_04_output_to_eval_and_sql.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-output-to-sql",
+  "severity": "HIGH",
+  "start": 23,
+  "end": 23,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/fixture_05_missing_timeout_in_async_handler.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-call-missing-timeout",
+  "severity": "MEDIUM",
+  "start": 13,
+  "end": 13,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/fixture_05_missing_timeout_in_async_handler.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-sync-call-in-async-handler",
+  "severity": "HIGH",
+  "start": 12,
+  "end": 14,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/fixture_06_three_weaknesses_one_call.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-call-missing-max-tokens",
+  "severity": "MEDIUM",
+  "start": 13,
+  "end": 13,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/fixture_06_three_weaknesses_one_call.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-missing-system-user-separation",
+  "severity": "MEDIUM",
+  "start": 13,
+  "end": 13,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/fixture_06_three_weaknesses_one_call.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-unpinned-model-alias",
+  "severity": "MEDIUM",
+  "start": 13,
+  "end": 13,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/fixture_07_injection_missing_system_and_sink.py",
+  "tool": "bandit",
+  "rule": "B404",
+  "severity": "LOW",
+  "start": 7,
+  "end": 7,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/fixture_07_injection_missing_system_and_sink.py",
+  "tool": "bandit",
+  "rule": "B603",
+  "severity": "LOW",
+  "start": 20,
+  "end": 20,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/fixture_07_injection_missing_system_and_sink.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-missing-system-user-separation",
+  "severity": "MEDIUM",
+  "start": 15,
+  "end": 15,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/fixture_07_injection_missing_system_and_sink.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-output-to-dangerous-sink",
+  "severity": "HIGH",
+  "start": 20,
+  "end": 20,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/fixture_07_injection_missing_system_and_sink.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-prompt-injection-concatenation",
+  "severity": "HIGH",
+  "start": 15,
+  "end": 15,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/fixture_08_logging_timeout_and_async_sink.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-call-missing-timeout",
+  "severity": "MEDIUM",
+  "start": 16,
+  "end": 16,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/fixture_08_logging_timeout_and_async_sink.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-logging-full-prompt-or-response",
+  "severity": "MEDIUM",
+  "start": 17,
+  "end": 17,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/fixture_08_logging_timeout_and_async_sink.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-sync-call-in-async-handler",
+  "severity": "HIGH",
+  "start": 15,
+  "end": 18,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/fixture_10_dogfood_missing_timeout.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-call-missing-timeout",
+  "severity": "MEDIUM",
+  "start": 27,
+  "end": 30,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/fixture_10_dogfood_missing_timeout.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-call-missing-timeout",
+  "severity": "MEDIUM",
+  "start": 35,
+  "end": 39,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/fixture_10_dogfood_missing_timeout.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-missing-system-user-separation",
+  "severity": "MEDIUM",
+  "start": 27,
+  "end": 30,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/near_miss_02_dead_code_unpinned_model.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-unpinned-model-alias",
+  "severity": "MEDIUM",
+  "start": 14,
+  "end": 14,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/near_miss_03_wrapped_client_injects_system_prompt.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-missing-system-user-separation",
+  "severity": "MEDIUM",
+  "start": 33,
+  "end": 33,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/near_miss_04_test_dummy_api_key.py",
+  "tool": "bandit",
+  "rule": "B101",
+  "severity": "LOW",
+  "start": 15,
+  "end": 15,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/near_miss_04_test_dummy_api_key.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-hardcoded-api-key",
+  "severity": "HIGH",
+  "start": 14,
+  "end": 14,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/near_miss_05_trusted_constant_interpolation.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-prompt-injection-concatenation",
+  "severity": "HIGH",
+  "start": 18,
+  "end": 18,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/near_miss_06_client_level_timeout.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-call-missing-timeout",
+  "severity": "MEDIUM",
+  "start": 16,
+  "end": 16,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/near_miss_07_example_key_placeholder.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-hardcoded-api-key",
+  "severity": "HIGH",
+  "start": 17,
+  "end": 17,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/regress_01_injection_through_variable.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-prompt-injection-concatenation",
+  "severity": "HIGH",
+  "start": 26,
+  "end": 26,
+  "source_line": 20
+ },
+ {
+  "file": "fixtures/regress_02_realistic_hardcoded_key.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-hardcoded-api-key",
+  "severity": "HIGH",
+  "start": 13,
+  "end": 13,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/regress_03_realistic_key_with_fake_comment.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-hardcoded-api-key",
+  "severity": "HIGH",
+  "start": 17,
+  "end": 17,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures/regress_04_placeholder_key_by_shape.py",
+  "tool": "semgrep",
+  "rule": "rules.llm-hardcoded-api-key",
+  "severity": "HIGH",
+  "start": 12,
+  "end": 12,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures_quality_test/both_bad_naming_and_untested_branch.py",
+  "tool": "ruff",
+  "rule": "E741",
+  "severity": "LOW",
+  "start": 6,
+  "end": 6,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures_security/fixture_01_hardcoded_password.py",
+  "tool": "bandit",
+  "rule": "B105",
+  "severity": "LOW",
+  "start": 7,
+  "end": 7,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures_security/fixture_02_sql_injection.py",
+  "tool": "bandit",
+  "rule": "B608",
+  "severity": "MEDIUM",
+  "start": 7,
+  "end": 7,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures_security/fixture_03_shell_injection.py",
+  "tool": "bandit",
+  "rule": "B404",
+  "severity": "LOW",
+  "start": 6,
+  "end": 6,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures_security/fixture_03_shell_injection.py",
+  "tool": "bandit",
+  "rule": "B602",
+  "severity": "HIGH",
+  "start": 10,
+  "end": 10,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures_security/fixture_04_weak_hash.py",
+  "tool": "bandit",
+  "rule": "B324",
+  "severity": "HIGH",
+  "start": 9,
+  "end": 9,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures_security/fixture_05_eval_usage.py",
+  "tool": "bandit",
+  "rule": "B307",
+  "severity": "MEDIUM",
+  "start": 8,
+  "end": 8,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures_security/near_miss_01_test_dummy_password.py",
+  "tool": "bandit",
+  "rule": "B101",
+  "severity": "LOW",
+  "start": 19,
+  "end": 19,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures_security/near_miss_01_test_dummy_password.py",
+  "tool": "bandit",
+  "rule": "B105",
+  "severity": "LOW",
+  "start": 18,
+  "end": 18,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures_security/near_miss_02_trusted_constant_in_query.py",
+  "tool": "bandit",
+  "rule": "B608",
+  "severity": "MEDIUM",
+  "start": 11,
+  "end": 11,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures_security/near_miss_03_shell_true_hardcoded_command.py",
+  "tool": "bandit",
+  "rule": "B404",
+  "severity": "LOW",
+  "start": 8,
+  "end": 8,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures_security/near_miss_03_shell_true_hardcoded_command.py",
+  "tool": "bandit",
+  "rule": "B602",
+  "severity": "LOW",
+  "start": 12,
+  "end": 12,
+  "source_line": 0
+ },
+ {
+  "file": "fixtures_security/near_miss_03_shell_true_hardcoded_command.py",
+  "tool": "bandit",
+  "rule": "B607",
+  "severity": "LOW",
+  "start": 12,
+  "end": 12,
+  "source_line": 0
+ }
+]

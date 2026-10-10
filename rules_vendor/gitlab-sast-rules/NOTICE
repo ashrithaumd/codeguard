@@ -1,0 +1,22 @@
+Vendored third-party Semgrep rules
+==================================
+
+Source:   GitLab sast-rules, tag v2.10.1 (released 2026-09-21)
+          https://gitlab.com/gitlab-org/security-products/sast-rules
+Archive:  sast-rules-v2.10.1.tar.gz
+          sha256 627a73135374fdb9122eb3dcca268ea0fbb11d889d1126c6c52fd28b9df2236b
+
+Licenses:
+  * Rules authored by GitLab: MIT (Expat), Copyright (c) 2011-present GitLab Inc.
+    The full text is in LICENSE (copied verbatim from the archive).
+  * Go rules marked "# License: Apache 2.0 (c) gosec": derived from gosec
+    (https://github.com/securego/gosec), Apache License 2.0,
+    https://www.apache.org/licenses/LICENSE-2.0
+
+What was taken: only the rule YAML files (*.yml) under javascript/, go/, java/
+and csharp/, unmodified. Not taken: test samples (the Java and C# samples carry
+LGPL-3.0 headers from find-sec-bugs and security-code-scan), documentation,
+scripts, and the c/, scala/ and python/ rule sets.
+
+Every vendored file and its SHA-256 is listed in MANIFEST.sha256;
+tests/tooling/test_vendored_rules.py fails if any file differs or is unlisted.

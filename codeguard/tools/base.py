@@ -178,7 +178,11 @@ def run_tool_on_pr(
     parse_output: Callable[[str, str], list[Finding]],
     files: dict[str, str],
     timeout: int,
+    env: dict[str, str] | None = None,
 ) -> list[Finding]:
+    """`env`, when given, is the tool's whole environment; None inherits
+    ours, as every runner did before (only Semgrep passes one, to keep its
+    version check off even outside the image)."""
     if not files:
         return []
 
@@ -194,7 +198,8 @@ def run_tool_on_pr(
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_text(content, encoding="utf-8")
 
-        proc = subprocess.run(build_cmd(tmp_dir), capture_output=True, text=True, timeout=timeout)
+        extra = {"env": env} if env is not None else {}
+        proc = subprocess.run(build_cmd(tmp_dir), capture_output=True, text=True, timeout=timeout, **extra)
         return parse_output(proc.stdout, tmp_dir)
     except subprocess.TimeoutExpired:
         tool_failures_total.labels(tool=tool_name).inc()

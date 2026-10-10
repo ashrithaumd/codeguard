@@ -37,6 +37,10 @@ COPY . .
 # made world-readable, and TIKTOKEN_CACHE_DIR points tiktoken at it.
 # scripts/smoke_image.sh proves it with --network none.
 ENV TIKTOKEN_CACHE_DIR=/opt/tiktoken
+# No network for the scanners at runtime. --metrics=off (the runner's flag)
+# does not stop Semgrep's new-version check, a separate call on every run;
+# these do. scripts/smoke_image.sh proves no connection is attempted.
+ENV SEMGREP_ENABLE_VERSION_CHECK=0     SEMGREP_SEND_METRICS=off
 RUN python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')" \
     && chmod -R a+rX /opt/tiktoken
 

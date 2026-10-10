@@ -59,3 +59,31 @@ The figures under each idea are guesses until that has run.
 
 Not worth doing: dropping the summary intro (a Haiku call, ~$0.001), or tightening `max_tokens`
 (it bounds the worst case, not the typical one).
+
+## Semgrep engine upgrade
+
+Semgrep upgrade blocked: versions after ~1.95 drop data-flow traces used by the flow note (44 → 49).
+Revisit when traces return or the flow note can be rebuilt without them.
+
+Measured on 2026-10-09: 1.45.0, 1.76.0, 1.85.0, 1.90.0 and 1.95.0 emit `dataflow_trace` for the taint
+rules; 1.100.0, 1.120.0, 1.135.0, 1.150.0, 1.165.0 and 1.178.0 do not (the `--dataflow-traces` option is
+gone from `--help`). On 1.178.0 the free scanner-only gate (`evals/scanner_snapshot.py`) showed 48 of 49
+raw Python findings identical and the injection-through-a-variable finding's source line going from 20
+to 0. The vendored GitLab rules and the planned JS/TS LLM rules both run on 1.45.0 with identical results,
+so nothing currently needs the newer engine.
+
+## Impact analysis for JavaScript/TypeScript (skipped)
+
+Considered with tree-sitter (5–7 days) and skipped for now:
+
+- JavaScript does not fail on a call with the wrong number of arguments: a missing one is `undefined`,
+  an extra one is ignored. "No longer matches the signature" is mostly not a runtime error there, which
+  is the deterministic half of the Python version.
+- TypeScript projects catch real signature breaks with `tsc` in their own CI, better than we could.
+- Resolving call sites across files is much harder than in Python: ESM and CommonJS, path aliases from
+  tsconfig, barrel `index.ts` files, re-exports, default vs named exports, dynamic `import()`.
+- What would remain is the behaviour half (one model call), at a much higher build cost than the Python
+  version.
+
+Revisit if users ask for it on JavaScript-heavy repositories, or if a TypeScript-aware resolver (the
+TypeScript compiler API in a sidecar) becomes cheap to run.

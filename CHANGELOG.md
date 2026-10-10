@@ -5,6 +5,32 @@ CodeGuard is marked **ACTION REQUIRED**.
 
 ## Unreleased
 
+### Multi-language support (feat/multi-language)
+
+#### Scanner engine pinned and kept offline
+
+- Semgrep stays at **1.45.0**. Versions after ~1.95 stop emitting the
+  data-flow traces the flow note reads ("Assigned at line 44, sent to the
+  model at line 49"); the upgrade is recorded as blocked in
+  `docs/backlog.md`.
+- No network from Semgrep at runtime. `--metrics=off` does not stop its
+  new-version check, which a plain scan makes (measured: 4 connection
+  attempts to semgrep.dev). `SEMGREP_ENABLE_VERSION_CHECK=0` and
+  `SEMGREP_SEND_METRICS=off` are set in the image and by the runner itself.
+  `scripts/smoke_image.sh` proves it with the network removed and a guard
+  in the Semgrep process: the guard must load, must catch the version check
+  when it is enabled (control), and must see zero attempts through our
+  runner, with and without the image's environment.
+- `evals/scanner_snapshot.py`: the free gate. The scanners alone, no model,
+  on every Python fixture; the suite asserts the result equals the
+  committed `evals/scanner_snapshot_python.json` (49 raw findings).
+- `rules_vendor/gitlab-sast-rules/`: GitLab sast-rules v2.10.1 rule YAML
+  for JavaScript/TypeScript, Go, Java and C# (115 files, MIT; the gosec-
+  derived Go rules Apache-2.0), with LICENSE, NOTICE, README and a SHA-256
+  manifest checked by the suite. Test samples (LGPL-3.0) are not vendored.
+  Not loaded yet; the Python scan path is unchanged.
+
+
 ### Repository controls (feat/repo-controls)
 
 #### Local webhook relay

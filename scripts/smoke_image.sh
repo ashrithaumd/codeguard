@@ -103,6 +103,79 @@ print("=== OK: every scanner ran, and B608 and F401 are both present ===")
 # the deployed ones.
 docker run --rm     -e ANTHROPIC_API_KEY=smoke-test-deliberately-not-a-real-key     "$IMAGE" python -c "$PROBE"
 
+# Semgrep is pinned at 1.45.0 (later releases drop the data-flow traces the
+# flow note reads) and must not touch the network. --metrics=off does NOT
+# stop its new-version check: measured, a plain scan with --metrics=off
+# makes 4 connection attempts to semgrep.dev. SEMGREP_ENABLE_VERSION_CHECK=0
+# stops them; the image sets it and so does the runner.
+#
+# Proved, not assumed, three ways, all with --network none and a
+# sitecustomize in the Semgrep process that records and refuses every
+# hostname lookup and connection:
+#   1. the guard must load, and must CATCH the version check when it is not
+#      disabled -- a guard that catches nothing proves nothing;
+#   2. a scan through our own runner, with the image's environment, makes
+#      zero attempts and really scans (a probe rule must fire);
+#   3. the same with the version-check variables removed from the
+#      environment, so only the runner's own setting stands between Semgrep
+#      and the network.
+# The guard is written with chr(10), not backslash escapes, so no layer of
+# shell quoting can corrupt it into a file Python silently fails to load.
+echo "checking semgrep is pinned and attempts no network connection"
+SEMGREP_PROBE='
+import os, pathlib, subprocess, sys
+NL = chr(10)
+guard = pathlib.Path("/tmp/netguard"); guard.mkdir(exist_ok=True)
+(guard / "sitecustomize.py").write_text(NL.join([
+    "import socket",
+    "open(\"/tmp/guard_loaded.log\", \"a\").write(\"loaded\" + chr(10))",
+    "def _deny(*a, **k):",
+    "    open(\"/tmp/net_attempts.log\", \"a\").write(repr(a[:1]) + chr(10))",
+    "    raise OSError(\"network disabled by smoke test\")",
+    "socket.socket.connect = _deny",
+    "socket.create_connection = _deny",
+    "socket.getaddrinfo = _deny",
+    "",
+]))
+LOADED, ATTEMPTS = pathlib.Path("/tmp/guard_loaded.log"), pathlib.Path("/tmp/net_attempts.log")
+def reset():
+    LOADED.unlink(missing_ok=True); ATTEMPTS.unlink(missing_ok=True)
+def attempts():
+    return ATTEMPTS.read_text().strip().splitlines() if ATTEMPTS.exists() else []
+os.environ["PYTHONPATH"] = str(guard)
+
+version = subprocess.run(["semgrep", "--version"], capture_output=True, text=True,
+                         env={**os.environ, "SEMGREP_ENABLE_VERSION_CHECK": "0"}).stdout.strip().splitlines()[-1]
+if version != "1.45.0":
+    sys.exit("=== FAIL: semgrep is %r, expected 1.45.0 ===" % version)
+
+if os.environ.get("CONTROL") == "1":
+    reset()
+    bare = {k: v for k, v in os.environ.items() if k not in ("SEMGREP_ENABLE_VERSION_CHECK", "SEMGREP_SEND_METRICS")}
+    subprocess.run(["semgrep", "--version"], env=bare, capture_output=True)
+    if not LOADED.exists():
+        sys.exit("=== FAIL: the network guard did not load in the semgrep process ===")
+    if not attempts():
+        sys.exit("=== FAIL: the guard caught nothing with the version check enabled; it would prove nothing ===")
+    print("=== OK: control -- with the version check enabled the guard catches %d attempt(s) to %s ===" % (len(attempts()), attempts()[0]))
+
+reset()
+from codeguard.tools.semgrep_runner import run_semgrep
+probe = {"probe.py": NL.join(["import anthropic", "client = anthropic.Anthropic()",
+                               "client.messages.create(model=\"claude-3-5-sonnet-latest\", max_tokens=10, messages=[])", ""])}
+findings = run_semgrep(probe)
+if not LOADED.exists():
+    sys.exit("=== FAIL: the network guard did not load in the semgrep process ===")
+if attempts():
+    sys.exit("=== FAIL: semgrep attempted network connections: %s ===" % attempts())
+if not any("unpinned-model-alias" in f.rule_id for f in findings):
+    sys.exit("=== FAIL: the probe rule did not fire; the scan did not really run ===")
+print("=== OK: semgrep %s via the runner, scan ran, 0 network attempts (image env: %s) ===" % (
+    version, os.environ.get("SEMGREP_ENABLE_VERSION_CHECK", "removed")))
+'
+docker run --rm --network none -e CONTROL=1 "$IMAGE" python -c "$SEMGREP_PROBE"
+docker run --rm --network none --entrypoint env "$IMAGE" -u SEMGREP_ENABLE_VERSION_CHECK -u SEMGREP_SEND_METRICS python -c "$SEMGREP_PROBE"
+
 # The tokenizer must already be IN the image. tiktoken downloads
 # cl100k_base on first use and caches it; a container that has to fetch it
 # at runtime fails its first audit on any network that blocks the download,

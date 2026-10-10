@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from codeguard.severity import Severity
@@ -64,5 +65,12 @@ def _taint_source_line(extra: dict) -> int:
         return 0
 
 
+# Pinned at 1.45.0 (pyproject.toml): later releases drop the data-flow
+# traces the flow note reads. --metrics=off does not stop Semgrep's own
+# new-version check, a separate network call on every run; this does, and
+# it is set here as well as in the image so it holds wherever this runs.
+_OFFLINE_ENV = {"SEMGREP_ENABLE_VERSION_CHECK": "0", "SEMGREP_SEND_METRICS": "off"}
+
+
 def run_semgrep(files: dict[str, str], timeout: int = DEFAULT_TIMEOUT) -> list[Finding]:
-    return run_tool_on_pr(TOOL_NAME, _build_cmd, _parse, files, timeout)
+    return run_tool_on_pr(TOOL_NAME, _build_cmd, _parse, files, timeout, env={**os.environ, **_OFFLINE_ENV})
