@@ -27,7 +27,9 @@ logger = logging.getLogger(__name__)
 # comment in migrations/006_reviews.sql for why "deterministic" and
 # "unverified" are kept apart, and for what `unverified` does and does not
 # mean. Anything not listed here falls to `unverified` (see _bucket).
-_VERDICT_CONFIRMED_TOOLS = frozenset({"security", "ai_aware"})
+# security_generic: the same confirm-or-dismiss contract over what
+# gitlab-sast and codeguard-rules raised in JS/TS, Go, Java and C#.
+_VERDICT_CONFIRMED_TOOLS = frozenset({"security", "ai_aware", "security_generic"})
 _GENERATIVE_TOOLS = frozenset({"quality-agent", "test-agent"})
 _DETERMINISTIC_TOOLS = frozenset({"ruff", "osv", "eval-hygiene"})
 

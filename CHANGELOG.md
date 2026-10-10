@@ -50,6 +50,10 @@ CodeGuard is marked **ACTION REQUIRED**.
   it overlaps are an equivalence pair in the existing merge (the one that
   joins B307 and `llm-output-to-dangerous-sink`), so an overlap is reported
   once, listing both rule ids. Python's pairs are unchanged.
+- **Trust counts**: a finding `security_generic` confirmed counts as
+  verdict-confirmed on the dashboard and in the PR summary, like `security`
+  and `ai_aware`; one it never saw keeps its scanner's tag and stays
+  unverified. Python's counts are unchanged (pinned in a test).
 - `scripts/smoke_image.sh`: vendored and own rules fire offline in the
   image.
 - Own rule `codeguard-go-math-rand-secret`: `math/rand` used for a token,
