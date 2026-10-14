@@ -36,6 +36,12 @@ rules_lang/
     URL with no checksum, certificate or signature checks turned off, a
     credential in ENV/ARG, a credential passed as a build argument,
     chmod 777, an SSH private key copied in, and a final USER root.
+  * js-llm-security.yaml (codeguard-js-llm-*): the Python AI-aware ruleset
+    ported to the OpenAI and Anthropic JavaScript/TypeScript SDKs -- prompt
+    injection (including through a variable), model output into
+    eval/new Function/vm/a shell or a SQL query, a hardcoded API key, no
+    output cap, no client timeout, a "-latest" model alias, logging the
+    full response, and no system/user separation.
 
 Third-party scanners (run, not vendored)
 ----------------------------------------

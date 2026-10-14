@@ -7,6 +7,28 @@ CodeGuard is marked **ACTION REQUIRED**.
 
 ### Multi-language support (feat/multi-language)
 
+#### LLM-security rules for JavaScript/TypeScript
+
+- **Nine of our own Semgrep rules** (`rules_lang/js-llm-security.yaml`,
+  NOTICE) for the OpenAI and Anthropic JS/TS SDKs, ported from the Python
+  AI-aware ruleset with the same OWASP mapping and scoping: prompt
+  injection (taint, so a prompt built one line above the call is followed
+  through the variable), model output into `eval` / `new Function` / `vm` /
+  a shell or into SQL query text (a bound parameter is fine), a hardcoded
+  API key, no output cap (OpenAI only: Anthropic requires `max_tokens`), no
+  client timeout, a `-latest` alias, logging the full response, and no
+  system/user separation. A call whose options arrive by spread is never
+  flagged for what it might contain.
+- **Same generic path as the other own rules** (tool `codeguard-rules`):
+  MEDIUM and up are judged by `security_generic`, whose prompt gains one
+  paragraph naming these rules as in scope. The hardcoded-key rule is
+  decided by the value's shape and its line is masked, never sent.
+  **Python is unchanged**: its AI-aware agent, prompts and rules are
+  untouched, and Python files never reach these rules.
+- `semgrep --test` cases for every rule (TypeScript and CommonJS), and 8
+  real-code eval fixtures (5 planted, 3 near misses), 26 in all; the free
+  deterministic eval passes.
+
 #### Dependency CVEs for npm/yarn/pnpm, Go, Maven/Gradle and NuGet
 
 - **OSV-Scanner 2.6.0** (Apache-2.0, released 2026-09-14; 2.7.0 was a day

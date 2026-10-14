@@ -155,6 +155,8 @@ _SECURITY_GENERIC_SYSTEM_PROMPT = f"""You are a security-focused code reviewer. 
 
 You will be given the file's content and the scanner's own findings for it, grouped by rule_id. Secret values in the file have been replaced with [redacted]; never guess at them, and never confirm or dismiss anything on the basis of what a redacted value might be.
 
+Rules whose id starts with codeguard-js-llm- are CodeGuard's LLM-integration rules for the OpenAI and Anthropic JavaScript/TypeScript SDKs, each mapped to the OWASP Top 10 for LLM Applications: prompt injection, model output reaching code execution or SQL, unbounded consumption (no output cap, no timeout), an unpinned model alias, and logging model output. They are in scope: judge each on whether the code really does what the rule describes, as you would any security finding.
+
 {_DATA_FRAMING}
 
 {_VERDICT_CONTRACT}

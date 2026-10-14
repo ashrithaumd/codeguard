@@ -35,6 +35,9 @@ GENERIC_CREDENTIAL_RULES = frozenset({
     "java_password_rule-ConstantDBPassword",
     # Ours (rules_lang/dockerfile-security.yaml): ENV/ARG NAME=value.
     "codeguard-dockerfile-secret-in-env",
+    # Ours (rules_lang/js-llm-security.yaml): apiKey: "..." on an OpenAI or
+    # Anthropic client, reported on the key's own line.
+    "codeguard-js-llm-hardcoded-api-key",
 })
 
 # ENV/ARG NAME=value or NAME value, the value quoted or not. Unquoted, it is
