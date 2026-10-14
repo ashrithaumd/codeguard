@@ -240,6 +240,24 @@ print("=== OK: %s offline, template-injection found ===" % version)
 '
 docker run --rm --network none -e GH_TOKEN=smoke -e GITHUB_TOKEN=smoke "$IMAGE" python -c "$ZIZMOR_PROBE"
 
+# OSV-Scanner: pinned (checked against its sha256 at build). Its data is
+# live, so with no network the check must say it did not happen -- an empty
+# result that reads as clean is exactly the failure this guards against.
+echo "checking osv-scanner is pinned and fails soft with no network"
+OSV_SCANNER_PROBE='
+import os, subprocess, sys
+version = subprocess.run([os.environ["OSV_SCANNER_BIN"], "--version"], capture_output=True, text=True).stdout
+if "osv-scanner version: 2.6.0" not in version:
+    sys.exit("=== FAIL: osv-scanner is %r, expected 2.6.0 ===" % version)
+from codeguard.tools.osv_scanner_runner import scan_lockfiles
+lock = chr(10).join(["module x", "", "require github.com/gin-gonic/gin v1.6.0", ""])
+check = scan_lockfiles({"go.mod": lock}, timeout=60)
+if not check.unavailable or check.findings:
+    sys.exit("=== FAIL: no network did not read as unavailable: %r ===" % (check,))
+print("=== OK: osv-scanner 2.6.0, no network is \"unavailable\", not clean ===")
+'
+docker run --rm --network none "$IMAGE" python -c "$OSV_SCANNER_PROBE"
+
 # The tokenizer must already be IN the image. tiktoken downloads
 # cl100k_base on first use and caches it; a container that has to fetch it
 # at runtime fails its first audit on any network that blocks the download,

@@ -57,6 +57,18 @@ ARG GITLEAKS_VERSION=8.30.1
 ARG GITLEAKS_SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
 RUN curl -sSfL -o /tmp/gitleaks.tgz         "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"     && echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tgz" | sha256sum -c -     && tar -xzf /tmp/gitleaks.tgz -C /usr/local/bin gitleaks     && rm /tmp/gitleaks.tgz     && gitleaks version
 
+# OSV-Scanner, pinned and verified: known vulnerabilities in npm/yarn/pnpm,
+# Go, Maven/Gradle and NuGet lockfiles (codeguard/tools/osv_scanner_runner.py).
+# Apache-2.0. One static binary in its own directory, checked against the
+# release's sha256 before it is made executable; a mismatch fails the build.
+# 2.6.0 (2026-09-14) rather than 2.7.0, which was a day old when pinned.
+# Vulnerability DATA is live (OSV.dev), as for Python's check: it reads the
+# lockfiles it is handed and never resolves or builds anything.
+ARG OSV_SCANNER_VERSION=2.6.0
+ARG OSV_SCANNER_SHA256=ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108
+RUN mkdir -p /opt/osv-scanner     && curl -sSfL -o /opt/osv-scanner/osv-scanner         "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"     && echo "${OSV_SCANNER_SHA256}  /opt/osv-scanner/osv-scanner" | sha256sum -c -     && chmod 0755 /opt/osv-scanner/osv-scanner     && /opt/osv-scanner/osv-scanner --version
+ENV OSV_SCANNER_BIN=/opt/osv-scanner/osv-scanner
+
 COPY pyproject.toml ./
 COPY codeguard/ ./codeguard/
 RUN if [ "$INSTALL_DEV" = "true" ]; then \

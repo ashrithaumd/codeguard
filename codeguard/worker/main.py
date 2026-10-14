@@ -49,7 +49,7 @@ from codeguard.diff.filters import split_test_asserts
 from codeguard.diff.ingest import ingest_pr_diff
 from codeguard.github.auth import get_installation_token
 from codeguard.github.base_tree import fetch_base_tree_python_files
-from codeguard.github.diff import get_file_content
+from codeguard.github.diff import get_file_content, get_file_raw
 from codeguard.github.check_summary import render_check_summary
 from codeguard.github.checks import complete_check_run, start_check_run
 from codeguard.github.errors import extract_retry_after
@@ -79,6 +79,7 @@ from codeguard.tools.osv_runner import (
     DependencyCheck,
     check_dependency_updates_status,
 )
+from codeguard.tools.osv_scanner_runner import MAX_LOCKFILE_BYTES, combine, scan_pr_lockfiles
 from codeguard.tools.run_all import run_tools_on_files
 from codeguard.tools.semgrep_runner import version_warning as semgrep_version_warning
 
@@ -420,6 +421,45 @@ def coverage_gaps(files_filtered) -> dict[str, int]:
 _IMPACT_BASE_FETCH_CONCURRENCY = 5
 
 
+# Changed lockfiles checked per PR; beyond this the rest are not, and the
+# check says it is incomplete ("Dependency CVE check unavailable").
+MAX_LOCKFILES_PER_PR = 20
+_LOCKFILE_FETCH_CONCURRENCY = 5
+
+
+async def prepare_lockfile_check(
+    token: str, owner: str, repo: str, head_sha: str, base_ref: str, lockfile_paths: dict[str, str],
+) -> DependencyCheck:
+    """OSV-Scanner over the PR's changed npm/yarn/pnpm, Go, Maven/Gradle and
+    NuGet lockfiles: each fetched raw at head and at the base branch (as
+    prepare_impact compares against it), and only what is new at head
+    reported. A lockfile the base does not have (404) is new. A fetch that
+    fails, at either end, is "unavailable", never a clean result: without
+    the base copy every old vulnerability would read as new. Nothing is
+    fetched for a PR that changes no lockfile."""
+    if not lockfile_paths:
+        return DependencyCheck([])
+    chosen = dict(sorted(lockfile_paths.items())[:MAX_LOCKFILES_PER_PR])
+    semaphore = asyncio.Semaphore(_LOCKFILE_FETCH_CONCURRENCY)
+
+    async def _fetch(path: str, ref: str) -> str | None:
+        async with semaphore:
+            return await asyncio.to_thread(get_file_raw, token, owner, repo, path, ref, MAX_LOCKFILE_BYTES)
+
+    try:
+        heads = await asyncio.gather(*(_fetch(p, head_sha) for p in chosen))
+        bases = await asyncio.gather(*(_fetch(b, base_ref) for b in chosen.values()))
+    except Exception:
+        logger.warning("lockfile fetch failed for %s/%s, dependency check unavailable", owner, repo, exc_info=True)
+        return DependencyCheck([], unavailable=True)
+    head = {p: c for p, c in zip(chosen, heads) if c is not None}
+    base = {b: c for b, c in zip(chosen.values(), bases) if c is not None}
+    check = await asyncio.to_thread(scan_pr_lockfiles, head, base, base_paths=chosen)
+    if len(lockfile_paths) > len(chosen):
+        return check._replace(unavailable=True)
+    return check
+
+
 def impact_enabled(settings: Settings, repo_config: RepoConfig) -> bool:
     """Both switches: the global one (off by default) and the repo's own
     opt-out. A repository cannot opt in past the global switch."""
@@ -554,6 +594,10 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
     osv_task = asyncio.ensure_future(
         asyncio.to_thread(check_dependency_updates_status, diff_result.dependency_contents, diff_result.dependency_patches)
     )
+    # OSV-Scanner over changed npm/yarn/pnpm, Go, Maven/Gradle and NuGet
+    # lockfiles, base vs head; nothing for a PR that changes none.
+    lockfile_task = asyncio.ensure_future(
+        prepare_lockfile_check(token, owner, repo, head_sha, base_ref, diff_result.lockfile_paths))
     # Impact analysis: off unless both switches are on (impact_enabled).
     # Concurrent with the tool run, like the base-tree fetch below.
     impact_task = (
@@ -568,7 +612,7 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
         base_tree_task = None
     tool_findings = await tool_findings_task
     tool_findings, skipped_test_asserts = _tool_findings_for_review(pr_number, tool_findings)
-    dependency_check = await osv_task
+    dependency_check = combine(await osv_task, await lockfile_task)
     osv_findings = dependency_check.findings
     base_tree_files = await base_tree_task if base_tree_task is not None else {}
     secrets = await secrets_task

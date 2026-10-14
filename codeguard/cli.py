@@ -77,6 +77,7 @@ from codeguard.tools.gitleaks_runner import _scannable as secret_scannable
 from codeguard.tools.gitleaks_runner import scan_secrets
 from codeguard.tools.models import Finding
 from codeguard.tools.osv_runner import DEPENDENCY_CHECK_UNAVAILABLE, check_dependency_updates_status
+from codeguard.tools.osv_scanner_runner import MAX_LOCKFILE_BYTES, combine, is_osv_lockfile, scan_lockfiles
 from codeguard.tools.run_all import run_tools_on_files
 from codeguard.tools.generic import run_generic_scanners, unscannable
 from codeguard.tools.semgrep_runner import version_warning as semgrep_version_warning
@@ -336,6 +337,37 @@ def _collect_generic_files(root: Path, repo_config: RepoConfig) -> tuple[dict[st
                     continue
                 if abs_path.stat().st_size > _GENERIC_MAX_BYTES:
                     skipped.append((rel_path, f"too large to scan (over {_GENERIC_MAX_BYTES // 1024} KB)"))
+                    continue
+                files[rel_path] = abs_path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+    return files, skipped
+
+
+def _collect_lockfiles(root: Path, repo_config: RepoConfig) -> tuple[dict[str, str], list[tuple[str, str]]]:
+    """npm/yarn/pnpm, Go, Maven/Gradle and NuGet lockfiles for OSV-Scanner
+    (tools/osv_scanner_runner.is_osv_lockfile: never Python's, never under
+    node_modules/vendor/third_party), read with the same hardening as
+    _collect_repo_files. Returns (files, skipped); one over the size cap is
+    listed in Skipped, not read."""
+    files: dict[str, str] = {}
+    skipped: list[tuple[str, str]] = []
+    real_root = root.resolve()
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d != ".git" and not (Path(dirpath) / d).is_symlink()]
+        for name in filenames:
+            abs_path = Path(dirpath) / name
+            rel_path = abs_path.relative_to(root).as_posix()
+            if not is_osv_lockfile(rel_path) or abs_path.is_symlink():
+                continue
+            if any(fnmatch.fnmatch(rel_path, p) for p in repo_config.ignored_paths):
+                continue
+            try:
+                if not abs_path.resolve().is_relative_to(real_root) or not abs_path.is_file():
+                    continue
+                if abs_path.stat().st_size > MAX_LOCKFILE_BYTES:
+                    skipped.append((rel_path, "not checked for known vulnerabilities "
+                                              f"(over {MAX_LOCKFILE_BYTES // (1024 * 1024)} MB)"))
                     continue
                 files[rel_path] = abs_path.read_text(encoding="utf-8")
             except (UnicodeDecodeError, OSError):
@@ -1356,6 +1388,7 @@ def run_audit(
         secrets = scan_secrets(_collect_secret_scan_files(root, repo_config), repo_config)
         # JS/TS, Go, Java and C#: the vendored rules and security_generic.
         generic_files, generic_skipped = _collect_generic_files(root, repo_config)
+        lockfiles, lockfile_skipped = _collect_lockfiles(root, repo_config)
 
         # No code we cover, no audit -- and crucially no model call. Checked
         # here rather than after the scanners so a repository of nothing but
@@ -1376,7 +1409,10 @@ def run_audit(
         # Before anything reads tool_findings: a test assert never reaches
         # the verdict layer, the passthrough list or the report body.
         tool_findings, skipped_test_asserts = split_test_asserts(tool_findings)
-        dependency_check = check_dependency_updates_status(dependency_contents, dependency_patches)
+        # Python's pins exactly as before, then OSV-Scanner over every other
+        # lockfile (none in a Python-only repository: nothing runs).
+        dependency_check = combine(check_dependency_updates_status(dependency_contents, dependency_patches),
+                                   scan_lockfiles(lockfiles))
         osv_findings = dependency_check.findings
         # Eval hygiene is a pure heuristic (no LLM, no subprocess) — cheap
         # enough to run over every reviewable file regardless of the
@@ -1442,7 +1478,8 @@ def run_audit(
         ]
 
         passthrough_findings += generic_triage.passthrough + generic_triage.unreviewed
-        skipped_files = skipped_files + generic_skipped + unscannable(generic_files) + generic_triage.capped_files
+        skipped_files = (skipped_files + generic_skipped + unscannable(generic_files) + generic_triage.capped_files
+                         + lockfile_skipped)
 
         dismissed = sec.dismissed + aa.dismissed + gen.dismissed
         tokens_in = sec.tokens_in + aa.tokens_in + gen.tokens_in

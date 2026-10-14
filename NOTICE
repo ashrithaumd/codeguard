@@ -43,3 +43,9 @@ Third-party scanners (run, not vendored)
 zizmor 1.30.1 (MIT), https://github.com/zizmorcore/zizmor
   GitHub Actions workflows. Installed in the image by hash
   (Dockerfile, /opt/zizmor), run offline, never given a GitHub token.
+
+OSV-Scanner 2.6.0 (Apache-2.0), https://github.com/google/osv-scanner
+  Known vulnerabilities in npm/yarn/pnpm, Go, Maven/Gradle and NuGet
+  lockfiles. Installed in the image by hash (Dockerfile, /opt/osv-scanner).
+  Queries OSV.dev for vulnerability data; never resolves or builds
+  anything, and is given no credential.

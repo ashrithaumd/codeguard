@@ -7,6 +7,34 @@ CodeGuard is marked **ACTION REQUIRED**.
 
 ### Multi-language support (feat/multi-language)
 
+#### Dependency CVEs for npm/yarn/pnpm, Go, Maven/Gradle and NuGet
+
+- **OSV-Scanner 2.6.0** (Apache-2.0, released 2026-09-14; 2.7.0 was a day
+  old), installed by hash in its own location (`/opt/osv-scanner`,
+  `OSV_SCANNER_BIN`). It reads `package-lock.json`, `yarn.lock`,
+  `pnpm-lock.yaml`, `go.mod`, `pom.xml`, `gradle.lockfile`,
+  `buildscript-gradle.lockfile` and `packages.lock.json`, never under
+  `node_modules/`, `vendor/` or `third_party/`. Image: about +55 MB.
+- **PR reviews** report only vulnerabilities that are new at head: each
+  changed lockfile is fetched at head and at the base branch (raw, so a
+  lockfile over 1 MB is read) and a vulnerability the base copy already had,
+  under any of its aliases, is dropped. A new lockfile is new throughout.
+  **Audits** report every vulnerability in every lockfile. Findings are
+  listed with the existing dependency findings (`osv`), at the package's
+  line in the lockfile, with the fixed version for that package.
+- **Python is unchanged**: its check still reads the pins a PR adds to
+  `requirements.txt` / `pyproject.toml`, and a Python-only repository never
+  runs OSV-Scanner. Python lockfiles are in docs/backlog.md.
+- **Locked down**: every lockfile is passed explicitly (`-L`), so nothing
+  else is scanned; `--no-resolve`, so a `pom.xml` is never resolved against
+  the repositories it names; `--no-call-analysis=all`, so nothing is built;
+  a short environment allowlist, so no credential reaches it.
+- **Fails soft to the note**: OSV unreachable, the binary missing, a
+  timeout, or on a PR a lockfile that cannot be fetched or is over 20 MB,
+  or more than 20 changed lockfiles, is "Dependency CVE check unavailable",
+  never a clean result. An audit lists a lockfile over 20 MB in Skipped
+  instead.
+
 #### "Dependency CVE check unavailable"
 
 **ACTION REQUIRED (operators):** migration `017_review_dependency_check.sql`

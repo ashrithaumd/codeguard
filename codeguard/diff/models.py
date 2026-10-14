@@ -65,6 +65,12 @@ class DiffIngestionResult(BaseModel):
     # patches, which are Python's and feed the Python agents.
     generic_contents: dict[str, str] = Field(default_factory=dict)
     generic_patches: dict[str, str] = Field(default_factory=dict)
+    # Changed npm/yarn/pnpm, Go, Maven/Gradle and NuGet lockfiles
+    # (tools/osv_scanner_runner.is_osv_lockfile), head path -> base path
+    # (they differ only for a rename). Paths only: the worker fetches both
+    # copies raw, since a lockfile is often over the contents API's 1 MB.
+    # Still filtered from review exactly as before.
+    lockfile_paths: dict[str, str] = Field(default_factory=dict)
 
     @property
     def files_reviewed(self) -> list[str]:

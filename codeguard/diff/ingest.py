@@ -31,6 +31,7 @@ from codeguard.diff.parse import build_hunks
 from codeguard.github.diff import get_file_content, get_pr_files
 from codeguard.languages import GENERIC_LANGUAGES, language_of
 from codeguard.tools.gitleaks_runner import sparse_from_patch
+from codeguard.tools.osv_scanner_runner import is_osv_lockfile
 
 logger = logging.getLogger(__name__)
 _tokenizer = tiktoken.get_encoding("cl100k_base")
@@ -200,6 +201,14 @@ async def ingest_pr_diff(
             for f in raw_files
             if not f["filename"].endswith(".py") and f.get("additions", 0) and f.get("patch")
             and (sparse := sparse_from_patch(f["patch"]))
+        },
+        # Changed lockfiles OSV-Scanner reads, by path only (the worker
+        # fetches head and base raw). A removed one has nothing new at head.
+        lockfile_paths={
+            f["filename"]: f.get("previous_filename") or f["filename"]
+            for f in raw_files
+            if f.get("status") != "removed" and is_osv_lockfile(f["filename"])
+            and not any(fnmatch.fnmatch(f["filename"], p) for p in repo_config.ignored_paths)
         },
     )
 
