@@ -111,7 +111,7 @@ def test_an_audit_reports_every_vulnerability_with_the_lockfile_line():
     assert f.severity == Severity.MEDIUM
     # The fixed version is lodash's own, not lodash-es's listed first.
     assert f.message == ("lodash@4.17.15 has a known vulnerability (GHSA-29mw-wpgm-hmr9): "
-                         "Regular Expression Denial of Service (ReDoS) in lodash Fixed in 4.17.21.")
+                         "Regular Expression Denial of Service (ReDoS) in lodash. Fixed in 4.17.21.")
 
 
 def test_the_fixed_version_is_the_one_for_the_installed_line():
@@ -224,3 +224,19 @@ def test_combine_keeps_python_findings_first_and_either_failure_is_the_note():
 
 def test_the_pinned_version():
     assert EXPECTED_VERSION == "2.6.0"
+
+
+def test_the_summary_and_fixed_in_are_separated_once():
+    # "...choosing boundary Fixed in 4.0.4." on openai-quickstart-node: OSV
+    # summaries rarely end in a period. One is added, never doubled.
+    from codeguard.tools.osv_scanner_runner import _Vuln, _finding
+
+    def message(summary):
+        record = {"id": "GHSA-x", "summary": summary,
+                  "affected": [{"package": {"name": "form-data", "ecosystem": "npm"},
+                                "ranges": [{"type": "SEMVER", "events": [{"introduced": "4.0.0"}, {"fixed": "4.0.4"}]}]}]}
+        v = _Vuln(("k", "npm", "form-data"), frozenset({"GHSA-x"}), "form-data", "4.0.1", "npm", record)
+        return _finding("package-lock.json", '"form-data": "4.0.1"', v).message
+
+    assert message("unsafe random function for choosing boundary").endswith("choosing boundary. Fixed in 4.0.4.")
+    assert message("Already a sentence.").endswith("Already a sentence. Fixed in 4.0.4.")

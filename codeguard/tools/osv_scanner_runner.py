@@ -172,6 +172,10 @@ def _finding(path: str, content: str, v: _Vuln) -> Finding:
     message = f"{v.name}@{v.version} has a known vulnerability ({vuln_id}): {summary}"
     fixed = _fixed_for(v.record, v.name, v.version, v.ecosystem)
     if fixed:
+        # OSV summaries rarely end in a period; one, never two, before "Fixed in".
+        message = message.rstrip()
+        if summary.strip() and not message.endswith((".", "!", "?")):
+            message += "."
         message += f" Fixed in {fixed}."
     line = _line_of(content, v.name, v.version)
     return Finding.create(file=path, start_line=line, end_line=line, severity=_severity_from_osv(v.record),
