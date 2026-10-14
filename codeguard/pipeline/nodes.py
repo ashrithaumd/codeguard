@@ -927,9 +927,14 @@ def route_to_generic_security_reviews(state: ReviewState) -> list[Send]:
 def review_security_generic(state: FileReviewState) -> dict:
     """The vendored rules' findings for one file, verdict contract, Sonnet
     tier, plain masks (hints=False). `content` arrives with the secrets
-    scan's spans already masked (redact.mask_spans)."""
+    scan's spans already masked (redact.mask_spans).
+
+    A confirmed finding from CodeGuard's own rules (codeguard-rules) keeps
+    the severity its rule sets: the model picks one per file, so one rule
+    came back Medium in some files and Low in others of the same audit.
+    Vendored findings keep the model's severity, as the Python agents do."""
     settings = get_settings()
-    return _run_verdict_agent(
+    result = _run_verdict_agent(
         agent="security_generic", owner=state["owner"], repo=state["repo"], path=state["path"],
         content=state["content"], findings=state["findings"],
         system_prompt=_SECURITY_GENERIC_SYSTEM_PROMPT, model=settings.security_generic_agent_model,
@@ -937,6 +942,13 @@ def review_security_generic(state: FileReviewState) -> dict:
         dismissals_enabled=settings.security_agent_dismissals_enabled,
         hunk_cache_hits=state["hunk_cache_hits"], hints=False,
     )
+    rule_severity = {f.rule_id: f.severity for f in state["findings"] if f.source_tool == "codeguard-rules"}
+    if not rule_severity:
+        return result
+    return {**result, "findings": [
+        f.model_copy(update={"severity": rule_severity[f.rule_id]}) if f.rule_id in rule_severity else f
+        for f in result.get("findings", [])
+    ]}
 
 
 def generative_cache_agent(agent: str) -> str:

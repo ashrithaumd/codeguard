@@ -159,3 +159,23 @@ async def test_a_python_only_review_never_calls_the_generic_agent():
     with patch("codeguard.pipeline.nodes.call_agent", side_effect=fake):
         await review_graph.ainvoke(_graph_state(files={"app.py": "x = 1\n"}, patches={"app.py": "@@ -0,0 +1 @@\n+x = 1"}))
     assert "security_generic" not in agents
+
+
+def test_our_own_rules_keep_their_severity_and_vendored_ones_take_the_models():
+    # codeguard-js-llm-call-missing-timeout came back Medium in four files and
+    # Low in seven of the same audit (openai-quickstart-node): one call per
+    # file, and the model picked the severity each time. For CodeGuard's own
+    # rules the rule's severity stands; the model only confirms or dismisses.
+    # Vendored GitLab findings keep the model's severity, as before.
+    own = Finding.create(file="web/run.js", start_line=1, end_line=1, severity=Severity.MEDIUM,
+                         source_tool="codeguard-rules", rule_id="codeguard-js-llm-call-missing-timeout",
+                         message="client has no timeout")
+    reply = ('[{"rule_id": "codeguard-js-llm-call-missing-timeout", "verdict": "confirmed", "severity": "low", '
+             '"message": "No timeout."}, '
+             '{"rule_id": "javascript_eval_rule-eval-with-expression", "verdict": "confirmed", "severity": "low", '
+             '"message": "eval of input."}]')
+    with patch("codeguard.pipeline.nodes.call_agent", return_value=_model(reply)):
+        out = review_security_generic(_file_state(findings=[own, _f()]))
+    by_rule = {f.rule_id: f.severity for f in out["findings"]}
+    assert by_rule == {"codeguard-js-llm-call-missing-timeout": Severity.MEDIUM,
+                       "javascript_eval_rule-eval-with-expression": Severity.LOW}
