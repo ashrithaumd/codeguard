@@ -261,7 +261,7 @@ def multilanguage_review_templates() -> list[dict]:
              latencies=[{"node": "review_security_generic", "file": "src/assistant.ts", "seconds": 7.4},
                         {"node": "review_security_generic", "file": "api/Controllers/ReportsController.cs", "seconds": 6.1},
                         {"node": "summarize", "file": "", "seconds": 2.2}],
-             summary=f"Blocked: 10 high severity findings.\n\n{coverage}"),
+             summary=f"Blocked: 9 high severity findings.\n\n{coverage}"),
         dict(pr=9005, title="Add Node assistant, Go billing client, Java export worker and C# reports API",
              action="synchronize", conclusion="failure", age=timedelta(hours=7), gate="HIGH", fix="HIGH",
              files_reviewed=11, inline=4, tokens=(9_310, 1_480), cost=0.0611, duration=41.8,
@@ -382,10 +382,31 @@ def multilanguage_audit(owner: str, repo: str, osv_unavailable: bool) -> tuple[s
     from codeguard.severity import Severity
     from codeguard.tools.models import Finding
 
+    # An explicit title per finding, as the Python sample audit has. Without
+    # one the card title is the first sentence of `what` (or the message),
+    # which the SAMPLE label made "SAMPLE". The label stays on `message`.
+    titles = {
+        "codeguard-js-llm-prompt-injection-concatenation": "Ticket text concatenated into the prompt",
+        "codeguard-js-llm-call-missing-timeout": "No timeout on the Anthropic client",
+        "javascript_eval_rule-eval-with-expression": "eval() of request input",
+        "codeguard-go-tls-insecure-skip-verify": "TLS certificate verification turned off",
+        "java_inject_rule-CommandInjection": "Job parameter reaches a shell command",
+        "csharp_injection_rule-SQLInjection": "Report filter concatenated into SQL",
+        "codeguard-dockerfile-curl-pipe-shell": "Install script piped from curl into sh",
+        "template-injection": "Issue title expanded inside a run: script",
+        "gitleaks.github-pat": "Hardcoded GitHub token",
+        "unpinned-uses": "Action referenced by tag, not commit SHA",
+        "GHSA-p6mc-m468-83gw": "Vulnerable lodash version",
+        "GO-2021-0052": "Vulnerable gin version",
+        "GHSA-jfh8-c2jp-5v3q": "Vulnerable log4j-core version",
+        "GHSA-5crp-9r3c-p9vr": "Vulnerable Newtonsoft.Json version",
+        "eval-hygiene.missing-evals-js": "LLM-calling JS/TS code with no evals",
+    }
+
     def f(path, line, sev, tool, rule, msg, what="", why="", fix=""):
         return Finding.create(file=path, start_line=line, end_line=line, severity=Severity[sev],
                               source_tool=tool, rule_id=rule, message="SAMPLE. " + msg,
-                              what=("SAMPLE. " + what) if what else "", why=why, fix=fix)
+                              title=titles[rule], what=what, why=why, fix=fix)
 
     judged = [
         f("src/assistant.ts", 15, "HIGH", "security_generic", "codeguard-js-llm-prompt-injection-concatenation",

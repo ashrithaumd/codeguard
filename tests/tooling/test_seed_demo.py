@@ -117,3 +117,25 @@ def test_the_multilanguage_audit_is_real_report_data_and_labelled(unavailable):
     osv = [f for f in data["findings"] if f["source_tool"] == "osv"]
     assert ("Dependency CVE check unavailable" in data["incomplete"]) is unavailable
     assert bool(osv) is not unavailable
+
+
+@pytest.mark.parametrize("row", ROWS, ids=lambda r: f"pr{r['pr']}-{r['action']}")
+def test_the_summary_counts_match_the_rows(row):
+    # "Blocked: 10 high severity findings" over 9 High rows was reported as a
+    # dashboard bug; the sentence has to describe the list under it.
+    import re
+    for sev in ("critical", "high"):
+        said = re.search(rf"(\d+) {sev}\b", row["summary"])
+        if said:
+            assert int(said.group(1)) == sum(1 for f in row["findings"] if f["severity"] == sev.upper()), sev
+
+
+@pytest.mark.parametrize("unavailable", [False, True])
+def test_the_multilanguage_audit_cards_have_real_titles(unavailable):
+    _, data = seed.multilanguage_audit("ashrithaumd", "demo", osv_unavailable=unavailable)
+    for f in data["findings"] + data["repo_level"]:
+        assert f["title"] and not f["title"].startswith("SAMPLE"), f
+        # The builder falls back to the (labelled) message when there is no
+        # `what`; an explicit `what` carries no label.
+        if f.get("what") and f["what"] != f["message"]:
+            assert not f["what"].startswith("SAMPLE")
