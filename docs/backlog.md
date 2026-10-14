@@ -89,3 +89,28 @@ Considered with tree-sitter (5–7 days) and skipped for now:
 
 Revisit if users ask for it on JavaScript-heavy repositories, or if a TypeScript-aware resolver (the
 TypeScript compiler API in a sidecar) becomes cheap to run.
+
+## Python lockfiles via OSV-Scanner (not built)
+
+Python's dependency check reads only exact `==` pins on lines a PR adds to `requirements.txt` or
+`pyproject.toml`, and queries OSV.dev for each (`tools/osv_runner.py`). `poetry.lock`,
+`Pipfile.lock` and `uv.lock` are filtered out as lockfiles and never checked, so a vulnerable
+version that arrives only through a lockfile (a transitive dependency, or a range in
+`pyproject.toml` that resolves to a bad release) is not reported.
+
+OSV-Scanner, which already checks the npm/yarn/pnpm, Go, Maven/Gradle and NuGet lockfiles, reads
+all three. Pointing it at Python's lockfiles would work the same way: base vs head on a PR, so
+only newly introduced vulnerabilities are reported, and the whole tree on an audit.
+
+**Why not now.** It adds Python findings that today's check never produces, on every PR that
+touches a lockfile, and every audit of a repository that has one. That changes Python results, so
+it needs its own re-baseline: the Python eval fixtures have no lockfiles, so they would not move,
+but real repositories would, and the reliqueue and playground audits would need re-recording.
+
+**Risk.** Duplicates: a pin in `requirements.txt` and the same package in `poetry.lock` would be
+reported twice, once by each path. Merge them on (package, version, vulnerability id), or keep
+Python's own check for manifests and let OSV-Scanner report only what is in the lockfile alone.
+
+**How to tell it worked.** A PR bumping a package to a known-vulnerable version in `poetry.lock`
+alone reports it once; the same PR with an unrelated lockfile change reports nothing; a Python
+repository with no lockfile reports exactly what it does today.
