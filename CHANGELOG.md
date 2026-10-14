@@ -7,6 +7,21 @@ CodeGuard is marked **ACTION REQUIRED**.
 
 ### Multi-language support (feat/multi-language)
 
+#### Eval hygiene for JavaScript/TypeScript
+
+- **New repo-level finding** `eval-hygiene.missing-evals-js` (MEDIUM, no
+  model): JS/TS code that imports an LLM SDK (`openai`,
+  `@anthropic-ai/sdk`, the Vercel AI SDK, LangChain.js) in a repository with
+  no `evals/` directory, no promptfoo or evalite files, and no JS/TS test
+  that imports an LLM SDK and asserts. The import statement is matched, not
+  the word, so a comment or `./openai-icon` is not a call.
+- **Audits** check the whole repository. **PRs** check only when they change
+  LLM-calling JS/TS, and read the evidence from the base branch, as
+  Python's check does: one tree listing and at most 20 test files.
+- **Python is unchanged**: `review_eval_hygiene` never sees a JS/TS file,
+  and its three checks and messages are as they were. Python-only PRs make
+  no extra GitHub calls. Off with `enable_ai_aware: false`, like Python's.
+
 #### LLM-security rules for JavaScript/TypeScript
 
 - **Nine of our own Semgrep rules** (`rules_lang/js-llm-security.yaml`,

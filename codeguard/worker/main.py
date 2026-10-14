@@ -49,7 +49,7 @@ from codeguard.diff.filters import split_test_asserts
 from codeguard.diff.ingest import ingest_pr_diff
 from codeguard.github.auth import get_installation_token
 from codeguard.github.base_tree import fetch_base_tree_python_files
-from codeguard.github.diff import get_file_content, get_file_raw
+from codeguard.github.diff import get_file_content, get_file_raw, get_repo_tree
 from codeguard.github.check_summary import render_check_summary
 from codeguard.github.checks import complete_check_run, start_check_run
 from codeguard.github.errors import extract_retry_after
@@ -80,6 +80,7 @@ from codeguard.tools.osv_runner import (
     check_dependency_updates_status,
 )
 from codeguard.tools.osv_scanner_runner import MAX_LOCKFILE_BYTES, combine, scan_pr_lockfiles
+from codeguard.pipeline.eval_hygiene import calls_llm_js, is_js_test_path, review_eval_hygiene_js
 from codeguard.tools.run_all import run_tools_on_files
 from codeguard.tools.semgrep_runner import version_warning as semgrep_version_warning
 
@@ -460,6 +461,48 @@ async def prepare_lockfile_check(
     return check
 
 
+async def _no_findings() -> list:
+    return []
+
+
+# Base-branch JS/TS test files read for evidence of output-asserting tests.
+MAX_JS_EVIDENCE_FILES = 20
+_JS_SOURCE_EXTENSIONS = (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts")
+_JS_SKIP_DIRS = ("node_modules/", "vendor/", "dist/", "build/")
+
+
+async def prepare_eval_hygiene_js(
+    token: str, owner: str, repo: str, base_ref: str, changed: dict[str, str],
+) -> list:
+    """JS/TS eval hygiene for a PR (pipeline/eval_hygiene.review_eval_hygiene_js).
+    Only a PR that changes LLM-calling JS/TS asks anything of GitHub: one
+    tree listing of the BASE branch (evals/, promptfoo, evalite) and at most
+    MAX_JS_EVIDENCE_FILES of its test files -- the repository's own
+    practice, never what the PR head says it is, as for Python. A soft
+    signal: any failure is no finding."""
+    sources = {p: c for p, c in changed.items()
+               if p.lower().endswith(_JS_SOURCE_EXTENSIONS) and not is_js_test_path(p) and calls_llm_js(c)}
+    if not sources:
+        return []
+    try:
+        tree = await asyncio.to_thread(get_repo_tree, token, owner, repo, base_ref)
+        paths = [e["path"] for e in tree if e.get("type", "blob") == "blob"
+                 and not any(f"/{d}" in f"/{e['path']}" for d in _JS_SKIP_DIRS)]
+        tests = [p for p in paths if p.lower().endswith(_JS_SOURCE_EXTENSIONS) and is_js_test_path(p)]
+        semaphore = asyncio.Semaphore(_LOCKFILE_FETCH_CONCURRENCY)
+
+        async def _fetch(path: str) -> tuple[str, str | None]:
+            async with semaphore:
+                return path, await asyncio.to_thread(get_file_content, token, owner, repo, path, base_ref)
+
+        evidence = {p: c for p, c in await asyncio.gather(*(_fetch(p) for p in tests[:MAX_JS_EVIDENCE_FILES]))
+                    if c is not None}
+    except Exception:
+        logger.warning("JS/TS eval hygiene skipped for %s/%s", owner, repo, exc_info=True)
+        return []
+    return review_eval_hygiene_js(sources, evidence, paths)
+
+
 def impact_enabled(settings: Settings, repo_config: RepoConfig) -> bool:
     """Both switches: the global one (off by default) and the repo's own
     opt-out. A repository cannot opt in past the global switch."""
@@ -598,6 +641,11 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
     # lockfiles, base vs head; nothing for a PR that changes none.
     lockfile_task = asyncio.ensure_future(
         prepare_lockfile_check(token, owner, repo, head_sha, base_ref, diff_result.lockfile_paths))
+    # JS/TS eval hygiene, beside Python's (the graph's eval-hygiene node);
+    # nothing for a PR that changes no LLM-calling JS/TS.
+    js_hygiene_task = asyncio.ensure_future(
+        prepare_eval_hygiene_js(token, owner, repo, base_ref, diff_result.generic_contents)
+        if repo_config.enable_ai_aware else _no_findings())
     # Impact analysis: off unless both switches are on (impact_enabled).
     # Concurrent with the tool run, like the base-tree fetch below.
     impact_task = (
@@ -614,6 +662,7 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
     tool_findings, skipped_test_asserts = _tool_findings_for_review(pr_number, tool_findings)
     dependency_check = combine(await osv_task, await lockfile_task)
     osv_findings = dependency_check.findings
+    js_hygiene_findings = await js_hygiene_task
     base_tree_files = await base_tree_task if base_tree_task is not None else {}
     secrets = await secrets_task
     if secrets.unavailable:
@@ -661,7 +710,7 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
         "touches_ai_code": False,
         # Secrets, and the vendored rules' findings that need no verdict, go
         # straight into the results (no agent, no model).
-        "findings": list(secrets.findings) + generic.findings, "repo_level_findings": osv_findings, "dismissed_findings": [], "fix_suggestions": [],
+        "findings": list(secrets.findings) + generic.findings, "repo_level_findings": osv_findings + js_hygiene_findings, "dismissed_findings": [], "fix_suggestions": [],
         "should_fix": False, "summary": "", "inline_findings": [],
         "tokens_in": 0, "tokens_out": 0, "estimated_cost_usd": 0.0, "node_latencies": [],
     }

@@ -107,3 +107,72 @@ def review_eval_hygiene(base_tree_files: dict[str, str]) -> list[Finding]:
         ))
 
     return findings
+
+
+# --- JavaScript/TypeScript ------------------------------------------------
+#
+# The same question as missing-evals above, asked of JS/TS code with its
+# own markers, and kept apart from it: review_eval_hygiene never sees a
+# JS/TS file, so Python's findings are exactly what they were. One check
+# only -- the live-call and inline-prompt checks stay Python's.
+
+JS_MISSING_EVALS = "eval-hygiene.missing-evals-js"
+
+_JS_EXTENSIONS = (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts")
+# An import or require of an LLM SDK -- the statement, not the word, so a
+# comment, a string or "./openai-icon" is not a call.
+_JS_LLM_IMPORT_RE = re.compile(
+    r"""(?:\bfrom\s+|\brequire\(\s*|\bimport\(\s*|\bimport\s+)["']"""
+    r"""(?:openai|@anthropic-ai/sdk|ai|@ai-sdk/[\w.-]+|langchain|@langchain/[\w.-]+)(?:/[\w./-]*)?["']"""
+)
+_JS_TEST_DIRS = {"test", "tests", "__tests__", "__mocks__", "spec", "e2e"}
+_JS_ASSERT_RE = re.compile(r"\bexpect\(|\bassert\b")
+_PROMPTFOO_CONFIG_RE = re.compile(r"^promptfoo(?:config|\.config)\.(?:ya?ml|json|[cm]?[jt]s)$", re.IGNORECASE)
+_EVALITE_RE = re.compile(r"\.eval\.(?:[cm]?[jt]sx?)$")
+
+
+def _is_js(path: str) -> bool:
+    return path.lower().endswith(_JS_EXTENSIONS)
+
+
+def is_js_test_path(path: str) -> bool:
+    """A JS/TS test file: under a test directory, or *.test.* / *.spec.*."""
+    parts = path.replace("\\", "/").lower().split("/")
+    name = parts[-1]
+    return any(p in _JS_TEST_DIRS for p in parts[:-1]) or ".test." in name or ".spec." in name
+
+
+def calls_llm_js(content: str) -> bool:
+    return bool(_JS_LLM_IMPORT_RE.search(content))
+
+
+def _has_js_eval_signal(evidence: dict[str, str], paths) -> bool:
+    for path in paths:
+        p = path.replace("\\", "/")
+        name = p.rsplit("/", 1)[-1]
+        if p.startswith("evals/") or "/evals/" in p or _PROMPTFOO_CONFIG_RE.match(name) or _EVALITE_RE.search(name):
+            return True
+    return any(
+        _is_js(path) and is_js_test_path(path) and calls_llm_js(content) and _JS_ASSERT_RE.search(content)
+        for path, content in evidence.items()
+    )
+
+
+def review_eval_hygiene_js(sources: dict[str, str], evidence: dict[str, str], paths) -> list[Finding]:
+    """`sources`: JS/TS files that may call an LLM. `evidence`: file
+    contents to look for output-asserting tests in. `paths`: every path in
+    the repository, for evals/, promptfoo and evalite files. An audit passes
+    the whole repository for all three; a PR passes its changed files as
+    `sources` and the BASE branch's for the other two (worker/main.py), as
+    Python's check reads the base."""
+    llm_paths = sorted(p for p, c in sources.items() if _is_js(p) and not is_js_test_path(p) and calls_llm_js(c))
+    if not llm_paths or _has_js_eval_signal(evidence, paths):
+        return []
+    shown = ", ".join(llm_paths[:5]) + ("..." if len(llm_paths) > 5 else "")
+    return [_repo_finding(
+        Severity.MEDIUM, JS_MISSING_EVALS,
+        f"{len(llm_paths)} JavaScript/TypeScript file(s) call an LLM SDK ({shown}) but this repo has no "
+        "evals/ directory, no eval-framework files (promptfoo, evalite) and no test that asserts on LLM "
+        "output. LLM-calling code changes behavior silently (model updates, prompt edits) with nothing "
+        "to catch a regression -- add ground-truth eval cases or output-asserting tests.",
+    )]

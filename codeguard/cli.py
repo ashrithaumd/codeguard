@@ -56,7 +56,7 @@ from codeguard.diff.filters import (
     split_test_asserts,
 )
 from codeguard.languages import GENERIC_LANGUAGES, language_of, not_covered
-from codeguard.pipeline.eval_hygiene import review_eval_hygiene
+from codeguard.pipeline.eval_hygiene import review_eval_hygiene, review_eval_hygiene_js
 from codeguard.pipeline.guardrails import MAX_CHUNK_TOKENS
 from codeguard.pipeline.merge import bare_rule_id, flow_note, merge_same_bug, with_flow_note
 from codeguard.pipeline.models import DismissedFinding
@@ -257,12 +257,10 @@ def _synthetic_whole_file_patch(content: str) -> str:
 NOT_COVERED_SHOWN = 10
 
 
-def _not_covered_files(root: Path, repo_config: RepoConfig) -> list[dict]:
-    """Source files no scanner covers, by language (codeguard/languages.py).
-
-    A walk over NAMES only -- no file is opened -- with the same exclusions
-    as _collect_repo_files: .git is pruned, and no symlink is followed or
-    listed, file or directory."""
+def _repo_paths(root: Path) -> list[str]:
+    """Every file's path, by NAME only -- no file is opened -- with the same
+    exclusions as _collect_repo_files: .git is pruned, and no symlink is
+    followed or listed, file or directory."""
     paths: list[str] = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d != ".git" and not (Path(dirpath) / d).is_symlink()]
@@ -271,7 +269,12 @@ def _not_covered_files(root: Path, repo_config: RepoConfig) -> list[dict]:
             if abs_path.is_symlink():
                 continue
             paths.append(abs_path.relative_to(root).as_posix())
-    return not_covered(paths, repo_config)
+    return paths
+
+
+def _not_covered_files(root: Path, repo_config: RepoConfig) -> list[dict]:
+    """Source files no scanner covers, by language (codeguard/languages.py)."""
+    return not_covered(_repo_paths(root), repo_config)
 
 
 # Secrets scan read cap per file. Gitleaks gets the same cap
@@ -1423,6 +1426,9 @@ def run_audit(
         # ceiling first — a real gap found via this phase's own live
         # verification against simonw/llm (see evals/RESULTS.md).
         eval_hygiene_findings = review_eval_hygiene(all_files) if repo_config.enable_ai_aware else []
+        # JS/TS beside it, never mixed in: Python's findings are unchanged.
+        if repo_config.enable_ai_aware:
+            eval_hygiene_findings += review_eval_hygiene_js(generic_files, generic_files, _repo_paths(root))
 
         security_findings_by_file = {
             p: [f for f in tool_findings if f.file == p and f.source_tool == "bandit"] for p in files
