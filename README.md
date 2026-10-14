@@ -43,13 +43,15 @@ GitHub App.
 
 ```bash
 pip install -e .
+pipx install semgrep==1.95.0          # its own environment; see the note below
 export ANTHROPIC_API_KEY=sk-ant-...
 codeguard audit .                      # or a git URL
 codeguard audit . --output report.md
 ```
 
-Verified on a clean clone into a bare `python:3.12-slim`: `pip install -e .` pulls Semgrep, Bandit
-and Ruff, and `codeguard audit` runs the scanners, the eval-hygiene checks and the verdict agents,
+Verified on a clean clone into a bare `python:3.12-slim`: `pip install -e .` pulls Bandit and Ruff;
+Semgrep is installed on its own (its OpenTelemetry pin cannot share an environment with the MCP
+server's), and `codeguard audit` runs the scanners, the eval-hygiene checks and the verdict agents,
 then writes a markdown report with findings, dismissals and cost. `ANTHROPIC_API_KEY` is the only
 setting without a default — everything else is optional. Every entry point (`codeguard audit`, the
 MCP server, the api and the worker) checks it at startup and exits 2 with a single line if it is

@@ -87,6 +87,7 @@ def _severity_counts(findings: list[Finding]) -> dict[Severity, int]:
 
 def _warning_lines(
     *, budget_exceeded: bool, files_seen: int, files_reviewed: int, missing_tools: list[str],
+    tool_warnings: list[str] | None = None,
 ) -> list[str]:
     """Both warnings say the same underlying thing — this result is
     narrower than it looks — so they lead, before any count a reader
@@ -112,6 +113,11 @@ def _warning_lines(
             "> This is not a clean result for the rules that tool owns. See the worker log for the cause.",
             "",
         ]
+    # A tool that ran but is not the version pinned
+    # (tools/semgrep_runner.version_warning): its rules may not behave as
+    # tested. Same caution block; nothing at all when there is none.
+    for warning in tool_warnings or []:
+        lines += ["> [!CAUTION]", f"> **{escape_finding_text(warning)}.**", ""]
     return lines
 
 
@@ -137,6 +143,7 @@ def render_check_summary(
     tokens_out: int,
     estimated_cost_usd: float,
     duration_s: float,
+    tool_warnings: list[str] | None = None,
 ) -> str:
     """`findings` is the suppressed-excluded set the gate itself reads,
     so the tables and the pass/fail can never describe different data.
@@ -147,7 +154,7 @@ def render_check_summary(
     missing_tools = unavailable_tools(tool_findings)
     lines = _warning_lines(
         budget_exceeded=budget_exceeded, files_seen=files_seen,
-        files_reviewed=files_reviewed, missing_tools=missing_tools,
+        files_reviewed=files_reviewed, missing_tools=missing_tools, tool_warnings=tool_warnings,
     )
 
     # Zero findings gets a sentence, not four empty table rows. The

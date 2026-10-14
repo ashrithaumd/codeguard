@@ -27,7 +27,9 @@ logger = logging.getLogger(__name__)
 # comment in migrations/006_reviews.sql for why "deterministic" and
 # "unverified" are kept apart, and for what `unverified` does and does not
 # mean. Anything not listed here falls to `unverified` (see _bucket).
-_VERDICT_CONFIRMED_TOOLS = frozenset({"security", "ai_aware"})
+# security_generic: the same confirm-or-dismiss contract over what
+# gitlab-sast and codeguard-rules raised in JS/TS, Go, Java and C#.
+_VERDICT_CONFIRMED_TOOLS = frozenset({"security", "ai_aware", "security_generic"})
 _GENERATIVE_TOOLS = frozenset({"quality-agent", "test-agent"})
 _DETERMINISTIC_TOOLS = frozenset({"ruff", "osv", "eval-hygiene"})
 
@@ -108,6 +110,7 @@ async def record_review(
     duration_s: float,
     node_latencies: list[Any],
     verdict_call_failures: list[Any],
+    dependency_check_unavailable: bool = False,
 ) -> bool:
     """Returns True if a row was written, False on any failure or when
     the row already existed. Never raises.
@@ -134,7 +137,7 @@ async def record_review(
                     tokens_in, tokens_out, estimated_cost_usd, duration_s,
                     node_latencies_json,
                     findings_json, dismissed_json, fix_suggestions_json,
-                    verdict_call_failures_json
+                    verdict_call_failures_json, dependency_check_unavailable
                 )
                 VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s,
@@ -147,7 +150,7 @@ async def record_review(
                     %s, %s, %s, %s,
                     %s,
                     %s, %s, %s,
-                    %s
+                    %s, %s
                 )
                 ON CONFLICT (job_id) DO NOTHING
                 """,
@@ -162,7 +165,7 @@ async def record_review(
                     tokens_in, tokens_out, estimated_cost_usd, duration_s,
                     _dump(node_latencies),
                     _dump(findings), _dump(dismissed), _dump(fix_suggestions),
-                    _dump(verdict_call_failures),
+                    _dump(verdict_call_failures), dependency_check_unavailable,
                 ),
             )
         return True

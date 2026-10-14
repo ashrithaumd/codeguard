@@ -54,6 +54,23 @@ class DiffIngestionResult(BaseModel):
     # review, since a version pin isn't reviewable code.
     dependency_patches: dict[str, str] = Field(default_factory=dict)
     dependency_contents: dict[str, str] = Field(default_factory=dict)
+    # Every changed NON-Python file with additions, as sparse added-lines
+    # content (tools/gitleaks_runner.sparse_from_patch): what the secrets
+    # scan reads. Built from the patches GitHub already sent, so no extra
+    # fetch; Python files are left to CodeGuard's own credential rules.
+    secret_scan_files: dict[str, str] = Field(default_factory=dict)
+    # Changed JS/TS, Go, Java and C# files (codeguard/languages.py covers them
+    # through the vendored rules): content at head and patch, capped by
+    # Settings.generic_scan_files_per_pr. Kept apart from file_contents /
+    # patches, which are Python's and feed the Python agents.
+    generic_contents: dict[str, str] = Field(default_factory=dict)
+    generic_patches: dict[str, str] = Field(default_factory=dict)
+    # Changed npm/yarn/pnpm, Go, Maven/Gradle and NuGet lockfiles
+    # (tools/osv_scanner_runner.is_osv_lockfile), head path -> base path
+    # (they differ only for a rename). Paths only: the worker fetches both
+    # copies raw, since a lockfile is often over the contents API's 1 MB.
+    # Still filtered from review exactly as before.
+    lockfile_paths: dict[str, str] = Field(default_factory=dict)
 
     @property
     def files_reviewed(self) -> list[str]:

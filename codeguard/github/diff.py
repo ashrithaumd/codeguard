@@ -60,6 +60,31 @@ def get_file_content(token: str, owner: str, repo: str, path: str, ref: str) -> 
     return base64.b64decode(data["content"]).decode("utf-8", errors="replace")
 
 
+class FileTooLarge(Exception):
+    pass
+
+
+def get_file_raw(token: str, owner: str, repo: str, path: str, ref: str, max_bytes: int) -> str | None:
+    """Like get_file_content, for files the contents API will not inline:
+    over 1 MB it returns no content (a package-lock.json often is), while
+    the raw media type serves up to 100 MB. Read in chunks and abandoned
+    past `max_bytes` (FileTooLarge). None on 404."""
+    with requests.get(
+        CONTENTS_URL.format(owner=owner, repo=repo, path=path),
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.raw"},
+        params={"ref": ref}, timeout=30, stream=True,
+    ) as resp:
+        if resp.status_code == 404:
+            return None
+        resp.raise_for_status()
+        body = bytearray()
+        for chunk in resp.iter_content(64 * 1024):
+            body += chunk
+            if len(body) > max_bytes:
+                raise FileTooLarge(f"{path} is over {max_bytes} bytes")
+    return body.decode("utf-8", errors="replace")
+
+
 def get_repo_tree(token: str, owner: str, repo: str, ref: str) -> list[dict]:
     """Full recursive file listing (path + type) at `ref` — no content,
     one call regardless of repo size. Used by the eval-hygiene

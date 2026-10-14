@@ -74,3 +74,68 @@ def test_importing_the_script_does_not_run_it():
 def test_the_report_version_matches_the_package():
     from codeguard.report_format import REPORT_DATA_VERSION
     assert seed.REPORT_DATA_VERSION == REPORT_DATA_VERSION
+
+
+def test_the_multilanguage_review_carries_every_kind_and_the_note_only_without_cves():
+    first, second = [r for r in ROWS if r["pr"] == 9005]
+    tools = {f["source_tool"] for f in first["findings"]}
+    assert {"security_generic", "gitleaks", "zizmor", "osv", "eval-hygiene"} <= tools
+    files = {f["file"] for f in first["findings"]}
+    for path in ("src/assistant.ts", "web/render.js", "client/http.go", "Dockerfile",
+                 "worker/src/main/java/jobs/Export.java", "api/Controllers/ReportsController.cs",
+                 "config/deploy.yaml", ".github/workflows/triage.yml", "web/package-lock.json"):
+        assert path in files, path
+    assert any(f["reason"].startswith("Secrets only (") for f in first["filtered"])
+    # Both dependency checks need OSV: unreachable means the note and no CVE.
+    assert first["dependency_check_unavailable"] is False
+    assert second["dependency_check_unavailable"] is True
+    assert not [f for f in second["findings"] if f["source_tool"] == "osv"]
+    # Unjudged scanners are counted the way pipeline/reviews.py counts them.
+    from codeguard.pipeline.reviews import classify_findings
+    from codeguard.tools.models import Finding
+    from codeguard.severity import Severity
+    real = classify_findings([Finding.create(file=f["file"], start_line=f["start_line"], end_line=f["end_line"],
+                                             severity=Severity[f["severity"]], source_tool=f["source_tool"],
+                                             rule_id=f["rule_id"], message=f["message"])
+                              for f in first["findings"]])
+    assert first["buckets"] == (real["verdict_confirmed"], real["generative"], real["deterministic"], real["unverified"])
+
+
+def test_the_python_era_rows_are_unchanged_by_the_new_buckets():
+    for r in ROWS:
+        if r["pr"] < 9005:
+            assert not {f["source_tool"] for f in r["findings"]} & seed._UNJUDGED_SCANNERS
+
+
+@pytest.mark.parametrize("unavailable", [False, True])
+def test_the_multilanguage_audit_is_real_report_data_and_labelled(unavailable):
+    md, data = seed.multilanguage_audit("ashrithaumd", "demo", osv_unavailable=unavailable)
+    assert seed.AUDIT_LABEL in md
+    assert data["version"] == seed.REPORT_DATA_VERSION
+    assert [g["language"] for g in data["not_covered"]] == ["Kotlin", "Ruby", "Swift"]
+    assert all(f["message"].startswith("SAMPLE.") for f in data["findings"] + data["repo_level"])
+    osv = [f for f in data["findings"] if f["source_tool"] == "osv"]
+    assert ("Dependency CVE check unavailable" in data["incomplete"]) is unavailable
+    assert bool(osv) is not unavailable
+
+
+@pytest.mark.parametrize("row", ROWS, ids=lambda r: f"pr{r['pr']}-{r['action']}")
+def test_the_summary_counts_match_the_rows(row):
+    # "Blocked: 10 high severity findings" over 9 High rows was reported as a
+    # dashboard bug; the sentence has to describe the list under it.
+    import re
+    for sev in ("critical", "high"):
+        said = re.search(rf"(\d+) {sev}\b", row["summary"])
+        if said:
+            assert int(said.group(1)) == sum(1 for f in row["findings"] if f["severity"] == sev.upper()), sev
+
+
+@pytest.mark.parametrize("unavailable", [False, True])
+def test_the_multilanguage_audit_cards_have_real_titles(unavailable):
+    _, data = seed.multilanguage_audit("ashrithaumd", "demo", osv_unavailable=unavailable)
+    for f in data["findings"] + data["repo_level"]:
+        assert f["title"] and not f["title"].startswith("SAMPLE"), f
+        # The builder falls back to the (labelled) message when there is no
+        # `what`; an explicit `what` carries no label.
+        if f.get("what") and f["what"] != f["message"]:
+            assert not f["what"].startswith("SAMPLE")

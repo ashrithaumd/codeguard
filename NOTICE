@@ -1,0 +1,57 @@
+CodeGuard
+=========
+
+Scanner rules shipped with CodeGuard come from two places. They are kept in
+separate directories and never mixed.
+
+Third-party rules (vendored, unmodified)
+----------------------------------------
+
+rules_vendor/gitlab-sast-rules/
+  GitLab sast-rules v2.10.1: JavaScript/TypeScript, Go, Java and C# rules.
+  MIT (c) GitLab Inc.; the Go rules derived from gosec are Apache-2.0.
+  Source, archive checksum, what was and was not taken, and the full license
+  text: rules_vendor/gitlab-sast-rules/NOTICE and LICENSE.
+
+CodeGuard's own rules
+---------------------
+
+rules/
+  The Python AI-aware ruleset (rules/llm-security.yaml).
+
+rules_lang/
+  Rules CodeGuard wrote for the non-Python languages, run alongside the
+  vendored pack. Not derived from it. Every rule id starts with
+  "codeguard-", and their findings are tagged "codeguard-rules", never
+  "gitlab-sast".
+  * go-insecure-skip-verify.yaml (codeguard-go-tls-insecure-skip-verify):
+    tls.Config with InsecureSkipVerify set to true, outside *_test.go files.
+  * go-math-rand-secret.yaml (codeguard-go-math-rand-secret):
+    math/rand used for a security-sensitive value (token, key, secret,
+    password, nonce, salt, session, uuid, invite/reset id).
+  * java-runtime-exec-injection.yaml (codeguard-java-runtime-exec-injection):
+    a request value or String parameter reaching Runtime.getRuntime().exec.
+  * dockerfile-security.yaml (codeguard-dockerfile-*): nine Dockerfile
+    checks -- a :latest base image, curl/wget piped into a shell, ADD from a
+    URL with no checksum, certificate or signature checks turned off, a
+    credential in ENV/ARG, a credential passed as a build argument,
+    chmod 777, an SSH private key copied in, and a final USER root.
+  * js-llm-security.yaml (codeguard-js-llm-*): the Python AI-aware ruleset
+    ported to the OpenAI and Anthropic JavaScript/TypeScript SDKs -- prompt
+    injection (including through a variable), model output into
+    eval/new Function/vm/a shell or a SQL query, a hardcoded API key, no
+    output cap, no client timeout, a "-latest" model alias, logging the
+    full response, and no system/user separation.
+
+Third-party scanners (run, not vendored)
+----------------------------------------
+
+zizmor 1.30.1 (MIT), https://github.com/zizmorcore/zizmor
+  GitHub Actions workflows. Installed in the image by hash
+  (Dockerfile, /opt/zizmor), run offline, never given a GitHub token.
+
+OSV-Scanner 2.6.0 (Apache-2.0), https://github.com/google/osv-scanner
+  Known vulnerabilities in npm/yarn/pnpm, Go, Maven/Gradle and NuGet
+  lockfiles. Installed in the image by hash (Dockerfile, /opt/osv-scanner).
+  Queries OSV.dev for vulnerability data; never resolves or builds
+  anything, and is given no credential.

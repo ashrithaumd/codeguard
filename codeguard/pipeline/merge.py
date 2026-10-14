@@ -26,6 +26,12 @@ _EQUIVALENT = (
     frozenset({"B608", "llm-output-to-sql"}),
     # A hardcoded credential.
     frozenset({"B105", "B106", "B107", "llm-hardcoded-api-key", "llm-langchain-hardcoded-api-key"}),
+    # Go: math/rand where crypto/rand is needed. Our rule (rules_lang/)
+    # and the vendored one both fire on an aliased import's Int63 & co.
+    frozenset({"codeguard-go-math-rand-secret", "go_crypto_rule-weakrandsource"}),
+    # Java: a request value or caller's string reaching Runtime.exec. They
+    # split the forms between them today; merged in case that ever changes.
+    frozenset({"codeguard-java-runtime-exec-injection", "java_inject_rule-CommandInjection"}),
 )
 
 

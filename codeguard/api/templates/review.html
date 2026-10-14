@@ -64,6 +64,17 @@
   </div>
 </div>
 {% endif %}
+{% if review.dependency_check_unavailable %}
+<div class="callout warn">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true">
+    <path d="M12 9v4M12 17h.01"></path><path d="M10.3 3.9L2.4 17.5A2 2 0 0 0 4.1 20.5h15.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"></path>
+  </svg>
+  <div>
+    <div class="title">Dependency CVE check unavailable</div>
+    <div class="body">OSV could not be reached, so the dependency versions this push changed were not checked for known vulnerabilities. No dependency finding below does not mean none exist.</div>
+  </div>
+</div>
+{% endif %}
 
 {% set unreviewed_count = findings|selectattr("unreviewed")|list|length %}
 {% if unreviewed_count %}

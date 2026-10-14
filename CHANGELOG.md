@@ -5,6 +5,401 @@ CodeGuard is marked **ACTION REQUIRED**.
 
 ## Unreleased
 
+### Multi-language support (feat/multi-language)
+
+#### Measured
+
+Final measurement 2026-10-14 at `234a699`, local stack, Claude Sonnet 4.5
+for every verdict agent. No model call failed in any run below; a run with
+a failed call would have been withheld.
+
+**Python is unchanged.** `evals/run_full_harness.py`, 3 runs, the same 37
+fixtures as the 2026-10-09 measurement:
+
+| Agent | Precision | Recall | Runs |
+| --- | --- | --- | --- |
+| AI-aware | 1.00 | 1.00 (24/24) | 1.00 ×3 |
+| Security | 1.00 | 1.00 (8/8) | 1.00 ×3 |
+| Quality | 0.75 | 1.00 | as before |
+| Test | 1.00 | 1.00 | as before |
+
+- The confirmed and dismissed rule sets are identical in all three runs,
+  identical to the runs earlier the same day (at `8971862`, before the fixes
+  below), and equal the ground truth for every AI-aware and security
+  fixture; only the wording of dismissal reasons varies. Credential
+  dismissals citing anything but the shape: 0.
+- **Severities match main.** With the model stubbed to confirm every rule at
+  one fixed severity (Low, then Critical), every Python finding on the 30
+  AI-aware and security fixtures and on a codeguard-playground audit (63
+  findings, 43 of them Python LLM rules) comes out byte-identical on main
+  and on this branch. The scanners' raw Python findings, severity included,
+  match the committed snapshot (`tests/tooling/test_scanner_snapshot.py`).
+- Cost per review (per-PR equivalent): $0.196, $0.186, $0.188.
+
+**New languages.** `evals/fixtures_lang/` (30 fixtures), the verdict call
+live, 3 runs (23 model calls each; $0.125, $0.121, $0.120 per run, about
+$0.005 a file):
+
+| Category | Fixtures | TP / FP / FN / TN (3 runs) | Precision | Recall |
+| --- | --- | --- | --- | --- |
+| JavaScript/TypeScript | 13 | 24 / 0 / 0 / 15 | 1.00 | 1.00 |
+| Go | 5 | 9 / 0 / 0 / 6 | 1.00 | 1.00 |
+| Java | 3 | 6 / 0 / 0 / 3 | 1.00 | 1.00 |
+| C# | 3 | 6 / 0 / 0 / 3 | 1.00 | 1.00 |
+| Dockerfile | 2 | 3 / 0 / 0 / 3 | 1.00 | 1.00 |
+| GitHub Actions | 2 | 3 / 0 / 0 / 3 | 1.00 | 1.00 |
+| Secrets (decided by shape, no model) | 2 | 6 / 0 / 0 / 0 | 1.00 | 1.00 |
+| Dependency CVEs | – | not measured here: no model, no fixture; see the live audits | – | – |
+
+The fixture counts include the near misses no rule raises, counted as
+correct negatives; the two credential fixtures (one JS, one Dockerfile) are
+counted under Secrets only. Before the fixes below (at `8971862`, 26
+fixtures, no C#) JavaScript/TypeScript precision was 0.88: the
+DOMPurify-sanitized near miss was confirmed in all three runs.
+
+**Live audits** (at `8971862`, before the fixes below), two small public
+repositories we did not write:
+
+| Repo (commit) | Findings | Dismissed | Not covered | Tokens in / out | Cost | Time |
+| --- | --- | --- | --- | --- | --- | --- |
+| openai/openai-quickstart-node (`6e6e034`) | 25: 1 Critical, 1 High, 10 Medium, 13 Low; 1 repo-level | 0 | 3 (YAML) | 6,740 / 5,235 | $0.1041 | 134s |
+| rakyll/hey (`5626f79`) | 22: 1 High, 18 Medium, 3 Low | 0 | 1 (YAML) | 2,952 / 1,092 | $0.0261 | 49s |
+
+- quickstart-node: 23 JS LLM findings (client with no timeout, no
+  max_tokens, a `-latest` model alias, a logged model response, no system
+  message), all confirmed; `missing-evals-js` once, repo-level; 2 npm
+  advisories on `form-data@4.0.1` from the lockfile.
+- hey: `InsecureSkipVerify: true` in the load tester's transport confirmed
+  High; 15 advisories on `golang.org/x/net` and `golang.org/x/text` from
+  `go.mod`; 4 zizmor findings on the CI workflow; `unsafe` in
+  `now_windows.go` reported Low by the GitLab rule.
+- After the fixes below, the YAML files are no longer listed, and the
+  quickstart-node findings of our own rules take their rules' severity
+  (Medium) instead of the Medium or Low the model picked per file.
+
+Total model spend on this branch: $1.93 ($0.996 for the first measurement,
+$0.936 for the final one).
+
+#### Fixes before merge
+
+- **C# is measured**: three fixtures, written as ordinary ASP.NET code (SQL
+  built by concatenation; a query value in a shell command line; System.Random
+  for retry jitter as the near miss). An ETag fingerprinted with MD5 was tried
+  first and is not raised: the vendored weak-hash rule only matches fully
+  qualified `System.Security.Cryptography.MD5` calls (a coverage gap, recorded,
+  not worked around).
+- **`dangerouslySetInnerHTML` fed by `DOMPurify.sanitize()` is not raised.** A
+  suppressor rule of ours (`rules_lang/suppress-*.yaml`) drops the vendored
+  finding on the lines it matches -- inline, through a `const`, or in
+  `createElement` -- and is never reported itself. The vendored pack stays
+  byte-exact. Raw input, a reassigned variable, and a sanitized value that is
+  computed but not the one rendered are still raised (new planted fixture).
+- **"Secrets only (Kotlin)"**: Gitleaks scans every non-Python text file, so a
+  file in a language no code scanner covers was never "not covered by any
+  scanner". Same lists and sections, accurate label; the PR summary line reads
+  "Secrets only, no code scanner: Kotlin 2, Ruby 1." Configuration YAML is "not
+  source code" and is no longer listed.
+- **The audit's first line** counts LLM-SDK files in JavaScript/TypeScript as
+  well as Python (the languages with AI-aware rules; test files excluded).
+- **CodeGuard's own rules keep their severity** in `security_generic`: the model
+  picked a severity per file, so one rule came back Medium in four files and Low
+  in seven of the same audit. Vendored findings and the Python agents keep the
+  model's severity.
+- The raw report keeps every list item on one line (GitLab's multi-line rule
+  descriptions broke the list), and OSV-Scanner findings put a period before
+  "Fixed in". Python's own OSV path is unchanged.
+- Why quality and test showed identical token counts in every run: not a cache
+  hit (the harness passes no cache, latencies differed, and ~850 input tokens a
+  call is under the prompt cache's minimum) -- the same input, temperature 0,
+  and short answers give the same output.
+
+#### Fixes from the UI check
+
+- **Skipped files are named by their real reason** in the audit's
+  incomplete list and the raw report: budget ceiling, too large to scan,
+  invalid YAML, lockfile too large, or the AI review cap. Both used to call
+  every skipped file "dropped by the audit budget ceiling". A Python audit
+  that only hits the budget reads byte for byte as before.
+- The "Files" tooltip no longer says non-Python files are skipped (wording
+  only).
+- Sample data: the multi-language sample audit's cards have real titles, and
+  PR 9005's summary says 9 high, matching its rows.
+
+#### Eval hygiene for JavaScript/TypeScript
+
+- **New repo-level finding** `eval-hygiene.missing-evals-js` (MEDIUM, no
+  model): JS/TS code that imports an LLM SDK (`openai`,
+  `@anthropic-ai/sdk`, the Vercel AI SDK, LangChain.js) in a repository with
+  no `evals/` directory, no promptfoo or evalite files, and no JS/TS test
+  that imports an LLM SDK and asserts. The import statement is matched, not
+  the word, so a comment or `./openai-icon` is not a call.
+- **Audits** check the whole repository. **PRs** check only when they change
+  LLM-calling JS/TS, and read the evidence from the base branch, as
+  Python's check does: one tree listing and at most 20 test files.
+- **Python is unchanged**: `review_eval_hygiene` never sees a JS/TS file,
+  and its three checks and messages are as they were. Python-only PRs make
+  no extra GitHub calls. Off with `enable_ai_aware: false`, like Python's.
+
+#### LLM-security rules for JavaScript/TypeScript
+
+- **Nine of our own Semgrep rules** (`rules_lang/js-llm-security.yaml`,
+  NOTICE) for the OpenAI and Anthropic JS/TS SDKs, ported from the Python
+  AI-aware ruleset with the same OWASP mapping and scoping: prompt
+  injection (taint, so a prompt built one line above the call is followed
+  through the variable), model output into `eval` / `new Function` / `vm` /
+  a shell or into SQL query text (a bound parameter is fine), a hardcoded
+  API key, no output cap (OpenAI only: Anthropic requires `max_tokens`), no
+  client timeout, a `-latest` alias, logging the full response, and no
+  system/user separation. A call whose options arrive by spread is never
+  flagged for what it might contain.
+- **Same generic path as the other own rules** (tool `codeguard-rules`):
+  MEDIUM and up are judged by `security_generic`, whose prompt gains one
+  paragraph naming these rules as in scope. The hardcoded-key rule is
+  decided by the value's shape and its line is masked, never sent.
+  **Python is unchanged**: its AI-aware agent, prompts and rules are
+  untouched, and Python files never reach these rules.
+- `semgrep --test` cases for every rule (TypeScript and CommonJS), and 8
+  real-code eval fixtures (5 planted, 3 near misses), 26 in all; the free
+  deterministic eval passes.
+
+#### Dependency CVEs for npm/yarn/pnpm, Go, Maven/Gradle and NuGet
+
+- **OSV-Scanner 2.6.0** (Apache-2.0, released 2026-09-14; 2.7.0 was a day
+  old), installed by hash in its own location (`/opt/osv-scanner`,
+  `OSV_SCANNER_BIN`). It reads `package-lock.json`, `yarn.lock`,
+  `pnpm-lock.yaml`, `go.mod`, `pom.xml`, `gradle.lockfile`,
+  `buildscript-gradle.lockfile` and `packages.lock.json`, never under
+  `node_modules/`, `vendor/` or `third_party/`. Image: about +55 MB.
+- **PR reviews** report only vulnerabilities that are new at head: each
+  changed lockfile is fetched at head and at the base branch (raw, so a
+  lockfile over 1 MB is read) and a vulnerability the base copy already had,
+  under any of its aliases, is dropped. A new lockfile is new throughout.
+  **Audits** report every vulnerability in every lockfile. Findings are
+  listed with the existing dependency findings (`osv`), at the package's
+  line in the lockfile, with the fixed version for that package.
+- **Python is unchanged**: its check still reads the pins a PR adds to
+  `requirements.txt` / `pyproject.toml`, and a Python-only repository never
+  runs OSV-Scanner. Python lockfiles are in docs/backlog.md.
+- **Locked down**: every lockfile is passed explicitly (`-L`), so nothing
+  else is scanned; `--no-resolve`, so a `pom.xml` is never resolved against
+  the repositories it names; `--no-call-analysis=all`, so nothing is built;
+  a short environment allowlist, so no credential reaches it.
+- **Fails soft to the note**: OSV unreachable, the binary missing, a
+  timeout, or on a PR a lockfile that cannot be fetched or is over 20 MB,
+  or more than 20 changed lockfiles, is "Dependency CVE check unavailable",
+  never a clean result. An audit lists a lockfile over 20 MB in Skipped
+  instead.
+
+#### "Dependency CVE check unavailable"
+
+**ACTION REQUIRED (operators):** migration `017_review_dependency_check.sql`
+adds `reviews.dependency_check_unavailable` (default `FALSE`, so every
+existing review is unchanged); it applies itself on startup.
+
+- When OSV cannot be reached, the audit page, the review page and the PR
+  summary say "Dependency CVE check unavailable", so an empty dependency
+  result never reads as a clean one. The findings are what they always were
+  (none); only the note is new, and it shows only on reviews recorded after
+  this change.
+- `check_dependency_updates` (the MCP server's caller) returns exactly what it
+  did; `check_dependency_updates_status` also says whether the check ran.
+
+#### Dockerfiles and GitHub Actions workflows
+
+- **Covered now**, through the same generic path as JS/TS, Go, Java and C#:
+  scanned, triaged, capped, and MEDIUM-and-up findings confirmed or
+  dismissed by `security_generic` (LOW passes through with no call). Other
+  YAML is still listed as not covered by any scanner; its secrets are
+  Gitleaks'.
+- **Dockerfiles**: nine of our own Semgrep rules
+  (`rules_lang/dockerfile-security.yaml`, NOTICE), run in the same
+  `semgrep-non-python` pass: a `:latest` base image, curl/wget piped into a
+  shell, `ADD` from a URL with no `--checksum`, certificate or signature
+  checks turned off, a credential in `ENV`/`ARG`, a credential passed as a
+  build argument, `chmod 777`, an SSH private key copied in, a final
+  `USER root`.
+- **A credential in `ENV`/`ARG` never reaches the model**: like Java's
+  hardcoded-password rules it is decided by the value's shape (quoted or
+  not, `NAME=value` or `NAME value`); a placeholder is counted, not
+  reported; its line is masked if the file goes to the model for another
+  finding.
+- **GitHub Actions**: zizmor **1.30.1** (MIT), installed by hash in its own
+  environment (`/opt/zizmor`, `ZIZMOR_BIN`), always `--offline`, no
+  config from the repository, no GitHub token (stripped from its
+  environment): template injection, dangerous triggers, unpinned actions,
+  excessive permissions, persisted checkout credentials and the rest of its
+  offline audits. A malformed workflow is listed with the files not
+  reviewed as "not scanned (invalid YAML)" (zizmor's own warning does not
+  name the file, so a YAML parse finds it first) and the others are still
+  audited; a zizmor failure says "zizmor did not run".
+- `security_generic`'s prompt names the two new file kinds and scanners.
+  Python's prompts are unchanged (fingerprints pinned).
+- The PR cap reason reads "not scanned (cap: N non-Python files per PR)".
+- Eval: Dockerfile and workflow fixtures (planted and near miss) in
+  `evals/fixtures_lang/`; smoke: zizmor pinned and finding template
+  injection in a container with no network.
+
+#### JavaScript/TypeScript, Go, Java and C#: scanners find, the AI confirms or dismisses
+
+- **Rules**: GitLab sast-rules v2.10.1, vendored unmodified (MIT; the Go
+  rules gosec-derived, Apache-2.0), plus our own `rules_lang/` (labelled
+  apart in `NOTICE`). First own rule: `codeguard-go-tls-insecure-skip-verify`
+  (`tls.Config{InsecureSkipVerify: true}`; `false` and `*_test.go` are left
+  alone), since no vendored rule covers certificate verification.
+- **A separate Semgrep run** over those languages only, same pinned engine,
+  offline. Its findings carry `source_tool` "gitlab-sast" (vendored rules)
+  or "codeguard-rules" (ours, every id prefixed `codeguard-`), so a finding
+  says whose rule raised it; both take the same generic review path, which
+  routes by file. The Python agents can never claim them, and the Python run's config and output are
+  untouched (scanner snapshot identical; Python prompt fingerprints pinned in
+  a test).
+- **Verdicts**: a new `security_generic` agent, one call per file, whole
+  file. Same contract as Python: it can only confirm or dismiss what a
+  scanner raised. Before the content goes out, secret spans Gitleaks found
+  are masked (positions only; the value is never held). LOW findings are
+  reported without a call. Java's hardcoded-password rules are decided by
+  the credential's shape, never by the model.
+- **Caps**, each said where it applies: 30 such files scanned per PR, 10
+  sent to the model per PR and 40 per audit, 30 findings per file. Anything
+  over a cap is reported unreviewed and its file listed with the reason.
+- **No UI change**: findings appear in the existing sections; the audit's
+  Technical details lists the `security_generic` model only when such files
+  were present. A repository with none of the covered code is still refused
+  before any model call, now naming the covered languages and saying others
+  are listed as not covered.
+- **Eval**: `evals/fixtures_lang/` (13 files: planted bugs and near misses
+  per language, written as real code is written, never reshaped to fit a
+  rule) with `expected.json`; `evals/run_lang_eval.py` checks the scanners
+  and triage for free and, with `--with-model`, the verdicts. A near miss
+  no rule raises is recorded as `not_raised` (nothing reaches the model).
+  `tests/tooling/test_lang_eval.py` runs the free half.
+- Own rule `codeguard-java-runtime-exec-injection`: a request value or
+  String parameter reaching `Runtime.getRuntime().exec(...)`. The vendored
+  CommandInjection rule sinks only on a typed `Runtime` variable and missed
+  this common one-line form; the variable form stays the vendored rule's,
+  so the two never fire on the same line.
+- **Same bug, two rules, one finding**: each own rule and the vendored rule
+  it overlaps are an equivalence pair in the existing merge (the one that
+  joins B307 and `llm-output-to-dangerous-sink`), so an overlap is reported
+  once, listing both rule ids. Python's pairs are unchanged.
+- **Trust counts**: a finding `security_generic` confirmed counts as
+  verdict-confirmed on the dashboard and in the PR summary, like `security`
+  and `ai_aware`; one it never saw keeps its scanner's tag and stays
+  unverified. Python's counts are unchanged (pinned in a test).
+- **Credential lines never reach the model**: a line a credential rule
+  flagged (e.g. `getConnection(url, "admin", "…")`, whose positional literal
+  no redaction pattern can see) is masked whole before the file goes to
+  `security_generic` for any other finding. One helper builds that content
+  for both the audit and the PR path. Found in review of this branch; no
+  model call had been made with such content.
+- **A non-Python scanner that did not run says so**: the second Semgrep
+  pass is named `semgrep-non-python`; if it fails, the audit is marked
+  incomplete ("semgrep-non-python did not run") instead of listing a
+  meta-finding on `<pr>`, and the PR check summary shows the same caution
+  block Python's scanners get. A Gitleaks failure on a PR, previously only
+  logged, now shows there too.
+- `scripts/smoke_image.sh`: vendored and own rules fire offline in the
+  image.
+- Own rule `codeguard-go-math-rand-secret`: `math/rand` used for a token,
+  key, secret, password, nonce, salt, session, uuid or invite/reset id
+  (by the variable, field or function name), with a plain or aliased
+  import. The vendored `math/rand` rule matches only an aliased import and
+  skips `Read` and `Intn`. Jitter, shuffling, picking and `crypto/rand` are
+  left alone.
+
+#### Secrets in every non-Python file (Gitleaks)
+
+- Gitleaks **8.30.1** (MIT) in the image, verified against the release's
+  sha256 at build; offline. Default rules plus `codeguard/tools/gitleaks.toml`
+  (no `.git/`, no `*.py`).
+- **The value never leaves memory.** Gitleaks runs with `--redact` (checked:
+  no value in any of its 18 output fields). The runner locates the value in
+  the content it already holds, by aligning the redacted Match against the
+  line (Gitleaks' columns are off by one in some contexts, so it takes the
+  token run, never a raw slice), classifies its shape, computes a keyed id,
+  and drops it. Kept: rule, file, line, shape hint ("40-char github-style
+  token, high-entropy"), id.
+- **Keyed id, not a plain hash**: HMAC-SHA256 truncated to 12 hex, keyed by
+  `SECRET_HASH_KEY` or a key derived from the Anthropic key; no key, no id.
+  An unkeyed hash of a weak value can be reversed by guessing.
+- **No model, ever.** The shape decides: placeholder-like is not reported,
+  only counted ("2 placeholder-shaped values" in the audit's existing
+  Skipped section); anything else is a HIGH finding. A "this is fake"
+  comment changes nothing. Gitleaks findings are never routed to a verdict
+  agent or the fix agent.
+- **Python unchanged**: `.py` files are not scanned here (their own rules
+  cover credentials); the scanner snapshot is identical.
+- PR reviews scan sparse added-lines files built from the patches GitHub
+  already sent (no extra fetch), so only secrets the PR adds are reported, at
+  their lines. Audits scan non-Python text files read with the usual
+  hardening (no symlinks, nothing outside the clone, regular files, 2 MB
+  cap, binary skipped). Vendored, generated, lockfiles and ignored_paths are
+  left out; docs are scanned. A Gitleaks failure makes the audit incomplete.
+- `scripts/smoke_image.sh`: pinned version, offline, one finding, value
+  absent from the result.
+
+#### "Files not reviewed" says which language, per file
+
+- `codeguard/languages.py`: one map from file to language and from
+  language to coverage. Only Python is covered so far; each later item adds
+  its languages. Ruby and PHP are deliberately not covered and are listed
+  like any other.
+- PR reviews: a changed file in an uncovered language is recorded as "Not
+  covered by any scanner (Go)" instead of "non-Python (v1 scope is
+  Python-only)"; a file that is not source code says "not source code". The
+  review page already groups "Files not reviewed" by reason, so each
+  language is its own group inside that section. Stored reviews keep the
+  reason they were recorded with. Python files are handled exactly as
+  before.
+- PR summary: one line, "Not covered by any scanner: Go 3, Kotlin 1.", only
+  when there is something to say.
+- Audits: a path-only walk (no file opened; .git, symlinks, lockfiles,
+  generated, docs, vendored and ignored_paths left out) records
+  `not_covered` in the report. The audit page lists it inside the existing
+  Skipped section ("Skipped (83 test asserts, 3 files not covered)"), ten
+  paths per language and "+N more"; the markdown report likewise. Audits
+  stored before have no such field and render as before.
+
+#### Scanner engine pinned and kept offline
+
+- Semgrep **1.45.0 → 1.95.0**, the newest release that still emits the
+  data-flow traces the flow note reads; later ones drop them (recorded as
+  blocked past 1.95 in `docs/backlog.md`). 1.45.0 ran five vendored Java
+  rules not at all (WeakMessageDigest, OgnlInjection, CipherECBMode,
+  CipherIntegrity, WeakTLSProtocol-SSLContext; 463 vs 524 findings on
+  GitLab's samples). Verified before the switch: the Python scanner
+  snapshot identical (49/49), the flow note byte-identical on
+  `regress_01` and on the codeguard-playground injection finding
+  ("Assigned at line 44, sent to the model at line 49."), 27/27 rule tests.
+- **Semgrep in its own environment** (`/opt/semgrep`, with
+  `setuptools==80.10.2`, which it needs but does not declare): its
+  `opentelemetry-api~=1.25` cannot coexist with `mcp`'s `>=1.28`, so it is
+  no longer an app dependency and the app's packages are unchanged. The
+  runner calls `SEMGREP_BIN` explicitly (the image sets it), with that
+  directory first on PATH for Semgrep's own `pysemgrep`; outside Docker it
+  falls back to PATH, and the Quickstart adds `pipx install semgrep==1.95.0`.
+- A Semgrep other than 1.95.0 does not stop anything; the audit's
+  incompleteness warning and the PR check summary's caution block say
+  "Semgrep version mismatch (found X, expected 1.95.0)". Checked once per
+  process.
+- No network from Semgrep at runtime. `--metrics=off` does not stop its
+  new-version check, which a plain scan makes (measured: 4 connection
+  attempts to semgrep.dev). `SEMGREP_ENABLE_VERSION_CHECK=0` and
+  `SEMGREP_SEND_METRICS=off` are set in the image and by the runner itself.
+  `scripts/smoke_image.sh` proves it with the network removed and a guard
+  in the Semgrep process: the guard must load, must catch the version check
+  when it is enabled (control), and must see zero attempts through our
+  runner, with and without the image's environment.
+- `evals/scanner_snapshot.py`: the free gate. The scanners alone, no model,
+  on every Python fixture; the suite asserts the result equals the
+  committed `evals/scanner_snapshot_python.json` (49 raw findings).
+- `rules_vendor/gitlab-sast-rules/`: GitLab sast-rules v2.10.1 rule YAML
+  for JavaScript/TypeScript, Go, Java and C# (115 files, MIT; the gosec-
+  derived Go rules Apache-2.0), with LICENSE, NOTICE, README and a SHA-256
+  manifest checked by the suite. Test samples (LGPL-3.0) are not vendored.
+  Not loaded yet; the Python scan path is unchanged.
+
+
 ### Repository controls (feat/repo-controls)
 
 #### Local webhook relay

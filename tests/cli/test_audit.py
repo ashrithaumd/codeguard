@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+from codeguard.tools.osv_runner import DependencyCheck
 from codeguard.cli import (
     MAX_CHUNK_TOKENS,
     MIN_CHUNK_TOKENS,
@@ -202,7 +203,7 @@ def test_run_audit_end_to_end_orchestration(tmp_path):
         return [bandit_finding, ruff_finding, semgrep_finding]
 
     with patch("codeguard.cli.run_tools_on_files", side_effect=_fake_run_tools), \
-         patch("codeguard.cli.check_dependency_updates", return_value=[]), \
+         patch("codeguard.cli.check_dependency_updates_status", return_value=DependencyCheck([])), \
          patch("codeguard.cli.review_eval_hygiene", return_value=[]), \
          patch("codeguard.cli.review_security", return_value=_mock_verdict_result([bandit_finding])) as mock_sec, \
          patch("codeguard.cli.review_ai_aware", return_value=_mock_verdict_result([semgrep_finding])) as mock_aa:
@@ -231,7 +232,7 @@ def test_run_audit_skips_ai_aware_when_disabled(tmp_path):
         return [semgrep_finding]
 
     with patch("codeguard.cli.run_tools_on_files", side_effect=_fake_run_tools), \
-         patch("codeguard.cli.check_dependency_updates", return_value=[]), \
+         patch("codeguard.cli.check_dependency_updates_status", return_value=DependencyCheck([])), \
          patch("codeguard.cli.review_ai_aware") as mock_aa:
         exit_code, error = run_audit(str(tmp_path), str(output), post_issue_flag=False)
 

@@ -20,6 +20,7 @@ further work on a job it no longer owns.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass, field
 import logging
 import shutil
 import signal
@@ -40,12 +41,15 @@ from codeguard.api.audits import (
 from codeguard.api.repo_settings import pr_reviews_enabled
 from codeguard.cli import AuditOutcome, AuditStats, run_audit
 from codeguard.config import RepoConfig, Settings, get_settings, verify_required_settings
+from codeguard.languages import SECRETS_ONLY_PREFIX
+from codeguard.diff.models import FilteredFile
+from codeguard.diff.parse import hash_content, parse_hunk_ranges
 from codeguard.line_refs import strip_line_refs
 from codeguard.diff.filters import split_test_asserts
 from codeguard.diff.ingest import ingest_pr_diff
 from codeguard.github.auth import get_installation_token
 from codeguard.github.base_tree import fetch_base_tree_python_files
-from codeguard.github.diff import get_file_content
+from codeguard.github.diff import get_file_content, get_file_raw, get_repo_tree
 from codeguard.github.check_summary import render_check_summary
 from codeguard.github.checks import complete_check_run, start_check_run
 from codeguard.github.errors import extract_retry_after
@@ -54,19 +58,31 @@ from codeguard.github.outbound import escape_for_github, escape_one_line
 from codeguard.github.repo_config import load_repo_config
 from codeguard.github.reviews import fetch_review_comments, post_review
 from codeguard.github.tarball import TarballTooLarge, fetch_python_files
+from codeguard.tools.gitleaks_runner import SecretScan, scan_secrets
+from codeguard.tools.line_filter import filter_findings_to_changed_lines
+from codeguard.tools.base import unavailable_finding
+from codeguard.tools.generic import run_generic_scanners, unscannable
 from codeguard.pipeline.feedback import FINGERPRINT_MARKER_RE, fetch_suppressed_fingerprints, fingerprint_marker, record_posted_finding_comments
 from codeguard.pipeline.graph import review_graph
 from codeguard.pipeline.hunk_cache import fetch_cache_hits, write_cache_records
 from codeguard.pipeline.impact import ImpactReport, analyze
 from codeguard.pipeline.merge import rule_label, with_flow_note
-from codeguard.pipeline.nodes import _exclude_suppressed, compute_cache_keys
+from codeguard.pipeline.generic_review import content_for_model, triage
+from codeguard.pipeline.nodes import _exclude_suppressed, compute_cache_keys, verdict_cache_agent
 from codeguard.pipeline.reviews import record_review
 from codeguard.pipeline.state import ReviewState
 from codeguard.queue.db import bootstrap_schema, create_pool
 from codeguard.queue.models import Job
 from codeguard.queue.queue import ack, claim_batch, extend_lease, nack, release
-from codeguard.tools.osv_runner import check_dependency_updates
+from codeguard.tools.osv_runner import (
+    DEPENDENCY_CHECK_UNAVAILABLE,
+    DependencyCheck,
+    check_dependency_updates_status,
+)
+from codeguard.tools.osv_scanner_runner import MAX_LOCKFILE_BYTES, combine, scan_pr_lockfiles
+from codeguard.pipeline.eval_hygiene import calls_llm_js, is_js_test_path, review_eval_hygiene_js
 from codeguard.tools.run_all import run_tools_on_files
+from codeguard.tools.semgrep_runner import version_warning as semgrep_version_warning
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("codeguard.worker")
@@ -324,7 +340,167 @@ def _check_run_conclusion(all_findings, gate_threshold) -> tuple[str, str, list]
     return "failure", f"{len(blocking)} finding(s) at or above {gate_threshold.name}", blocking
 
 
+async def prepare_secrets(files: dict[str, str], repo_config: RepoConfig) -> SecretScan:
+    """Gitleaks over the PR's sparse non-Python files. Its findings go
+    straight into the review's results: never to a verdict agent, never to
+    the fix agent. A failure is `unavailable`, never an exception."""
+    return await asyncio.to_thread(scan_secrets, files, repo_config)
+
+
+@dataclass
+class GenericPrep:
+    """What prepare_generic adds to a review: state for the security_generic
+    agent, findings that go straight into the results (LOW, credential
+    shape verdicts, over-the-cap ones marked unreviewed), files named with a
+    cap reason, and the cache keys to prefetch."""
+    state: dict = field(default_factory=dict)
+    findings: list = field(default_factory=list)
+    capped: list = field(default_factory=list)
+    cache_keys: list = field(default_factory=list)
+    placeholders: int = 0
+    unavailable: list = field(default_factory=list)
+
+
+async def prepare_generic(diff_result, secrets: SecretScan, settings: Settings) -> GenericPrep:
+    """The changed JS/TS, Go, Java and C# files: the vendored rules, findings
+    on changed lines only, the triage (pipeline/generic_review.py), and the
+    content for the model with every secrets-scan span masked. Empty for a
+    Python-only PR, so its review is exactly what it was."""
+    prep = GenericPrep()
+    contents = diff_result.generic_contents
+    if not contents:
+        return prep
+    raw = await asyncio.to_thread(run_generic_scanners, contents)
+    ranges = {p: parse_hunk_ranges(patch) for p, patch in diff_result.generic_patches.items()}
+    on_changed = filter_findings_to_changed_lines(raw, ranges)
+    t = triage(on_changed, contents, max_files=settings.generic_ai_files_per_pr,
+               max_findings_per_file=settings.generic_ai_findings_per_file)
+    masked = {p: content_for_model(p, contents[p], secrets.spans.get(p, []), t) for p in t.to_model}
+    prep.state = {"generic_scanned": sorted(contents)}
+    if t.to_model:
+        prep.state.update(generic_files=masked, generic_findings=t.to_model)
+    prep.findings = t.passthrough + t.unreviewed
+    prep.capped = unscannable(contents) + t.capped_files
+    prep.placeholders = t.placeholders
+    prep.unavailable = t.unavailable
+    prep.cache_keys = [(p, hash_content(c), verdict_cache_agent("security_generic")) for p, c in masked.items()]
+    return prep
+
+
+def _summary_tool_findings(tool_findings, secrets: SecretScan, generic: GenericPrep) -> list:
+    """The raw tool findings the check summary reads "did not run" from
+    (check_summary.unavailable_tools), plus one meta-finding for each
+    non-Python scanner that failed: Gitleaks and the second Semgrep pass
+    report failure outside tool_findings, and would otherwise say nothing."""
+    extra = [unavailable_finding(name, "did not run") for name in generic.unavailable]
+    if secrets.unavailable:
+        extra.append(unavailable_finding("gitleaks", "did not run"))
+    return list(tool_findings) + extra
+
+
+def _summary_warnings(dependency_check: DependencyCheck) -> list[str]:
+    """The PR summary's caution lines for a check that ran incompletely:
+    a Semgrep version mismatch, and OSV that could not be reached."""
+    warnings = [w for w in (semgrep_version_warning(),) if w]
+    if dependency_check.unavailable:
+        warnings.append(DEPENDENCY_CHECK_UNAVAILABLE)
+    return warnings
+
+
+def coverage_gaps(files_filtered) -> dict[str, int]:
+    """Filtered files no scanner covers, counted by language, from the
+    reason diff/filters.py recorded ("Secrets only (Kotlin)")."""
+    prefix = f"{SECRETS_ONLY_PREFIX} ("
+    counts: dict[str, int] = {}
+    for f in files_filtered:
+        if f.reason.startswith(prefix) and f.reason.endswith(")"):
+            language = f.reason[len(prefix):-1]
+            counts[language] = counts.get(language, 0) + 1
+    return counts
+
+
 _IMPACT_BASE_FETCH_CONCURRENCY = 5
+
+
+# Changed lockfiles checked per PR; beyond this the rest are not, and the
+# check says it is incomplete ("Dependency CVE check unavailable").
+MAX_LOCKFILES_PER_PR = 20
+_LOCKFILE_FETCH_CONCURRENCY = 5
+
+
+async def prepare_lockfile_check(
+    token: str, owner: str, repo: str, head_sha: str, base_ref: str, lockfile_paths: dict[str, str],
+) -> DependencyCheck:
+    """OSV-Scanner over the PR's changed npm/yarn/pnpm, Go, Maven/Gradle and
+    NuGet lockfiles: each fetched raw at head and at the base branch (as
+    prepare_impact compares against it), and only what is new at head
+    reported. A lockfile the base does not have (404) is new. A fetch that
+    fails, at either end, is "unavailable", never a clean result: without
+    the base copy every old vulnerability would read as new. Nothing is
+    fetched for a PR that changes no lockfile."""
+    if not lockfile_paths:
+        return DependencyCheck([])
+    chosen = dict(sorted(lockfile_paths.items())[:MAX_LOCKFILES_PER_PR])
+    semaphore = asyncio.Semaphore(_LOCKFILE_FETCH_CONCURRENCY)
+
+    async def _fetch(path: str, ref: str) -> str | None:
+        async with semaphore:
+            return await asyncio.to_thread(get_file_raw, token, owner, repo, path, ref, MAX_LOCKFILE_BYTES)
+
+    try:
+        heads = await asyncio.gather(*(_fetch(p, head_sha) for p in chosen))
+        bases = await asyncio.gather(*(_fetch(b, base_ref) for b in chosen.values()))
+    except Exception:
+        logger.warning("lockfile fetch failed for %s/%s, dependency check unavailable", owner, repo, exc_info=True)
+        return DependencyCheck([], unavailable=True)
+    head = {p: c for p, c in zip(chosen, heads) if c is not None}
+    base = {b: c for b, c in zip(chosen.values(), bases) if c is not None}
+    check = await asyncio.to_thread(scan_pr_lockfiles, head, base, base_paths=chosen)
+    if len(lockfile_paths) > len(chosen):
+        return check._replace(unavailable=True)
+    return check
+
+
+async def _no_findings() -> list:
+    return []
+
+
+# Base-branch JS/TS test files read for evidence of output-asserting tests.
+MAX_JS_EVIDENCE_FILES = 20
+_JS_SOURCE_EXTENSIONS = (".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts")
+_JS_SKIP_DIRS = ("node_modules/", "vendor/", "dist/", "build/")
+
+
+async def prepare_eval_hygiene_js(
+    token: str, owner: str, repo: str, base_ref: str, changed: dict[str, str],
+) -> list:
+    """JS/TS eval hygiene for a PR (pipeline/eval_hygiene.review_eval_hygiene_js).
+    Only a PR that changes LLM-calling JS/TS asks anything of GitHub: one
+    tree listing of the BASE branch (evals/, promptfoo, evalite) and at most
+    MAX_JS_EVIDENCE_FILES of its test files -- the repository's own
+    practice, never what the PR head says it is, as for Python. A soft
+    signal: any failure is no finding."""
+    sources = {p: c for p, c in changed.items()
+               if p.lower().endswith(_JS_SOURCE_EXTENSIONS) and not is_js_test_path(p) and calls_llm_js(c)}
+    if not sources:
+        return []
+    try:
+        tree = await asyncio.to_thread(get_repo_tree, token, owner, repo, base_ref)
+        paths = [e["path"] for e in tree if e.get("type", "blob") == "blob"
+                 and not any(f"/{d}" in f"/{e['path']}" for d in _JS_SKIP_DIRS)]
+        tests = [p for p in paths if p.lower().endswith(_JS_SOURCE_EXTENSIONS) and is_js_test_path(p)]
+        semaphore = asyncio.Semaphore(_LOCKFILE_FETCH_CONCURRENCY)
+
+        async def _fetch(path: str) -> tuple[str, str | None]:
+            async with semaphore:
+                return path, await asyncio.to_thread(get_file_content, token, owner, repo, path, base_ref)
+
+        evidence = {p: c for p, c in await asyncio.gather(*(_fetch(p) for p in tests[:MAX_JS_EVIDENCE_FILES]))
+                    if c is not None}
+    except Exception:
+        logger.warning("JS/TS eval hygiene skipped for %s/%s", owner, repo, exc_info=True)
+        return []
+    return review_eval_hygiene_js(sources, evidence, paths)
 
 
 def impact_enabled(settings: Settings, repo_config: RepoConfig) -> bool:
@@ -459,8 +635,17 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
     # tell an added/bumped pin from one that was already there, not just
     # file content — see osv_runner.py's own docstring.
     osv_task = asyncio.ensure_future(
-        asyncio.to_thread(check_dependency_updates, diff_result.dependency_contents, diff_result.dependency_patches)
+        asyncio.to_thread(check_dependency_updates_status, diff_result.dependency_contents, diff_result.dependency_patches)
     )
+    # OSV-Scanner over changed npm/yarn/pnpm, Go, Maven/Gradle and NuGet
+    # lockfiles, base vs head; nothing for a PR that changes none.
+    lockfile_task = asyncio.ensure_future(
+        prepare_lockfile_check(token, owner, repo, head_sha, base_ref, diff_result.lockfile_paths))
+    # JS/TS eval hygiene, beside Python's (the graph's eval-hygiene node);
+    # nothing for a PR that changes no LLM-calling JS/TS.
+    js_hygiene_task = asyncio.ensure_future(
+        prepare_eval_hygiene_js(token, owner, repo, base_ref, diff_result.generic_contents)
+        if repo_config.enable_ai_aware else _no_findings())
     # Impact analysis: off unless both switches are on (impact_enabled).
     # Concurrent with the tool run, like the base-tree fetch below.
     impact_task = (
@@ -468,14 +653,23 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
             token, owner, repo, head_sha, base_ref, diff_result.file_contents, diff_result.patches, settings))
         if impact_enabled(settings, repo_config) else None
     )
+    secrets_task = asyncio.ensure_future(prepare_secrets(diff_result.secret_scan_files, repo_config))
     if repo_config.enable_ai_aware:
         base_tree_task = asyncio.ensure_future(fetch_base_tree_python_files(token, owner, repo, base_ref))
     else:
         base_tree_task = None
     tool_findings = await tool_findings_task
     tool_findings, skipped_test_asserts = _tool_findings_for_review(pr_number, tool_findings)
-    osv_findings = await osv_task
+    dependency_check = combine(await osv_task, await lockfile_task)
+    osv_findings = dependency_check.findings
+    js_hygiene_findings = await js_hygiene_task
     base_tree_files = await base_tree_task if base_tree_task is not None else {}
+    secrets = await secrets_task
+    if secrets.unavailable:
+        logger.warning("pr=%s: secrets scan did not run", pr_number)
+    generic = await prepare_generic(diff_result, secrets, settings)
+    if generic.capped:
+        diff_result.files_filtered.extend(FilteredFile(path=p, reason=r) for p, r in generic.capped)
     impact_report, impact_notes = await impact_task if impact_task is not None else (None, [])
     _log_findings(pr_number, tool_findings)
     if osv_findings:
@@ -487,6 +681,7 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
     # so this is exactly what's needed, not a broader guess. A hit means
     # the corresponding node skips its LLM call entirely.
     cache_keys = compute_cache_keys(diff_result.file_contents, diff_result.patches, tool_findings, repo_config.enable_ai_aware)
+    cache_keys += generic.cache_keys
     hunk_cache_hits = await fetch_cache_hits(pool, owner, repo, cache_keys)
     logger.info("hunk cache pr=%s: %d key(s) checked, %d hit", pr_number, len(cache_keys), len(hunk_cache_hits))
 
@@ -499,15 +694,23 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
     initial_state: ReviewState = {
         "owner": owner, "repo": repo, "pr_number": pr_number, "head_sha": head_sha,
         "installation_id": installation_id, "repo_config": repo_config,
-        "files": diff_result.file_contents, "patches": diff_result.patches,
+        "files": diff_result.file_contents,
+        # Python's patches plus the JS/TS, Go, Java and C# ones: only the
+        # summary reads the latter (inline anchoring); every Python route
+        # iterates state["files"] and looks patches up by its own paths.
+        "patches": {**diff_result.patches, **diff_result.generic_patches},
         "budget_exceeded": diff_result.budget_exceeded,
         "tool_findings": tool_findings, "base_tree_files": base_tree_files,
         "skipped_test_asserts": skipped_test_asserts,
         "hunk_cache_hits": hunk_cache_hits, "cache_writes": [], "verdict_call_failures": [],
         "suppressed_fingerprints": suppressed_fingerprints,
         "impact_report": impact_report, "impact_callers": [], "impact_notes": impact_notes,
+        "coverage_gaps": coverage_gaps(diff_result.files_filtered),
+        **generic.state,
         "touches_ai_code": False,
-        "findings": [], "repo_level_findings": osv_findings, "dismissed_findings": [], "fix_suggestions": [],
+        # Secrets, and the vendored rules' findings that need no verdict, go
+        # straight into the results (no agent, no model).
+        "findings": list(secrets.findings) + generic.findings, "repo_level_findings": osv_findings + js_hygiene_findings, "dismissed_findings": [], "fix_suggestions": [],
         "should_fix": False, "summary": "", "inline_findings": [],
         "tokens_in": 0, "tokens_out": 0, "estimated_cost_usd": 0.0, "node_latencies": [],
     }
@@ -561,7 +764,8 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
         conclusion, title, blocking = _check_run_conclusion(all_findings, repo_config.gate_threshold)
         summary = render_check_summary(
             findings=all_findings,
-            tool_findings=tool_findings,
+            tool_findings=_summary_tool_findings(tool_findings, secrets, generic),
+            tool_warnings=_summary_warnings(dependency_check),
             blocking=blocking,
             gate_threshold=repo_config.gate_threshold,
             files_seen=diff_result.files_seen,
@@ -606,6 +810,7 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
         inline_count=len(final_state["inline_findings"]),
         fix_suggestions=final_state["fix_suggestions"],
         budget_exceeded=diff_result.budget_exceeded,
+        dependency_check_unavailable=dependency_check.unavailable,
         filtered_files=diff_result.files_filtered,
         tokens_in=final_state["tokens_in"],
         tokens_out=final_state["tokens_out"],

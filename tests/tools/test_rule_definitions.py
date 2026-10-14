@@ -56,7 +56,7 @@ def test_semgrep_rule_tests_pass():
     pattern broke, and where.
     """
     proc = subprocess.run(
-        ["semgrep", "--test", "--metrics=off", str(RULES_DIR)],
+        ["semgrep", "--test", "--metrics=off", "--jobs", "1", "--max-memory", "1024", str(RULES_DIR)],
         capture_output=True, text=True, timeout=300,
     )
 
@@ -91,3 +91,41 @@ def test_no_test_case_references_an_unknown_rule():
     unknown = sorted(annotated - declared)
 
     assert not unknown, f"llm-security.py references rule id(s) not in llm-security.yaml: {unknown}"
+
+
+# rules_lang/: CodeGuard's own rules for the non-Python languages (NOTICE).
+LANG_RULES_DIR = RULES_DIR.parent / "rules_lang"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason=_SEMGREP_WINDOWS_SKIP)
+def test_own_language_rule_tests_pass():
+    proc = subprocess.run(
+        ["semgrep", "--test", "--metrics=off", "--jobs", "1", "--max-memory", "1024", str(LANG_RULES_DIR)],
+        capture_output=True, text=True, timeout=300,
+    )
+    assert proc.returncode == 0, f"semgrep --test failed:\n{proc.stdout}\n{proc.stderr}"
+
+
+def test_every_own_language_rule_has_a_positive_and_a_near_miss_case():
+    for rules_yaml in sorted(LANG_RULES_DIR.glob("*.yaml")):
+        cases = "".join(p.read_text(encoding="utf-8") for p in LANG_RULES_DIR.glob(rules_yaml.stem + ".*")
+                        if p.suffix != ".yaml")
+        for rule in yaml.safe_load(rules_yaml.read_text(encoding="utf-8"))["rules"]:
+            assert re.search(rf"ruleid:\s*{re.escape(rule['id'])}\b", cases), rule["id"]
+            assert re.search(rf"ok:\s*{re.escape(rule['id'])}\b", cases), rule["id"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason=_SEMGREP_WINDOWS_SKIP)
+@pytest.mark.parametrize("case", ["js-llm-security.ts", "js-llm-security.js"])
+def test_each_js_llm_case_file_is_tested(case):
+    """`semgrep --test` over the directory picks its own case file per rule
+    file; the TypeScript and the CommonJS JavaScript cases are each run
+    explicitly so neither can silently drop out."""
+    proc = subprocess.run(
+        ["semgrep", "--test", "--metrics=off", "--jobs", "1", "--max-memory", "1024",
+         "--config", str(LANG_RULES_DIR / "js-llm-security.yaml"), str(LANG_RULES_DIR / case)],
+        capture_output=True, text=True, timeout=300,
+    )
+    assert proc.returncode == 0, f"semgrep --test failed:\n{proc.stdout}\n{proc.stderr}"
+    assert "All tests passed" in proc.stdout + proc.stderr
+    assert "No unit tests found" not in proc.stdout + proc.stderr

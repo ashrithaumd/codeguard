@@ -1,0 +1,255 @@
+# CodeGuard's own LLM-security rules for JavaScript/TypeScript: the Python
+# ruleset (rules/llm-security.yaml) ported to the OpenAI (openai) and
+# Anthropic (@anthropic-ai/sdk) JS SDKs, with the same OWASP mapping and the
+# same scoping decisions, made for the same reasons:
+#
+#   * a call whose options arrive by spread (`{...opts}`) is never evidence
+#     that a cap, a timeout or a system prompt is missing -- semgrep cannot
+#     see inside it (the simonw/llm lesson in the Python file);
+#   * "unpinned model" is the "-latest" alias only, never a bare OpenAI name
+#     (that would flag every model held in a variable);
+#   * the prompt-injection rule is taint: the source is splicing a
+#     non-literal into a string, the sink the prompt-bearing argument, so a
+#     prompt built one line above the call is followed through the variable.
+#
+# Differences from Python, both SDK-driven:
+#   * max_tokens is REQUIRED by Anthropic's messages.create (a TypeScript
+#     error, and a 400 from the API), so only OpenAI's calls are checked.
+#   * the JS SDKs take `timeout` on the client constructor (or as a second,
+#     per-request options argument), so the client is what is checked.
+#
+# Run by tools/semgrep_runner.run_vendor_rules over JS/TS files (tool name
+# codeguard-rules) and judged by security_generic like the rest of the
+# generic path; the hardcoded-key rule is decided by the value's shape and
+# its line is masked before the model sees the file
+# (pipeline/generic_review.GENERIC_CREDENTIAL_RULES). Tests: js-llm-security.ts
+# and js-llm-security.js (semgrep --test).
+rules:
+  - id: codeguard-js-llm-prompt-injection-concatenation
+    languages: [typescript, javascript]
+    severity: ERROR
+    metadata:
+      owasp: "LLM01:2025 Prompt Injection"
+    message: >
+      Untrusted input spliced directly into an LLM prompt's content with no
+      delimiting -- string concatenation or a template literal embedding a
+      variable. Whoever controls that variable can inject instructions the
+      model will treat as part of the prompt, not as data. Delimit untrusted
+      content explicitly (e.g. XML-ish tags) or pass it as its own, clearly
+      labelled section instead of splicing it into the instruction text.
+    mode: taint
+    pattern-sources:
+      - patterns:
+          - pattern-either:
+              - pattern: '"..." + $X'
+              - pattern: '$X + "..."'
+          - metavariable-regex:
+              metavariable: $X
+              # Not a string literal: a literal spliced with a literal is a
+              # constant, not untrusted input.
+              regex: '^(?!["''`])'
+      # A template literal with at least one placeholder.
+      - pattern: '`...${$X}...`'
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: '$CLIENT.messages.create({..., messages: $P, ...}, ...)'
+              - pattern: '$CLIENT.messages.create({..., system: $P, ...}, ...)'
+              - pattern: '$CLIENT.chat.completions.create({..., messages: $P, ...}, ...)'
+              - pattern: '$CLIENT.responses.create({..., input: $P, ...}, ...)'
+              - pattern: '$CLIENT.responses.create({..., instructions: $P, ...}, ...)'
+              - pattern: '$CLIENT.completions.create({..., prompt: $P, ...}, ...)'
+          - focus-metavariable: $P
+
+  - id: codeguard-js-llm-missing-system-user-separation
+    languages: [typescript, javascript]
+    severity: WARNING
+    metadata:
+      owasp: "LLM01:2025 Prompt Injection"
+    message: >
+      An LLM call with no system/developer instruction separate from the user
+      turn -- every instruction ends up folded into user content, with no
+      structural separation between what the model should do and what the
+      user or untrusted content said. Anthropic takes this as `system`;
+      OpenAI as a leading {role: "system"} (or "developer") message, or
+      `instructions` on the Responses API. For OpenAI this is a weaker
+      signal: instructions in the first user turn are common and sometimes
+      deliberate, so weigh the surrounding code.
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern: '$CLIENT.messages.create({..., messages: $MSGS, ...}, ...)'
+              - pattern-not: '$CLIENT.messages.create({..., system: $S, ...}, ...)'
+              - pattern-not: '$CLIENT.messages.create({..., ...$KW, ...}, ...)'
+          # Only an INLINE messages array: one built elsewhere may well
+          # start with a system turn this rule cannot see.
+          - patterns:
+              - pattern: '$CLIENT.chat.completions.create({..., messages: [...], ...}, ...)'
+              - pattern-not: '$CLIENT.chat.completions.create({..., messages: [..., {..., role: "system", ...}, ...], ...}, ...)'
+              - pattern-not: '$CLIENT.chat.completions.create({..., messages: [..., {..., role: "developer", ...}, ...], ...}, ...)'
+              - pattern-not: '$CLIENT.chat.completions.create({..., ...$KW, ...}, ...)'
+          - patterns:
+              - pattern: '$CLIENT.responses.create({..., input: $INPUT, ...}, ...)'
+              - pattern-not: '$CLIENT.responses.create({..., instructions: $S, ...}, ...)'
+              - pattern-not: '$CLIENT.responses.create({..., ...$KW, ...}, ...)'
+
+  - id: codeguard-js-llm-output-to-dangerous-sink
+    languages: [typescript, javascript]
+    severity: ERROR
+    metadata:
+      owasp: "LLM05:2025 Improper Output Handling"
+    message: >
+      LLM output flows into eval, new Function, the vm module or a shell
+      command. Model output is attacker-influenced whenever any of its input
+      was (a document, a web page, a user message), so this is code or
+      command execution driven by whoever wrote that input. Parse the output
+      into a fixed, validated structure instead, and never execute it.
+    mode: taint
+    pattern-sources:
+      - pattern: '$RESP.content[0].text'
+      - pattern: '$RESP.choices[0].message.content'
+      - pattern: '$RESP.output_text'
+    pattern-sinks:
+      - pattern: 'eval(...)'
+      - pattern: 'new Function(...)'
+      - pattern: '$VM.runInNewContext(...)'
+      - pattern: '$VM.runInThisContext(...)'
+      - pattern: '$VM.runInContext(...)'
+      - pattern: 'new $VM.Script(...)'
+      - pattern: '$CP.exec(...)'
+      - pattern: '$CP.execSync(...)'
+      - pattern: 'exec(...)'
+      - pattern: 'execSync(...)'
+
+  - id: codeguard-js-llm-output-to-sql
+    languages: [typescript, javascript]
+    severity: ERROR
+    metadata:
+      owasp: "LLM05:2025 Improper Output Handling"
+    message: >
+      LLM output used as the text of a SQL query. The model can be steered
+      into writing any statement its input asks for. Bind values as
+      parameters instead, and never run model-written SQL against a
+      connection that can write or read beyond what the caller may see.
+    mode: taint
+    pattern-sources:
+      - pattern: '$RESP.content[0].text'
+      - pattern: '$RESP.choices[0].message.content'
+      - pattern: '$RESP.output_text'
+    # The query TEXT only: a value passed as a bound parameter is safe.
+    pattern-sinks:
+      - patterns:
+          - pattern-either:
+              - pattern: '$DB.query($Q, ...)'
+              - pattern: '$DB.execute($Q, ...)'
+              - pattern: '$DB.raw($Q, ...)'
+              - pattern: '$DB.$queryRawUnsafe($Q, ...)'
+              - pattern: '$DB.$executeRawUnsafe($Q, ...)'
+          - focus-metavariable: $Q
+
+  - id: codeguard-js-llm-call-missing-max-tokens
+    languages: [typescript, javascript]
+    severity: WARNING
+    metadata:
+      owasp: "LLM10:2025 Unbounded Consumption"
+    message: >
+      An OpenAI call with no explicit output-length cap -- an unbounded
+      response size is an unbounded cost and latency tail per call. Set
+      max_tokens or max_completion_tokens (Chat Completions) or
+      max_output_tokens (Responses API) on every call. (Anthropic's
+      messages.create requires max_tokens, so it is not checked.)
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern: '$CLIENT.chat.completions.create({...}, ...)'
+              - pattern-not: '$CLIENT.chat.completions.create({..., max_tokens: $N, ...}, ...)'
+              - pattern-not: '$CLIENT.chat.completions.create({..., max_completion_tokens: $N, ...}, ...)'
+              - pattern-not: '$CLIENT.chat.completions.create({..., ...$KW, ...}, ...)'
+          - patterns:
+              - pattern: '$CLIENT.responses.create({...}, ...)'
+              - pattern-not: '$CLIENT.responses.create({..., max_output_tokens: $N, ...}, ...)'
+              - pattern-not: '$CLIENT.responses.create({..., ...$KW, ...}, ...)'
+
+  - id: codeguard-js-llm-unpinned-model-alias
+    languages: [typescript, javascript]
+    severity: WARNING
+    metadata:
+      owasp: "LLM03:2025 Supply Chain"
+    message: >
+      A floating model alias ("-latest") instead of a pinned version. The
+      model behind a "-latest" alias can change without warning, silently
+      changing behaviour, cost and latency -- pin an exact, dated model
+      version instead. SCOPE: the "-latest" convention only; a bare OpenAI
+      name is not flagged (see the Python rule for why).
+    patterns:
+      - pattern-regex: 'model\s*:\s*["''`][^"''`]*-latest["''`]'
+
+  - id: codeguard-js-llm-hardcoded-api-key
+    languages: [typescript, javascript]
+    severity: ERROR
+    metadata:
+      owasp: "LLM02:2025 Sensitive Information Disclosure"
+    message: >
+      An API key passed to the client as a literal string instead of read
+      from the environment or a secret store. Hardcoded credentials end up
+      in git history and logs.
+    # On the key's own line (focus), so the shape classifier reads that line
+    # and that line is masked, wherever the constructor starts.
+    patterns:
+      - pattern-either:
+          - pattern: 'new Anthropic({..., apiKey: $KEY, ...})'
+          - pattern: 'new OpenAI({..., apiKey: $KEY, ...})'
+          - pattern: 'new AzureOpenAI({..., apiKey: $KEY, ...})'
+          - pattern: 'new $SDK.Anthropic({..., apiKey: $KEY, ...})'
+          - pattern: 'new $SDK.OpenAI({..., apiKey: $KEY, ...})'
+      - metavariable-pattern:
+          metavariable: $KEY
+          pattern: '"..."'
+      - focus-metavariable: $KEY
+
+  - id: codeguard-js-llm-logging-full-prompt-or-response
+    languages: [typescript, javascript]
+    severity: WARNING
+    metadata:
+      owasp: "LLM02:2025 Sensitive Information Disclosure"
+    message: >
+      Logging the full model response text. It routinely contains PII,
+      secrets echoed back from context, or injected content -- and logs are
+      a durable, often broadly readable sink. Log a hash, a length or an
+      explicitly redacted summary instead of the raw text.
+    patterns:
+      - pattern-either:
+          - pattern: '$LOG.$M(..., $RESP.content[0].text, ...)'
+          - pattern: '$LOG.$M(..., $RESP.choices[0].message.content, ...)'
+          - pattern: '$LOG.$M(..., $RESP.output_text, ...)'
+      - metavariable-regex:
+          metavariable: $LOG
+          regex: '^(console|logger|log)$'
+      - metavariable-regex:
+          metavariable: $M
+          regex: '^(log|info|debug|warn|error|trace)$'
+
+  - id: codeguard-js-llm-call-missing-timeout
+    languages: [typescript, javascript]
+    severity: WARNING
+    metadata:
+      owasp: "LLM10:2025 Unbounded Consumption"
+    message: >
+      An LLM client constructed with no explicit timeout -- a hung upstream
+      connection then holds whatever is waiting on it (an HTTP request, a
+      job) for the SDK default of ten minutes. Pass `timeout` to the
+      client, or as a per-request option on every call.
+    patterns:
+      - pattern-either:
+          - pattern: 'new Anthropic()'
+          - pattern: 'new OpenAI()'
+          - pattern: 'new Anthropic({...})'
+          - pattern: 'new OpenAI({...})'
+          - pattern: 'new $SDK.Anthropic()'
+          - pattern: 'new $SDK.OpenAI()'
+          - pattern: 'new $SDK.Anthropic({...})'
+          - pattern: 'new $SDK.OpenAI({...})'
+      - pattern-not: 'new $C({..., timeout: $T, ...})'
+      - pattern-not: 'new $C({..., ...$KW, ...})'
+      - pattern-not: 'new $SDK.$C({..., timeout: $T, ...})'
+      - pattern-not: 'new $SDK.$C({..., ...$KW, ...})'

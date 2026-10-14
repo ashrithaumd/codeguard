@@ -120,3 +120,13 @@ async def test_no_unreviewed_notice_when_every_finding_was_reviewed(client, pool
                               findings=[_finding("eeee", 13)])
     as_principal(OWNER)
     assert "AI review unavailable" not in _get(client, job)
+
+
+async def test_the_dependency_note_shows_only_when_osv_was_unreachable(client, pool, as_principal):
+    on = await insert_review(pool, owner=OWNER, repo=REPO)
+    off = await insert_review(pool, owner=OWNER, repo=REPO)
+    async with pool.connection() as conn:
+        await conn.execute("UPDATE reviews SET dependency_check_unavailable = TRUE WHERE job_id = %s", (on,))
+    as_principal(OWNER)
+    assert "Dependency CVE check unavailable" in _get(client, on)
+    assert "Dependency CVE check unavailable" not in _get(client, off)

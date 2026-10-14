@@ -104,6 +104,31 @@ def test_buckets_always_partition_the_findings_exactly():
     assert sum(counts.values()) == len(findings)
 
 
+def test_a_confirmed_new_language_finding_counts_as_verified():
+    """security_generic confirms or dismisses what gitlab-sast or
+    codeguard-rules raised -- the same contract as security and ai_aware.
+    What it never saw (passthrough, over a cap, a failed call) keeps the
+    scanner's own tag and stays unverified."""
+    counts = classify_findings([_finding("security_generic", 1), _finding("gitlab-sast", 2),
+                                _finding("codeguard-rules", 3)])
+
+    assert counts["verdict_confirmed"] == 1
+    assert counts["unverified"] == 2
+
+
+def test_python_counts_are_exactly_what_they_were():
+    findings = [
+        _finding("security", 1), _finding("ai_aware", 2), _finding("quality-agent", 3),
+        _finding("test-agent", 4), _finding("ruff", 5), _finding("osv", 6),
+        _finding("eval-hygiene", 7), _finding("bandit", 8), _finding("semgrep", 9),
+        _finding("gitleaks", 10),
+    ]
+
+    assert classify_findings(findings) == {
+        "verdict_confirmed": 2, "generative": 2, "deterministic": 3, "unverified": 3,
+    }
+
+
 # --- the write (real Postgres) ---------------------------------------------
 
 async def test_record_review_writes_the_row_with_classified_counts(pool):
@@ -208,3 +233,11 @@ async def test_a_job_missing_head_sha_writes_no_review_row(pool):
     assert await handle_pull_request_review(job, pool, asyncio.Event()) is True
 
     assert await _row(pool, job.id) is None
+
+
+async def test_the_dependency_note_is_stored_and_off_by_default(pool):
+    on, off = uuid.uuid4(), uuid.uuid4()
+    await _record(pool, on, dependency_check_unavailable=True)
+    await _record(pool, off)
+    assert (await _row(pool, on))["dependency_check_unavailable"] is True
+    assert (await _row(pool, off))["dependency_check_unavailable"] is False

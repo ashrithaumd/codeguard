@@ -1,0 +1,4 @@
+# Vendored third-party rules are pinned byte for byte: rules_vendor/*/MANIFEST.sha256
+# lists their SHA-256s, and a line-ending conversion on checkout would break
+# every hash. No conversion, ever.
+rules_vendor/** -text

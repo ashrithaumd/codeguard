@@ -54,10 +54,17 @@ REPORT_DATA_VERSION = 1
 R_BUDGET_FILES = "dropped by max_files budget"
 R_GENERATED = "lockfile/generated/docs/vendored"
 R_NON_PYTHON = "non-Python (v1 scope is Python-only)"
+# The multi-language reasons (codeguard/languages.py, tools/zizmor_runner.py).
+R_NOT_COVERED = "Secrets only ({})"
+R_INVALID_YAML = "not scanned (invalid YAML)"
 
 # Source tools by the reviews table's buckets (migration 006).
-_VERDICT_AGENTS = {"security", "ai_aware"}
+_VERDICT_AGENTS = {"security", "ai_aware", "security_generic"}
 _GENERATIVE = {"quality-agent", "test-agent"}
+# Reported as the scanner found them, never judged: pipeline/reviews.py
+# counts these "unverified" (a secret decided by its shape, a LOW passed
+# through). None of the Python-era sample rows uses them.
+_UNJUDGED_SCANNERS = {"gitleaks", "zizmor", "gitlab-sast", "codeguard-rules"}
 
 
 def _assert_local(dsn: str) -> None:
@@ -199,6 +206,69 @@ def review_templates() -> list[dict]:
                                   "subprocess is imported to run ruff with a fixed argument list.")],
              filtered=[{"path": ".github/workflows/ci.yml", "reason": R_NON_PYTHON}],
              summary="Passing with 2 low/medium findings."),
+    ] + multilanguage_review_templates()
+
+
+def multilanguage_review_templates() -> list[dict]:
+    """A PR across every covered language, reviewed twice: the first push
+    with findings in each and the dependency CVEs; the second with OSV
+    unreachable -- the "Dependency CVE check unavailable" note and, as in a
+    real review, no dependency finding at all (both checks need OSV)."""
+    inj = finding("src/assistant.ts", 15, "HIGH", "security_generic", "codeguard-js-llm-prompt-injection-concatenation",
+                  "The ticket body is concatenated into the prompt one line above the call (OWASP LLM01).")
+    js_eval = finding("web/render.js", 22, "HIGH", "security_generic", "javascript_eval_rule-eval-with-expression",
+                      "eval() runs a template string built from the request query.")
+    go_tls = finding("client/http.go", 31, "HIGH", "security_generic", "codeguard-go-tls-insecure-skip-verify",
+                     "tls.Config sets InsecureSkipVerify: true for the billing API client.")
+    java = finding("worker/src/main/java/jobs/Export.java", 48, "HIGH", "security_generic",
+                   "java_inject_rule-CommandInjection", "A job parameter reaches ProcessBuilder through a shell.")
+    csharp = finding("api/Controllers/ReportsController.cs", 57, "HIGH", "security_generic",
+                     "csharp_injection_rule-SQLInjection", "The report filter is concatenated into SqlCommand text.")
+    secret = finding("config/deploy.yaml", 12, "HIGH", "gitleaks", "gitleaks.github-pat",
+                     "Hardcoded secret (github-pat): 40-char github-style token, high-entropy.")
+    docker = finding("Dockerfile", 9, "HIGH", "security_generic", "codeguard-dockerfile-curl-pipe-shell",
+                     "An install script is downloaded with curl and piped straight into sh.")
+    actions = finding(".github/workflows/triage.yml", 18, "HIGH", "security_generic", "template-injection",
+                      "${{ github.event.issue.title }} is expanded inside a run: script.")
+    unpinned = finding(".github/workflows/ci.yml", 7, "LOW", "zizmor", "unpinned-uses",
+                       "actions/checkout is referenced by tag, not by commit SHA.")
+    cve_npm = finding("web/package-lock.json", 1432, "HIGH", "osv", "GHSA-p6mc-m468-83gw",
+                      "lodash@4.17.15 has a known vulnerability (GHSA-p6mc-m468-83gw): Prototype Pollution "
+                      "in lodash. Fixed in 4.17.19.")
+    cve_go = finding("go.mod", 7, "MEDIUM", "osv", "GO-2021-0052",
+                     "github.com/gin-gonic/gin@1.6.0 has a known vulnerability (GO-2021-0052): Inconsistent "
+                     "interpretation of HTTP requests. Fixed in 1.7.0.")
+    hygiene = finding("<repo>", 0, "MEDIUM", "eval-hygiene", "eval-hygiene.missing-evals-js",
+                      "1 JavaScript/TypeScript file(s) call an LLM SDK (src/assistant.ts) but this repo has no "
+                      "evals/ directory, no eval-framework files (promptfoo, evalite) and no test that asserts "
+                      "on LLM output.")
+    jitter = dismissal("client/backoff.go", 14, "go_crypto_rule-weakrandsource",
+                       "math/rand only spreads retry jitter; nothing secret is derived from it.")
+    filtered = [{"path": "android/app/src/main/java/MainActivity.kt", "reason": R_NOT_COVERED.format("Kotlin")},
+                {"path": "android/app/build.gradle.kts", "reason": R_NOT_COVERED.format("Kotlin")},
+                {"path": "ios/App/AppDelegate.swift", "reason": R_NOT_COVERED.format("Swift")},
+                {"path": "scripts/release.rb", "reason": R_NOT_COVERED.format("Ruby")},
+                {"path": ".github/workflows/nightly.yml", "reason": R_INVALID_YAML},
+                {"path": "web/package-lock.json", "reason": R_GENERATED},
+                {"path": "docs/architecture.md", "reason": R_GENERATED}]
+    coverage = "Secrets only, no code scanner: Kotlin 2, Ruby 1, Swift 1."
+    return [
+        dict(pr=9005, title="Add Node assistant, Go billing client, Java export worker and C# reports API",
+             action="opened", conclusion="failure", age=timedelta(hours=9), gate="HIGH", fix="HIGH",
+             files_reviewed=11, inline=8, tokens=(18_420, 2_960), cost=0.1240, duration=64.2,
+             findings=[inj, js_eval, go_tls, java, csharp, secret, docker, actions, unpinned, cve_npm, cve_go, hygiene],
+             dismissed=[jitter], filtered=filtered,
+             latencies=[{"node": "review_security_generic", "file": "src/assistant.ts", "seconds": 7.4},
+                        {"node": "review_security_generic", "file": "api/Controllers/ReportsController.cs", "seconds": 6.1},
+                        {"node": "summarize", "file": "", "seconds": 2.2}],
+             summary=f"Blocked: 9 high severity findings.\n\n{coverage}"),
+        dict(pr=9005, title="Add Node assistant, Go billing client, Java export worker and C# reports API",
+             action="synchronize", conclusion="failure", age=timedelta(hours=7), gate="HIGH", fix="HIGH",
+             files_reviewed=11, inline=4, tokens=(9_310, 1_480), cost=0.0611, duration=41.8,
+             findings=[java, csharp, secret, actions, unpinned, hygiene], dismissed=[jitter], filtered=filtered,
+             dependency_check_unavailable=True,
+             summary=("Still blocked: 4 high severity findings. The prompt injection, eval, TLS and Dockerfile "
+                      f"findings are fixed.\n\nCaution: Dependency CVE check unavailable.\n\n{coverage}")),
     ]
 
 
@@ -210,6 +280,7 @@ def build_review_row(t: dict) -> dict:
     failed_paths = {f["path"] for f in t.get("failures", [])}
     vc = sum(1 for f in findings if f["source_tool"] in _VERDICT_AGENTS and f["file"] not in failed_paths)
     unv = sum(1 for f in findings if f["source_tool"] in _VERDICT_AGENTS and f["file"] in failed_paths)
+    unv += sum(1 for f in findings if f["source_tool"] in _UNJUDGED_SCANNERS)
     gen = sum(1 for f in findings if f["source_tool"] in _GENERATIVE)
     det = len(findings) - vc - unv - gen
     filtered = t.get("filtered", [])
@@ -229,6 +300,7 @@ def build_review_row(t: dict) -> dict:
         "fix_suggestion_count": len(t.get("fix_suggestions", [])),
         "inline_count": t["inline"],
         "budget_exceeded": any("budget" in f["reason"] for f in filtered),
+        "dependency_check_unavailable": t.get("dependency_check_unavailable", False),
     }
     if row["inline_count"] > row["findings_total"]:
         raise ValueError(f"PR {t['pr']}: {row['inline_count']} inline comments for {row['findings_total']} findings")
@@ -300,6 +372,118 @@ def sample_audit_markdown(owner: str, repo: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def multilanguage_audit(owner: str, repo: str, osv_unavailable: bool) -> tuple[str, dict]:
+    """(markdown, report_json) for a multi-language sample audit, built by
+    the REAL report builder (cli.build_report_data / render_report) so the
+    page renders exactly what a real audit stores. With osv_unavailable,
+    OSV could not be reached: the note, and no dependency finding."""
+    from codeguard.cli import build_report_data, render_report
+    from codeguard.pipeline.models import DismissedFinding
+    from codeguard.severity import Severity
+    from codeguard.tools.models import Finding
+
+    # An explicit title per finding, as the Python sample audit has. Without
+    # one the card title is the first sentence of `what` (or the message),
+    # which the SAMPLE label made "SAMPLE". The label stays on `message`.
+    titles = {
+        "codeguard-js-llm-prompt-injection-concatenation": "Ticket text concatenated into the prompt",
+        "codeguard-js-llm-call-missing-timeout": "No timeout on the Anthropic client",
+        "javascript_eval_rule-eval-with-expression": "Request input passed to eval()",
+        "codeguard-go-tls-insecure-skip-verify": "TLS certificate verification turned off",
+        "java_inject_rule-CommandInjection": "Job parameter reaches a shell command",
+        "csharp_injection_rule-SQLInjection": "Report filter concatenated into SQL",
+        "codeguard-dockerfile-curl-pipe-shell": "Install script piped from curl into sh",
+        "template-injection": "Issue title expanded inside a run: script",
+        "gitleaks.github-pat": "Hardcoded GitHub token",
+        "unpinned-uses": "Action referenced by tag, not commit SHA",
+        "GHSA-p6mc-m468-83gw": "Vulnerable lodash version",
+        "GO-2021-0052": "Vulnerable gin version",
+        "GHSA-jfh8-c2jp-5v3q": "Vulnerable log4j-core version",
+        "GHSA-5crp-9r3c-p9vr": "Vulnerable Newtonsoft.Json version",
+        "eval-hygiene.missing-evals-js": "LLM-calling JS/TS code with no evals",
+    }
+
+    def f(path, line, sev, tool, rule, msg, what="", why="", fix=""):
+        return Finding.create(file=path, start_line=line, end_line=line, severity=Severity[sev],
+                              source_tool=tool, rule_id=rule, message="SAMPLE. " + msg,
+                              title=titles[rule], what=what, why=why, fix=fix)
+
+    judged = [
+        f("src/assistant.ts", 15, "HIGH", "security_generic", "codeguard-js-llm-prompt-injection-concatenation",
+          "Ticket text is concatenated into the prompt.", "The ticket body is spliced into the prompt string "
+          "one line above messages.create().", "Text in the ticket can override the instructions it is appended to.",
+          "Send the ticket as its own delimited block, with the instructions in system."),
+        f("src/assistant.ts", 4, "MEDIUM", "security_generic", "codeguard-js-llm-call-missing-timeout",
+          "The Anthropic client has no timeout.", "new Anthropic() is constructed with no timeout.",
+          "A hung connection holds the request for the SDK default of ten minutes.", "Pass timeout to the client."),
+        f("web/render.js", 22, "HIGH", "security_generic", "javascript_eval_rule-eval-with-expression",
+          "eval() runs a template built from the request query.", "eval() runs a string built from req.query.",
+          "Anyone who can send a request can run code in the server.", "Render with a template engine; never eval."),
+        f("client/http.go", 31, "HIGH", "security_generic", "codeguard-go-tls-insecure-skip-verify",
+          "Certificate verification is turned off.", "tls.Config sets InsecureSkipVerify: true.",
+          "Anyone on the network path can impersonate the billing API.", "Remove InsecureSkipVerify."),
+        f("worker/src/main/java/jobs/Export.java", 48, "HIGH", "security_generic", "java_inject_rule-CommandInjection",
+          "A job parameter reaches a shell command.", "The export name is passed to sh -c.",
+          "A crafted name runs arbitrary commands on the worker.", "Pass arguments as a list, without a shell."),
+        f("api/Controllers/ReportsController.cs", 57, "HIGH", "security_generic", "csharp_injection_rule-SQLInjection",
+          "The report filter is concatenated into SQL.", "The filter is concatenated into SqlCommand text.",
+          "A crafted filter reads or changes any table.", "Use SqlParameter for the filter."),
+        f("Dockerfile", 9, "HIGH", "security_generic", "codeguard-dockerfile-curl-pipe-shell",
+          "curl output is piped into sh.", "An install script is downloaded and run unverified.",
+          "Whoever controls that URL controls the image.", "Download, verify a checksum, then run."),
+        f(".github/workflows/triage.yml", 18, "HIGH", "security_generic", "template-injection",
+          "An issue title is expanded inside a run: script.",
+          "${{ github.event.issue.title }} is expanded in run:.",
+          "Anyone who opens an issue can run commands in the workflow.", "Pass it through env: and quote it."),
+    ]
+    passthrough = [
+        f("config/deploy.yaml", 12, "HIGH", "gitleaks", "gitleaks.github-pat",
+          "Hardcoded secret (github-pat): 40-char github-style token, high-entropy."),
+        f(".github/workflows/ci.yml", 7, "LOW", "zizmor", "unpinned-uses",
+          "actions/checkout is referenced by tag, not by commit SHA."),
+    ]
+    osv = [] if osv_unavailable else [
+        f("web/package-lock.json", 1432, "HIGH", "osv", "GHSA-p6mc-m468-83gw",
+          "lodash@4.17.15 has a known vulnerability (GHSA-p6mc-m468-83gw): Prototype Pollution in lodash. "
+          "Fixed in 4.17.19."),
+        f("go.mod", 7, "MEDIUM", "osv", "GO-2021-0052",
+          "github.com/gin-gonic/gin@1.6.0 has a known vulnerability (GO-2021-0052): Inconsistent "
+          "interpretation of HTTP requests. Fixed in 1.7.0."),
+        f("worker/pom.xml", 41, "CRITICAL", "osv", "GHSA-jfh8-c2jp-5v3q",
+          "org.apache.logging.log4j:log4j-core@2.14.1 has a known vulnerability (GHSA-jfh8-c2jp-5v3q): "
+          "Remote code injection in Log4j. Fixed in 2.15.0."),
+        f("api/packages.lock.json", 88, "HIGH", "osv", "GHSA-5crp-9r3c-p9vr",
+          "Newtonsoft.Json@12.0.1 has a known vulnerability (GHSA-5crp-9r3c-p9vr): Improper handling of "
+          "exceptional conditions. Fixed in 13.0.1."),
+    ]
+    hygiene = [f("<repo>", 0, "MEDIUM", "eval-hygiene", "eval-hygiene.missing-evals-js",
+                 "1 JavaScript/TypeScript file(s) call an LLM SDK (src/assistant.ts) but this repo has no evals/ "
+                 "directory, no eval-framework files (promptfoo, evalite) and no test that asserts on LLM output.")]
+    kwargs = dict(
+        target=f"https://github.com/{owner}/{repo}", files_scanned=38, files_ai_aware=0,
+        ai_reviewed_findings=judged, passthrough_findings=passthrough,
+        dismissed=[DismissedFinding(file="client/backoff.go", start_line=14, rule_id="go_crypto_rule-weakrandsource",
+                                    reason="SAMPLE. math/rand only spreads retry jitter; nothing secret is derived "
+                                           "from it.")],
+        eval_hygiene_findings=hygiene, osv_findings=osv,
+        skipped_files=[(".github/workflows/nightly.yml", R_INVALID_YAML),
+                       ("web/public/vendor.bundle.js", "too large to scan (over 256 KB)")],
+        verdict_call_failures=[], unavailable_tools=[],
+        tokens_in=21_870, tokens_out=3_340, estimated_cost_usd=0.1532, elapsed_s=118.4,
+        models={"security_generic": "sample"},
+        not_covered=[{"language": "Kotlin", "paths": ["android/app/build.gradle.kts",
+                                                      "android/app/src/main/java/MainActivity.kt"]},
+                     {"language": "Ruby", "paths": ["scripts/release.rb"]},
+                     {"language": "Swift", "paths": ["ios/App/AppDelegate.swift"]}],
+        secret_placeholders=2,
+        tool_warnings=["Dependency CVE check unavailable"] if osv_unavailable else [],
+    )
+    data = build_report_data(**kwargs)
+    markdown = render_report(**kwargs)
+    heading, _, rest = markdown.partition("\n")
+    return f"{heading}\n\n> {AUDIT_LABEL}\n{rest}", data
+
+
 # --------------------------------------------------------------------------
 
 _INSERT = """
@@ -312,9 +496,9 @@ INSERT INTO reviews (
     budget_exceeded, filtered_files_json, pr_title,
     tokens_in, tokens_out, estimated_cost_usd, duration_s,
     node_latencies_json, findings_json, dismissed_json,
-    fix_suggestions_json, verdict_call_failures_json, created_at
+    fix_suggestions_json, verdict_call_failures_json, created_at, dependency_check_unavailable
 ) VALUES (%s,%s,%s,%s,%s,%s,%s, %s,%s,%s,%s, %s,%s,%s, %s,%s,%s,%s,
-          %s,%s,%s, %s,%s,%s, %s,%s,%s,%s, %s,%s,%s, %s,%s,%s)
+          %s,%s,%s, %s,%s,%s, %s,%s,%s,%s, %s,%s,%s, %s,%s,%s, %s)
 """
 
 _REMOVE = (
@@ -359,7 +543,8 @@ async def main() -> None:
         # Spread over up to three repos so the Repositories page shows varied
         # activity; a fourth+ repo stays "never reviewed".
         picks = repos[:3]
-        plan = {0: rows[0:4], 1: rows[4:5], 2: rows[5:6]}
+        # The multi-language PR (rows 6-7) goes on the first repo too.
+        plan = {0: rows[0:4] + rows[6:8], 1: rows[4:5], 2: rows[5:6]}
         n_reviews = 0
         for idx, repo in enumerate(picks):
             for r in plan.get(idx, []):
@@ -375,7 +560,7 @@ async def main() -> None:
                     r["tokens"][0], r["tokens"][1], r["cost"], r["duration"],
                     Jsonb(r.get("latencies", [])), Jsonb(r["findings"]),
                     Jsonb(r["dismissed_json"]), Jsonb(r["fix_suggestions"]),
-                    Jsonb(r.get("failures", [])), now - r["age"],
+                    Jsonb(r.get("failures", [])), now - r["age"], r["dependency_check_unavailable"],
                 ))
                 n_reviews += 1
 
@@ -398,6 +583,20 @@ async def main() -> None:
                  now - timedelta(days=1, minutes=3), now - timedelta(days=1)),
             )
             n_audits += 1
+            # Multi-language: one with OSV unreachable (older), one with the
+            # dependency findings (newest, so it is the repo's latest audit).
+            for unavailable, age in ((True, timedelta(hours=12)), (False, timedelta(hours=2))):
+                md, data = multilanguage_audit(r["owner"], r["repo"], osv_unavailable=unavailable)
+                await conn.execute(
+                    """INSERT INTO audits (id, owner, repo, requested_by, private, status,
+                           report_markdown, report_json, exit_code, tokens_in, tokens_out,
+                           estimated_cost_usd, duration_s, created_at, started_at, finished_at)
+                       VALUES (%s,%s,%s,%s,false,'done',%s,%s,0,%s,%s,%s,%s,%s,%s,%s)""",
+                    (sid("audit", r["repo"], "multilanguage", unavailable), r["owner"], r["repo"], requester,
+                     md, Jsonb(data), 21_870, 3_340, 0.1532, 118.4, now - age - timedelta(minutes=2),
+                     now - age - timedelta(minutes=2), now - age),
+                )
+                n_audits += 1
         if len(public) > 1:
             r = public[1]
             await conn.execute(

@@ -1,0 +1,27 @@
+# CodeGuard's own rule (not vendored; see NOTICE). The vendored
+# java_inject_rule-CommandInjection sinks on `(Runtime $R).exec(...)`, a
+# typed Runtime variable, so the usual one-line form
+# `Runtime.getRuntime().exec(...)` raised nothing. This rule covers exactly
+# that form, with the same kind of sources (request values and String
+# parameters), and leaves the variable form to the vendored rule so the two
+# never fire on the same line (and are merged in pipeline/merge.py if they do).
+rules:
+  - id: codeguard-java-runtime-exec-injection
+    languages: [java]
+    severity: ERROR
+    mode: taint
+    metadata:
+      cwe: "CWE-78: Improper Neutralization of Special Elements used in an OS Command"
+      owasp: "A03:2021 Injection"
+    message: >
+      A value from the request or a caller reaches Runtime.getRuntime().exec.
+      Whoever controls it can run their own commands on the server. Pass a
+      fixed program and validated arguments to ProcessBuilder instead.
+    pattern-sources:
+      - pattern: (javax.servlet.http.HttpServletRequest $R).$METHOD(...)
+      - patterns:
+          - pattern-inside: |
+              $RET $FUNC(..., String $X, ...) { ... }
+          - focus-metavariable: $X
+    pattern-sinks:
+      - pattern: Runtime.getRuntime().exec(...)

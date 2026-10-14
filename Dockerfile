@@ -19,6 +19,56 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl git \
 # the route that works on every platform.
 ARG INSTALL_DEV=false
 
+# Semgrep in its own environment, pinned: 1.95.0 is the newest release that
+# still emits the data-flow traces the flow note reads (docs/backlog.md), and
+# it pins opentelemetry-api~=1.25, which cannot coexist with the app's mcp
+# (>=1.28). setuptools: undeclared by Semgrep but needed by it (its
+# OpenTelemetry dependency imports pkg_resources, removed in setuptools 81).
+# The runner calls SEMGREP_BIN explicitly, never a PATH lookup; the PATH
+# entry (appended, so the app's python stays first) is for people running
+# `semgrep --test` by hand.
+ARG SEMGREP_VERSION=1.95.0
+RUN python -m venv /opt/semgrep \
+    && /opt/semgrep/bin/pip install --no-cache-dir "semgrep==${SEMGREP_VERSION}" "setuptools==80.10.2" \
+    && PATH="/opt/semgrep/bin:${PATH}" /opt/semgrep/bin/semgrep --version
+ENV SEMGREP_BIN=/opt/semgrep/bin/semgrep \
+    PATH="${PATH}:/opt/semgrep/bin"
+
+# zizmor, pinned and verified: GitHub Actions workflows
+# (codeguard/tools/zizmor_runner.py). MIT licensed. Its wheel is one static
+# binary with no Python dependencies, installed in its own environment with
+# --require-hashes, so a wheel that does not match the sha256 below fails
+# the build. Always run offline, with no GitHub token.
+ARG ZIZMOR_VERSION=1.30.1
+ARG ZIZMOR_SHA256=eee12266b793cb87ad4a7e3af2e72404f8a63e3de5eb099b80bf7b1cfd232a8e
+RUN python -m venv /opt/zizmor \
+    && echo "zizmor==${ZIZMOR_VERSION} --hash=sha256:${ZIZMOR_SHA256}" > /tmp/zizmor-req.txt \
+    && /opt/zizmor/bin/pip install --no-cache-dir --no-deps --require-hashes -r /tmp/zizmor-req.txt \
+    && rm /tmp/zizmor-req.txt \
+    && /opt/zizmor/bin/zizmor --version
+ENV ZIZMOR_BIN=/opt/zizmor/bin/zizmor
+
+# Gitleaks, pinned and verified: secrets in every non-Python file type
+# (codeguard/tools/gitleaks_runner.py). The binary is checked against the
+# release's own sha256 before it is unpacked; a mismatch fails the build.
+# MIT licensed. No network at runtime: it scans files on disk and never
+# calls out.
+ARG GITLEAKS_VERSION=8.30.1
+ARG GITLEAKS_SHA256=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+RUN curl -sSfL -o /tmp/gitleaks.tgz         "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"     && echo "${GITLEAKS_SHA256}  /tmp/gitleaks.tgz" | sha256sum -c -     && tar -xzf /tmp/gitleaks.tgz -C /usr/local/bin gitleaks     && rm /tmp/gitleaks.tgz     && gitleaks version
+
+# OSV-Scanner, pinned and verified: known vulnerabilities in npm/yarn/pnpm,
+# Go, Maven/Gradle and NuGet lockfiles (codeguard/tools/osv_scanner_runner.py).
+# Apache-2.0. One static binary in its own directory, checked against the
+# release's sha256 before it is made executable; a mismatch fails the build.
+# 2.6.0 (2026-09-14) rather than 2.7.0, which was a day old when pinned.
+# Vulnerability DATA is live (OSV.dev), as for Python's check: it reads the
+# lockfiles it is handed and never resolves or builds anything.
+ARG OSV_SCANNER_VERSION=2.6.0
+ARG OSV_SCANNER_SHA256=ca69b3d3cd08f889a49dc0a383122f71cc528b83803671df5fd874d97485b108
+RUN mkdir -p /opt/osv-scanner     && curl -sSfL -o /opt/osv-scanner/osv-scanner         "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"     && echo "${OSV_SCANNER_SHA256}  /opt/osv-scanner/osv-scanner" | sha256sum -c -     && chmod 0755 /opt/osv-scanner/osv-scanner     && /opt/osv-scanner/osv-scanner --version
+ENV OSV_SCANNER_BIN=/opt/osv-scanner/osv-scanner
+
 COPY pyproject.toml ./
 COPY codeguard/ ./codeguard/
 RUN if [ "$INSTALL_DEV" = "true" ]; then \
@@ -37,6 +87,10 @@ COPY . .
 # made world-readable, and TIKTOKEN_CACHE_DIR points tiktoken at it.
 # scripts/smoke_image.sh proves it with --network none.
 ENV TIKTOKEN_CACHE_DIR=/opt/tiktoken
+# No network for the scanners at runtime. --metrics=off (the runner's flag)
+# does not stop Semgrep's new-version check, a separate call on every run;
+# these do. scripts/smoke_image.sh proves no connection is attempted.
+ENV SEMGREP_ENABLE_VERSION_CHECK=0     SEMGREP_SEND_METRICS=off
 RUN python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')" \
     && chmod -R a+rX /opt/tiktoken
 

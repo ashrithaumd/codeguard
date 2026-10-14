@@ -399,3 +399,34 @@ def redact_source(text: str, *, hints: bool = False) -> str:
     if text.endswith("\n"):
         joined += "\n"
     return joined
+
+
+def mask_spans(text: str, spans: list[tuple[int, int, int]]) -> str:
+    """Replace exact spans with MASK: [(line, start, end)], 1-based line,
+    0-based [start, end) within it -- positions a scanner reported, never
+    values. Line count and every other byte unchanged, so findings stay
+    anchored (see redact_source). Used for content a model will see."""
+    if not text or not spans:
+        return text
+    lines = text.split("\n")
+    for lineno, start, end in sorted(spans, key=lambda s: (s[0], -s[1])):
+        if 0 < lineno <= len(lines) and 0 <= start < end <= len(lines[lineno - 1]):
+            line = lines[lineno - 1]
+            lines[lineno - 1] = line[:start] + MASK + line[end:]
+    return "\n".join(lines)
+
+
+def mask_lines(text: str, lines: set[int] | frozenset[int]) -> str:
+    """Replace whole lines (1-based) with MASK, keeping their indentation.
+    For a line a credential rule flagged: its value may sit where no
+    pattern here can find it (a positional argument, an unquoted ENV), and
+    the shape classifier has already decided it, so the model needs none
+    of it. Line count and every other byte unchanged (see redact_source)."""
+    if not text or not lines:
+        return text
+    out = text.split("\n")
+    for lineno in lines:
+        if 0 < lineno <= len(out) and out[lineno - 1].strip():
+            line = out[lineno - 1]
+            out[lineno - 1] = line[: len(line) - len(line.lstrip())] + MASK
+    return "\n".join(out)
