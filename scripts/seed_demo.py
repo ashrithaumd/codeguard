@@ -388,7 +388,7 @@ def multilanguage_audit(owner: str, repo: str, osv_unavailable: bool) -> tuple[s
     titles = {
         "codeguard-js-llm-prompt-injection-concatenation": "Ticket text concatenated into the prompt",
         "codeguard-js-llm-call-missing-timeout": "No timeout on the Anthropic client",
-        "javascript_eval_rule-eval-with-expression": "eval() of request input",
+        "javascript_eval_rule-eval-with-expression": "Request input passed to eval()",
         "codeguard-go-tls-insecure-skip-verify": "TLS certificate verification turned off",
         "java_inject_rule-CommandInjection": "Job parameter reaches a shell command",
         "csharp_injection_rule-SQLInjection": "Report filter concatenated into SQL",
