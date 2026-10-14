@@ -40,7 +40,7 @@ async def test_ingestion_fetches_covered_non_python_files_beside_python_not_amon
                            {"app.py": "x = 1\n", "web/run.js": JS})
     assert list(result.file_contents) == ["app.py"]
     assert result.generic_contents == {"web/run.js": JS} and result.generic_patches == {"web/run.js": JS_PATCH}
-    assert [(f.path, f.reason) for f in result.files_filtered] == [("App.kt", "Not covered by any scanner (Kotlin)")]
+    assert [(f.path, f.reason) for f in result.files_filtered] == [("App.kt", "Secrets only (Kotlin)")]
 
 
 async def test_files_beyond_the_scan_cap_are_listed_not_dropped():

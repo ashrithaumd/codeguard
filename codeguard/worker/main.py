@@ -41,7 +41,7 @@ from codeguard.api.audits import (
 from codeguard.api.repo_settings import pr_reviews_enabled
 from codeguard.cli import AuditOutcome, AuditStats, run_audit
 from codeguard.config import RepoConfig, Settings, get_settings, verify_required_settings
-from codeguard.languages import NOT_COVERED_PREFIX
+from codeguard.languages import SECRETS_ONLY_PREFIX
 from codeguard.diff.models import FilteredFile
 from codeguard.diff.parse import hash_content, parse_hunk_ranges
 from codeguard.line_refs import strip_line_refs
@@ -409,8 +409,8 @@ def _summary_warnings(dependency_check: DependencyCheck) -> list[str]:
 
 def coverage_gaps(files_filtered) -> dict[str, int]:
     """Filtered files no scanner covers, counted by language, from the
-    reason diff/filters.py recorded ("Not covered by any scanner (Go)")."""
-    prefix = f"{NOT_COVERED_PREFIX} ("
+    reason diff/filters.py recorded ("Secrets only (Kotlin)")."""
+    prefix = f"{SECRETS_ONLY_PREFIX} ("
     counts: dict[str, int] = {}
     for f in files_filtered:
         if f.reason.startswith(prefix) and f.reason.endswith(")"):

@@ -2,7 +2,7 @@
 
 No new section, card or panel: the list is items in the Skipped fold the
 page already has, and the fold's heading counts them ("Skipped (83 test
-asserts, 3 files not covered)"). An audit without uncovered files -- every
+asserts, 3 secrets-only files)"). An audit without uncovered files -- every
 audit stored before this -- renders exactly as before.
 """
 
@@ -55,17 +55,17 @@ def _skipped_fold(html):
 async def test_uncovered_files_are_listed_inside_the_skipped_section(client, pool, as_principal):
     html = await _page(client, pool, as_principal, _report(GAPS, skipped_test_asserts=83))
     fold = _skipped_fold(html)
-    assert re.search(r"Skipped \(83 test asserts, 3 files not covered\)", fold)
-    assert "Not covered by any scanner" in fold
+    assert re.search(r"Skipped \(83 test asserts, 3 secrets-only files\)", fold)
+    assert "Secrets only —" in fold
     assert "Go (2)" in fold and "cmd/main.go" in fold and "pkg/util.go" in fold
     assert "Ruby (1)" in fold and "app/user.rb" in fold
     # Every mention is inside that section: one item per language.
-    assert html.count("Not covered by any scanner") == fold.count("Not covered by any scanner") == 2
+    assert html.count("Secrets only —") == fold.count("Secrets only —") == 2
 
 
 async def test_the_section_appears_for_uncovered_files_alone(client, pool, as_principal):
     fold = _skipped_fold(await _page(client, pool, as_principal, _report(GAPS)))
-    assert re.search(r"Skipped \(3 files not covered\)", fold)
+    assert re.search(r"Skipped \(3 secrets-only files\)", fold)
 
 
 async def test_no_new_sections_or_panels(client, pool, as_principal):
@@ -77,7 +77,7 @@ async def test_no_new_sections_or_panels(client, pool, as_principal):
 
 async def test_an_older_audit_renders_exactly_as_before(client, pool, as_principal):
     html = await _page(client, pool, as_principal, _report(None, skipped_test_asserts=83))
-    assert "Not covered by any scanner" not in html
+    assert "Secrets only —" not in html
     assert re.search(r"Skipped \(83 test asserts\)", _skipped_fold(html))
 
 

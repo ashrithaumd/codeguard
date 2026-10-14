@@ -32,7 +32,8 @@ from codeguard.languages import COVERED_LANGUAGES, coverage_reason, language_of,
     ("a.c", "C"), ("a.h", "C"), ("a.cpp", "C++"), ("a.hpp", "C++"),
     ("Dockerfile", "Dockerfile"), ("docker/api.Dockerfile", "Dockerfile"), ("Dockerfile.prod", "Dockerfile"),
     (".github/workflows/ci.yml", "GitHub Actions"), (".github/workflows/release.yaml", "GitHub Actions"),
-    ("deploy/k8s.yaml", "YAML"), ("config.yml", "YAML"),
+    # Configuration YAML is not a language: secret-scanned, never listed as uncovered code.
+    ("deploy/k8s.yaml", None), ("config.yml", None), (".github/ISSUE_TEMPLATE/bug_report.yml", None),
     ("scripts/build.sh", "Shell"),
     ("infra/main.tf", "Terraform"),
     ("data.json", None), ("logo.png", None), ("Makefile", None), ("app.pyi", None),
@@ -50,14 +51,14 @@ def test_dockerfiles_and_workflows_take_the_generic_path_not_pythons():
     from codeguard.languages import GENERIC_LANGUAGES
     assert GENERIC_LANGUAGES == COVERED_LANGUAGES - {"Python"}
     assert coverage_reason("Dockerfile") is None and coverage_reason(".github/workflows/ci.yml") is None
-    # Any other YAML is still not covered by a code scanner (its secrets are, by Gitleaks).
-    assert coverage_reason("k8s/deploy.yaml") == "Not covered by any scanner (YAML)"
+    # Any other YAML is configuration: Gitleaks scans it, so it is not "uncovered code".
+    assert coverage_reason("k8s/deploy.yaml") == "not source code"
 
 
 def test_coverage_reason():
     assert coverage_reason("cmd/main.go") is None
-    assert coverage_reason("Main.kt") == "Not covered by any scanner (Kotlin)"
-    assert coverage_reason("index.php") == "Not covered by any scanner (PHP)"
+    assert coverage_reason("Main.kt") == "Secrets only (Kotlin)"
+    assert coverage_reason("index.php") == "Secrets only (PHP)"
     assert coverage_reason("logo.png") == "not source code"
     assert coverage_reason("app.py") is None
 
@@ -83,7 +84,7 @@ def _file(name, additions=1):
 
 def test_a_changed_kotlin_file_says_which_language_no_scanner_covers():
     kept, filtered = filter_files([_file("App.kt")], RepoConfig())
-    assert kept == [] and [(f.path, f.reason) for f in filtered] == [("App.kt", "Not covered by any scanner (Kotlin)")]
+    assert kept == [] and [(f.path, f.reason) for f in filtered] == [("App.kt", "Secrets only (Kotlin)")]
 
 
 def test_a_changed_go_file_is_neither_a_python_file_nor_not_reviewed():

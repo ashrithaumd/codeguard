@@ -85,7 +85,7 @@ def test_the_multilanguage_review_carries_every_kind_and_the_note_only_without_c
                  "worker/src/main/java/jobs/Export.java", "api/Controllers/ReportsController.cs",
                  "config/deploy.yaml", ".github/workflows/triage.yml", "web/package-lock.json"):
         assert path in files, path
-    assert any(f["reason"].startswith("Not covered by any scanner (") for f in first["filtered"])
+    assert any(f["reason"].startswith("Secrets only (") for f in first["filtered"])
     # Both dependency checks need OSV: unreachable means the note and no CVE.
     assert first["dependency_check_unavailable"] is False
     assert second["dependency_check_unavailable"] is True

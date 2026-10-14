@@ -1118,14 +1118,14 @@ def render_report(**kwargs) -> str:
             lines.append("")
         if data.get("not_covered"):
             lines.append(
-                f"**{data['summary']['not_covered']} file(s) not covered by any scanner** "
-                "(no scanner for their language, so nothing in them was checked):"
+                f"**{data['summary']['not_covered']} file(s) checked for secrets only** "
+                "(no code scanner for their language; Gitleaks checked them for secrets):"
             )
             lines.append("")
             for group in data["not_covered"]:
                 shown = ", ".join(f"`{p}`" for p in group["paths"][:NOT_COVERED_SHOWN])
                 more = len(group["paths"]) - NOT_COVERED_SHOWN
-                lines.append(f"- Not covered by any scanner — {group['language']} ({len(group['paths'])}): "
+                lines.append(f"- Secrets only — {group['language']} ({len(group['paths'])}): "
                              f"{shown}{f', +{more} more' if more > 0 else ''}")
             lines.append("")
 

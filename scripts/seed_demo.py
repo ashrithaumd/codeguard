@@ -55,7 +55,7 @@ R_BUDGET_FILES = "dropped by max_files budget"
 R_GENERATED = "lockfile/generated/docs/vendored"
 R_NON_PYTHON = "non-Python (v1 scope is Python-only)"
 # The multi-language reasons (codeguard/languages.py, tools/zizmor_runner.py).
-R_NOT_COVERED = "Not covered by any scanner ({})"
+R_NOT_COVERED = "Secrets only ({})"
 R_INVALID_YAML = "not scanned (invalid YAML)"
 
 # Source tools by the reviews table's buckets (migration 006).
@@ -251,7 +251,7 @@ def multilanguage_review_templates() -> list[dict]:
                 {"path": ".github/workflows/nightly.yml", "reason": R_INVALID_YAML},
                 {"path": "web/package-lock.json", "reason": R_GENERATED},
                 {"path": "docs/architecture.md", "reason": R_GENERATED}]
-    coverage = "Not covered by any scanner: Kotlin 2, Ruby 1, Swift 1."
+    coverage = "Secrets only, no code scanner: Kotlin 2, Ruby 1, Swift 1."
     return [
         dict(pr=9005, title="Add Node assistant, Go billing client, Java export worker and C# reports API",
              action="opened", conclusion="failure", age=timedelta(hours=9), gate="HIGH", fix="HIGH",

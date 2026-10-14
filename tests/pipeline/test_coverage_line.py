@@ -1,6 +1,6 @@
 """The PR summary's one coverage line, and the worker's count behind it.
 
-"Not covered by any scanner: Go 2, Kotlin 1." appears only when a changed
+"Secrets only, no code scanner: Go 2, Kotlin 1." appears only when a changed
 file is in a language no scanner covers. A PR with nothing uncovered gets
 exactly the summary it always got.
 """
@@ -41,26 +41,26 @@ def _summary(state):
 
 def test_the_line_lists_each_uncovered_language_with_a_count():
     text = _summary(_state(coverage_gaps={"Kotlin": 1, "Go": 2}))
-    assert "Not covered by any scanner: Go 2, Kotlin 1." in text
+    assert "Secrets only, no code scanner: Go 2, Kotlin 1." in text
 
 
 def test_the_line_is_there_with_findings_too():
     text = _summary(_state([make_finding(file="a.py", line=1)], coverage_gaps={"Go": 1}))
-    assert "Not covered by any scanner: Go 1." in text
+    assert "Secrets only, no code scanner: Go 1." in text
 
 
 def test_nothing_uncovered_means_the_summary_is_exactly_as_before():
     for findings in ([], [make_finding(file="a.py", line=1)]):
         before = _summary(_state(findings))
         assert _summary(_state(findings, coverage_gaps={})) == before
-        assert "Not covered by any scanner" not in before
+        assert "Secrets only" not in before
 
 
 def test_the_worker_counts_uncovered_files_by_language():
     filtered = [
-        FilteredFile(path="cmd/main.go", reason="Not covered by any scanner (Go)"),
-        FilteredFile(path="pkg/x.go", reason="Not covered by any scanner (Go)"),
-        FilteredFile(path="App.kt", reason="Not covered by any scanner (Kotlin)"),
+        FilteredFile(path="cmd/main.go", reason="Secrets only (Go)"),
+        FilteredFile(path="pkg/x.go", reason="Secrets only (Go)"),
+        FilteredFile(path="App.kt", reason="Secrets only (Kotlin)"),
         FilteredFile(path="README.md", reason="lockfile/generated/docs/vendored"),
         FilteredFile(path="data.json", reason="not source code"),
     ]

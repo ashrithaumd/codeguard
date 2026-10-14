@@ -1978,7 +1978,7 @@ def _skipped_test_asserts_lines(state: ReviewState) -> list[str]:
 
 
 def _coverage_lines(state: ReviewState) -> list[str]:
-    """"Not covered by any scanner: Go 3, Kotlin 1." -- changed source files
+    """"Secrets only, no code scanner: Kotlin 1, Ruby 3." -- changed source files
     in a language no scanner covers (codeguard/languages.py). Nothing at all
     when there are none, so such a PR's summary is exactly what it was."""
     line = coverage_summary_line(state.get("coverage_gaps") or {})

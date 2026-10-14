@@ -64,8 +64,8 @@ def test_the_report_data_carries_the_list_and_a_count():
 
 def test_the_markdown_report_says_so():
     text = render_report(**_kwargs([{"language": "Go", "paths": ["a.go", "b.go"]}]))
-    assert "Not covered by any scanner" in text and "Go (2)" in text and "`a.go`" in text
+    assert "Secrets only —" in text and "Go (2)" in text and "`a.go`" in text
 
 
 def test_nothing_uncovered_changes_nothing_in_the_markdown():
-    assert "Not covered by any scanner" not in render_report(**_kwargs([]))
+    assert "Secrets only" not in render_report(**_kwargs([]))
