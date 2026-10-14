@@ -1,0 +1,25 @@
+# CodeGuard's own exception to a vendored rule. A suppressor is never
+# reported: where it matches, the vendored finding it names on the same line
+# is dropped (codeguard/tools/semgrep_runner.py, SUPPRESSIONS). The vendored
+# rule itself stays byte-exact.
+rules:
+  - id: codeguard-suppress-react-html-sanitized
+    languages: [typescript, javascript]
+    severity: INFO
+    message: >-
+      Suppressor, never reported: dangerouslySetInnerHTML is given DOMPurify.sanitize() output,
+      so javascript_react_rule-dangerouslysetinnerhtml on this line is not raised.
+    metadata:
+      suppresses: javascript_react_rule-dangerouslysetinnerhtml
+    pattern-either:
+      - pattern: '<$EL dangerouslySetInnerHTML={{__html: DOMPurify.sanitize(...)}} />'
+      - pattern: '{dangerouslySetInnerHTML: {__html: DOMPurify.sanitize(...)}}'
+      # Through a const: it cannot be reassigned between the sanitize call
+      # and the render, so the value rendered is the sanitized one.
+      - patterns:
+          - pattern-inside: |
+              const $V = DOMPurify.sanitize(...);
+              ...
+          - pattern-either:
+              - pattern: '<$EL dangerouslySetInnerHTML={{__html: $V}} />'
+              - pattern: '{dangerouslySetInnerHTML: {__html: $V}}'

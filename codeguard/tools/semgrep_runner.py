@@ -153,16 +153,39 @@ def _build_vendor_cmd(tmp_dir: str) -> list[str]:
     ]
 
 
+# Our own exceptions to vendored rules (rules_lang/suppress-*.yaml): a
+# suppressor's match drops the vendored finding it names on the lines it
+# covers. The vendored files stay byte-exact; a suppressor is never itself
+# reported, mapped here or not.
+SUPPRESSOR_PREFIX = "codeguard-suppress-"
+SUPPRESSIONS = {
+    "codeguard-suppress-react-html-sanitized": "javascript_react_rule-dangerouslysetinnerhtml",
+}
+
+
+def _apply_suppressions(findings: list[Finding]) -> list[Finding]:
+    spans: dict[tuple[str, str], list[tuple[int, int]]] = {}
+    for f in findings:
+        if f.rule_id in SUPPRESSIONS:
+            spans.setdefault((f.file, SUPPRESSIONS[f.rule_id]), []).append((f.start_line, f.end_line))
+    return [
+        f for f in findings
+        if not f.rule_id.startswith(SUPPRESSOR_PREFIX)
+        and not any(start <= f.start_line <= end for start, end in spans.get((f.file, f.rule_id), ()))
+    ]
+
+
 def _parse_vendor(stdout: str, tmp_dir: str) -> list[Finding]:
     """_parse, then re-labelled: the rule's own id (the last segment of
     Semgrep's path-prefixed check_id), and the tool by where that rule came
-    from -- codeguard-rules for ours, gitlab-sast for the vendored pack."""
+    from -- codeguard-rules for ours, gitlab-sast for the vendored pack.
+    Then our suppressions (SUPPRESSIONS) are applied."""
     findings = []
     for f in _parse(stdout, tmp_dir):
         rule = f.rule_id.rsplit(".", 1)[-1]
         tool = OWN_TOOL_NAME if rule.startswith(OWN_RULE_PREFIX) else VENDOR_TOOL_NAME
         findings.append(f.model_copy(update={"source_tool": tool, "rule_id": rule}))
-    return findings
+    return _apply_suppressions(findings)
 
 
 def run_vendor_rules(files: dict[str, str], timeout: int = DEFAULT_TIMEOUT) -> list[Finding]:
