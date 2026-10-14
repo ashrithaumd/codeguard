@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import re
+from typing import NamedTuple
 
 import requests
 
@@ -139,9 +140,26 @@ def _fetch_vuln_detail(vuln_id: str, timeout: int) -> dict | None:
         return None
 
 
+# Said on the audit page, the review page and the PR summary when OSV could
+# not be reached: an empty result must never read as a clean one.
+DEPENDENCY_CHECK_UNAVAILABLE = "Dependency CVE check unavailable"
+
+
+class DependencyCheck(NamedTuple):
+    findings: list[Finding]
+    unavailable: bool = False
+
+
 def check_dependency_updates(
     files: dict[str, str], patches: dict[str, str], timeout: int = DEFAULT_TIMEOUT,
 ) -> list[Finding]:
+    """The findings alone, exactly as before (the MCP server's caller)."""
+    return check_dependency_updates_status(files, patches, timeout).findings
+
+
+def check_dependency_updates_status(
+    files: dict[str, str], patches: dict[str, str], timeout: int = DEFAULT_TIMEOUT,
+) -> DependencyCheck:
     """One batched OSV query for every newly-added/bumped exact pin
     across every touched requirements.txt/pyproject.toml in this PR —
     never one request per package, which wouldn't scale past a handful
@@ -159,7 +177,7 @@ def check_dependency_updates(
             pins.append((path, name, version))
 
     if not pins:
-        return []
+        return DependencyCheck([])
 
     queries = [{"package": {"name": name, "ecosystem": "PyPI"}, "version": version} for _, name, version in pins]
     try:
@@ -168,7 +186,9 @@ def check_dependency_updates(
         results = resp.json().get("results", [])
     except requests.RequestException:
         logger.warning("OSV batch query failed, skipping dependency check for this PR", exc_info=True)
-        return []
+        # The findings are what they always were here (none); the caller
+        # now also knows the check did not happen.
+        return DependencyCheck([], unavailable=True)
 
     if len(results) != len(pins):
         # Found via CodeGuard's own review of one of its own PRs: OSV's
@@ -194,4 +214,4 @@ def check_dependency_updates(
         for vuln_id in vuln_ids:
             vuln = _fetch_vuln_detail(vuln_id, timeout) or {"id": vuln_id}
             findings.append(_finding_for_vuln(path, line, name, version, vuln))
-    return findings
+    return DependencyCheck(findings)

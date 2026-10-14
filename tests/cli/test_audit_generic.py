@@ -13,6 +13,7 @@ import random
 import string
 from unittest.mock import patch
 
+from codeguard.tools.osv_runner import DependencyCheck
 from codeguard.cli import run_audit
 from codeguard.config import Settings, get_settings
 from codeguard.pipeline.models import DismissedFinding  # noqa: F401 -- shape reference for the mock below
@@ -41,7 +42,7 @@ def _run(tmp_path, **settings_over):
 
     output = tmp_path / "report.md"
     with patch("codeguard.cli.review_security_generic", side_effect=fake), \
-         patch("codeguard.cli.check_dependency_updates", return_value=[]), \
+         patch("codeguard.cli.check_dependency_updates_status", return_value=DependencyCheck([])), \
          patch("codeguard.cli.get_settings", return_value=_settings(**settings_over)):
         exit_code, error = run_audit(str(tmp_path), str(output), post_issue_flag=False)
     return exit_code, error, output.read_text(encoding="utf-8") if output.exists() else "", seen

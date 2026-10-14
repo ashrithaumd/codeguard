@@ -74,7 +74,11 @@ from codeguard.pipeline.state import ReviewState
 from codeguard.queue.db import bootstrap_schema, create_pool
 from codeguard.queue.models import Job
 from codeguard.queue.queue import ack, claim_batch, extend_lease, nack, release
-from codeguard.tools.osv_runner import check_dependency_updates
+from codeguard.tools.osv_runner import (
+    DEPENDENCY_CHECK_UNAVAILABLE,
+    DependencyCheck,
+    check_dependency_updates_status,
+)
 from codeguard.tools.run_all import run_tools_on_files
 from codeguard.tools.semgrep_runner import version_warning as semgrep_version_warning
 
@@ -392,6 +396,15 @@ def _summary_tool_findings(tool_findings, secrets: SecretScan, generic: GenericP
     return list(tool_findings) + extra
 
 
+def _summary_warnings(dependency_check: DependencyCheck) -> list[str]:
+    """The PR summary's caution lines for a check that ran incompletely:
+    a Semgrep version mismatch, and OSV that could not be reached."""
+    warnings = [w for w in (semgrep_version_warning(),) if w]
+    if dependency_check.unavailable:
+        warnings.append(DEPENDENCY_CHECK_UNAVAILABLE)
+    return warnings
+
+
 def coverage_gaps(files_filtered) -> dict[str, int]:
     """Filtered files no scanner covers, counted by language, from the
     reason diff/filters.py recorded ("Not covered by any scanner (Go)")."""
@@ -539,7 +552,7 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
     # tell an added/bumped pin from one that was already there, not just
     # file content — see osv_runner.py's own docstring.
     osv_task = asyncio.ensure_future(
-        asyncio.to_thread(check_dependency_updates, diff_result.dependency_contents, diff_result.dependency_patches)
+        asyncio.to_thread(check_dependency_updates_status, diff_result.dependency_contents, diff_result.dependency_patches)
     )
     # Impact analysis: off unless both switches are on (impact_enabled).
     # Concurrent with the tool run, like the base-tree fetch below.
@@ -555,7 +568,8 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
         base_tree_task = None
     tool_findings = await tool_findings_task
     tool_findings, skipped_test_asserts = _tool_findings_for_review(pr_number, tool_findings)
-    osv_findings = await osv_task
+    dependency_check = await osv_task
+    osv_findings = dependency_check.findings
     base_tree_files = await base_tree_task if base_tree_task is not None else {}
     secrets = await secrets_task
     if secrets.unavailable:
@@ -658,7 +672,7 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
         summary = render_check_summary(
             findings=all_findings,
             tool_findings=_summary_tool_findings(tool_findings, secrets, generic),
-            tool_warnings=[w for w in (semgrep_version_warning(),) if w],
+            tool_warnings=_summary_warnings(dependency_check),
             blocking=blocking,
             gate_threshold=repo_config.gate_threshold,
             files_seen=diff_result.files_seen,
@@ -703,6 +717,7 @@ async def handle_pull_request_review(job: Job, pool, abandoned: asyncio.Event) -
         inline_count=len(final_state["inline_findings"]),
         fix_suggestions=final_state["fix_suggestions"],
         budget_exceeded=diff_result.budget_exceeded,
+        dependency_check_unavailable=dependency_check.unavailable,
         filtered_files=diff_result.files_filtered,
         tokens_in=final_state["tokens_in"],
         tokens_out=final_state["tokens_out"],

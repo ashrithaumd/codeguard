@@ -76,7 +76,7 @@ from codeguard.tools.base import UNAVAILABLE_RULE_ID
 from codeguard.tools.gitleaks_runner import _scannable as secret_scannable
 from codeguard.tools.gitleaks_runner import scan_secrets
 from codeguard.tools.models import Finding
-from codeguard.tools.osv_runner import check_dependency_updates
+from codeguard.tools.osv_runner import DEPENDENCY_CHECK_UNAVAILABLE, check_dependency_updates_status
 from codeguard.tools.run_all import run_tools_on_files
 from codeguard.tools.generic import run_generic_scanners, unscannable
 from codeguard.tools.semgrep_runner import version_warning as semgrep_version_warning
@@ -1376,7 +1376,8 @@ def run_audit(
         # Before anything reads tool_findings: a test assert never reaches
         # the verdict layer, the passthrough list or the report body.
         tool_findings, skipped_test_asserts = split_test_asserts(tool_findings)
-        osv_findings = check_dependency_updates(dependency_contents, dependency_patches)
+        dependency_check = check_dependency_updates_status(dependency_contents, dependency_patches)
+        osv_findings = dependency_check.findings
         # Eval hygiene is a pure heuristic (no LLM, no subprocess) — cheap
         # enough to run over every reviewable file regardless of the
         # file/token budget that bounds the (real-cost) tool-runner and
@@ -1477,7 +1478,8 @@ def run_audit(
             tokens_in=tokens_in, tokens_out=tokens_out,
             estimated_cost_usd=estimated_cost_usd, elapsed_s=elapsed_s,
             skipped_test_asserts=skipped_test_asserts,
-            tool_warnings=[w for w in (semgrep_version_warning(),) if w],
+            tool_warnings=[w for w in (semgrep_version_warning(),) if w]
+            + ([DEPENDENCY_CHECK_UNAVAILABLE] if dependency_check.unavailable else []),
             models={"security": settings.security_agent_model, "ai_aware": settings.ai_aware_agent_model,
                     # Only when it could have run: a Python-only audit's
                     # Technical details are exactly what they were.

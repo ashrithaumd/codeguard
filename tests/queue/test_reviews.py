@@ -233,3 +233,11 @@ async def test_a_job_missing_head_sha_writes_no_review_row(pool):
     assert await handle_pull_request_review(job, pool, asyncio.Event()) is True
 
     assert await _row(pool, job.id) is None
+
+
+async def test_the_dependency_note_is_stored_and_off_by_default(pool):
+    on, off = uuid.uuid4(), uuid.uuid4()
+    await _record(pool, on, dependency_check_unavailable=True)
+    await _record(pool, off)
+    assert (await _row(pool, on))["dependency_check_unavailable"] is True
+    assert (await _row(pool, off))["dependency_check_unavailable"] is False

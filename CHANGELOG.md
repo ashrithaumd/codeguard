@@ -7,6 +7,20 @@ CodeGuard is marked **ACTION REQUIRED**.
 
 ### Multi-language support (feat/multi-language)
 
+#### "Dependency CVE check unavailable"
+
+**ACTION REQUIRED (operators):** migration `017_review_dependency_check.sql`
+adds `reviews.dependency_check_unavailable` (default `FALSE`, so every
+existing review is unchanged); it applies itself on startup.
+
+- When OSV cannot be reached, the audit page, the review page and the PR
+  summary say "Dependency CVE check unavailable", so an empty dependency
+  result never reads as a clean one. The findings are what they always were
+  (none); only the note is new, and it shows only on reviews recorded after
+  this change.
+- `check_dependency_updates` (the MCP server's caller) returns exactly what it
+  did; `check_dependency_updates_status` also says whether the check ran.
+
 #### Dockerfiles and GitHub Actions workflows
 
 - **Covered now**, through the same generic path as JS/TS, Go, Java and C#:

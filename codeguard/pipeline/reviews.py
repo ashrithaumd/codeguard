@@ -110,6 +110,7 @@ async def record_review(
     duration_s: float,
     node_latencies: list[Any],
     verdict_call_failures: list[Any],
+    dependency_check_unavailable: bool = False,
 ) -> bool:
     """Returns True if a row was written, False on any failure or when
     the row already existed. Never raises.
@@ -136,7 +137,7 @@ async def record_review(
                     tokens_in, tokens_out, estimated_cost_usd, duration_s,
                     node_latencies_json,
                     findings_json, dismissed_json, fix_suggestions_json,
-                    verdict_call_failures_json
+                    verdict_call_failures_json, dependency_check_unavailable
                 )
                 VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s,
@@ -149,7 +150,7 @@ async def record_review(
                     %s, %s, %s, %s,
                     %s,
                     %s, %s, %s,
-                    %s
+                    %s, %s
                 )
                 ON CONFLICT (job_id) DO NOTHING
                 """,
@@ -164,7 +165,7 @@ async def record_review(
                     tokens_in, tokens_out, estimated_cost_usd, duration_s,
                     _dump(node_latencies),
                     _dump(findings), _dump(dismissed), _dump(fix_suggestions),
-                    _dump(verdict_call_failures),
+                    _dump(verdict_call_failures), dependency_check_unavailable,
                 ),
             )
         return True
