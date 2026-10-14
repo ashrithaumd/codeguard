@@ -54,3 +54,26 @@ def test_a_python_only_audit_has_no_js_finding(tmp_path):
     _, _, report = _run(root)
     assert "JavaScript/TypeScript file(s)" not in report
     assert "1 file(s) call an LLM SDK (app.py)" in report  # Python's own, unchanged
+
+
+def test_the_first_line_counts_llm_sdk_files_in_every_language_with_ai_aware_rules(tmp_path):
+    # It said "0 with an LLM SDK import" on a JavaScript repository whose LLM
+    # code the JS rules had just reviewed. Python and JS/TS are the languages
+    # with LLM-SDK detection and AI-aware rules; a test file is not counted.
+    root = tmp_path / "repo"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "chat.ts").write_text(CHAT)
+    (root / "src" / "chat.test.ts").write_text(CHAT)
+    (root / "src" / "util.ts").write_text("export const one = 1;\n")
+    (root / "app.py").write_text("import anthropic\nclient = anthropic.Anthropic()\n")
+    _, _, report = _run(root)
+    assert "(2 with an LLM SDK import, reviewed for AI-aware issues)" in report
+
+
+def test_a_python_only_audit_counts_as_before(tmp_path):
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "app.py").write_text("import anthropic\nclient = anthropic.Anthropic()\n")
+    (root / "util.py").write_text("ONE = 1\n")
+    _, _, report = _run(root)
+    assert "(1 with an LLM SDK import, reviewed for AI-aware issues)" in report

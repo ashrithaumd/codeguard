@@ -56,7 +56,7 @@ from codeguard.diff.filters import (
     split_test_asserts,
 )
 from codeguard.languages import GENERIC_LANGUAGES, language_of, not_covered
-from codeguard.pipeline.eval_hygiene import review_eval_hygiene, review_eval_hygiene_js
+from codeguard.pipeline.eval_hygiene import calls_llm_js, is_js_test_path, review_eval_hygiene, review_eval_hygiene_js
 from codeguard.pipeline.guardrails import MAX_CHUNK_TOKENS
 from codeguard.pipeline.merge import bare_rule_id, flow_note, merge_same_bug, with_flow_note
 from codeguard.pipeline.models import DismissedFinding
@@ -1476,7 +1476,12 @@ def run_audit(
             deadline=deadline,
         )
 
-        files_ai_aware = sum(1 for c in files.values() if _file_touches_ai_markers(c))
+        # Every language with LLM-SDK detection and AI-aware rules: Python's,
+        # and JS/TS's (rules_lang/js-llm-security.yaml); a JS/TS test file is
+        # not counted, as eval hygiene does not count it.
+        files_ai_aware = sum(1 for c in files.values() if _file_touches_ai_markers(c)) + sum(
+            1 for p, c in generic_files.items()
+            if language_of(p) in ("JavaScript", "TypeScript") and not is_js_test_path(p) and calls_llm_js(c))
         if repo_config.enable_ai_aware:
             ai_aware_findings_by_file = {
                 p: [f for f in tool_findings if f.file == p and f.source_tool == "semgrep"]
