@@ -24,5 +24,8 @@
   "docker/near_miss_add_verified.Dockerfile": {"rules": ["codeguard-dockerfile-add-remote-url"], "verdict": "dismissed"},
   "docker/planted_env_secret.Dockerfile": {"rules": ["codeguard-dockerfile-secret-in-env"], "verdict": "decided_by_shape"},
   ".github/workflows/planted_issue_title_injection.yml": {"rules": ["template-injection"], "verdict": "confirmed"},
-  ".github/workflows/near_miss_labeler_target.yml": {"rules": [], "verdict": "not_raised"}
+  ".github/workflows/near_miss_labeler_target.yml": {"rules": [], "verdict": "not_raised"},
+  "csharp/planted_sql_concat.cs": {"rules": ["csharp_injection_rule-SQLInjection"], "verdict": "confirmed"},
+  "csharp/planted_command_injection.cs": {"rules": ["csharp_injection_rule-CommandInjection"], "verdict": "confirmed"},
+  "csharp/near_miss_random_retry_jitter.cs": {"rules": ["csharp_crypto_rule-WeakRNG"], "verdict": "dismissed"}
 }

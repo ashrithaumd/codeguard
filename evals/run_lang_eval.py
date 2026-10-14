@@ -1,6 +1,6 @@
 """Multi-language eval: evals/fixtures_lang/ + expected.json.
 
-Each fixture is one JavaScript, TypeScript, Go or Java file written as real
+Each fixture is one JavaScript, TypeScript, Go, Java or C# file written as real
 code is written, never reshaped to fit a rule: a planted bug the model must
 confirm, a near miss a rule fires on that the model must dismiss, or a near
 miss no rule raises at all ("not_raised": nothing reaches the model, which

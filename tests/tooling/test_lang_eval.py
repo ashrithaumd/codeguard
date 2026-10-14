@@ -22,7 +22,9 @@ def test_every_fixture_fires_exactly_its_rules_and_only_raised_ones_reach_the_mo
 
 def test_every_language_has_a_planted_bug_and_a_near_miss():
     expected, _ = lang_eval.load()
-    for lang in ("javascript", "typescript", "go", "java", "docker", ".github/workflows"):
+    # Every language a scanner covers outside Python; C# had none until 2026-10-14,
+    # so its precision and recall were never measured.
+    for lang in ("javascript", "typescript", "go", "java", "csharp", "docker", ".github/workflows"):
         verdicts = {v["verdict"] for p, v in expected.items() if p.startswith(lang + "/")}
         assert verdicts <= {"confirmed", "dismissed", "not_raised", "decided_by_shape"}, lang
         assert "confirmed" in verdicts and verdicts & {"dismissed", "not_raised"}, lang
