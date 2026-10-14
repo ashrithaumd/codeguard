@@ -81,6 +81,7 @@ from codeguard.tools.osv_scanner_runner import MAX_LOCKFILE_BYTES, combine, is_o
 from codeguard.tools.run_all import run_tools_on_files
 from codeguard.tools.generic import run_generic_scanners, unscannable
 from codeguard.tools.semgrep_runner import version_warning as semgrep_version_warning
+from codeguard.tools.zizmor_runner import INVALID_YAML
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s %(message)s")
 logger = logging.getLogger("codeguard.audit")
@@ -826,6 +827,48 @@ def _audit_unavailable_tools(tool_findings: list[Finding]) -> list[str]:
     return sorted({f.source_tool for f in tool_findings if f.rule_id == UNAVAILABLE_RULE_ID})
 
 
+class _SkipKind(NamedTuple):
+    """One reason a file was skipped, as the incomplete list and the raw
+    report's Skipped section word it ({n} is the number of files)."""
+    matches: Callable[[str], bool]
+    incomplete: str
+    report_header: str
+
+
+# Each skipped file is counted under the reason it was ACTUALLY skipped
+# for. The budget wording is the original text, unchanged: a Python audit
+# that only hit the budget reads exactly as it did. Order is the order
+# the lines appear in.
+_SKIP_KINDS = (
+    _SkipKind(lambda r: r.startswith("dropped by audit_max_"),
+              "{n} file(s) were never scanned — dropped by the audit budget ceiling before any tool ran",
+              "**{n} file(s) never scanned** (dropped by the audit budget before any tool ran):"),
+    _SkipKind(lambda r: r.startswith("too large to scan"),
+              "{n} file(s) were never scanned — too large to scan",
+              "**{n} file(s) never scanned** (too large to scan):"),
+    _SkipKind(lambda r: r == INVALID_YAML,
+              "{n} workflow file(s) were not scanned — invalid YAML",
+              "**{n} workflow file(s) not scanned** (invalid YAML):"),
+    _SkipKind(lambda r: r.startswith("not checked for known vulnerabilities"),
+              "{n} lockfile(s) were not checked for known vulnerabilities — too large",
+              "**{n} lockfile(s) not checked for known vulnerabilities** (too large):"),
+    _SkipKind(lambda r: "not reviewed by AI" in r,
+              "{n} file(s) had findings not reviewed by AI — the review cap was reached, so they are reported unverified",
+              "**{n} file(s) with findings not reviewed by AI** (the review cap was reached; reported unverified):"),
+)
+# Anything not listed above: still counted, never mislabelled as budget.
+_SKIP_OTHER = _SkipKind(lambda r: True, "{n} file(s) were not fully scanned", "**{n} file(s) not fully scanned**:")
+
+
+def _skip_groups(skipped: list[tuple[str, str]]) -> list[tuple[_SkipKind, list[tuple[str, str]]]]:
+    """(kind, [(path, reason)]) per kind present, in _SKIP_KINDS order."""
+    groups: dict[_SkipKind, list[tuple[str, str]]] = {}
+    for path, reason in skipped:
+        kind = next((k for k in _SKIP_KINDS if k.matches(reason)), _SKIP_OTHER)
+        groups.setdefault(kind, []).append((path, reason))
+    return [(k, groups[k]) for k in (*_SKIP_KINDS, _SKIP_OTHER) if k in groups]
+
+
 def _incompleteness(
     *, skipped_files: list[tuple[str, str]],
     verdict_call_failures: list[tuple[str, str]],
@@ -844,11 +887,8 @@ def _incompleteness(
             f"{', '.join(unavailable_tools)} did not run, so the rules "
             "that tool owns were never applied to any file"
         )
-    if skipped_files:
-        reasons.append(
-            f"{len(skipped_files)} file(s) were never scanned — dropped by the "
-            "audit budget ceiling before any tool ran"
-        )
+    for kind, paths in _skip_groups(skipped_files):
+        reasons.append(kind.incomplete.format(n=len(paths)))
     if verdict_call_failures:
         reasons.append(
             f"{len(verdict_call_failures)} AI-verdict call(s) failed, so their "
@@ -1055,14 +1095,11 @@ def render_report(**kwargs) -> str:
             or data["summary"].get("secret_placeholders")):
         lines.append("## Skipped")
         lines.append("")
-        if data["skipped_files"]:
-            lines.append(
-                f"**{len(data['skipped_files'])} file(s) never scanned** "
-                "(dropped by the audit budget before any tool ran):"
-            )
+        for kind, group in _skip_groups([(s["path"], s["reason"]) for s in data["skipped_files"]]):
+            lines.append(kind.report_header.format(n=len(group)))
             lines.append("")
-            for s in data["skipped_files"]:
-                lines.append(f"- `{s['path']}`: {s['reason']}")
+            for path, reason in group:
+                lines.append(f"- `{path}`: {reason}")
             lines.append("")
         if data["verdict_call_failures"]:
             lines.append(
