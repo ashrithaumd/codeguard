@@ -82,3 +82,25 @@ def test_no_budget_skip_means_no_budget_wording():
 def test_an_unknown_reason_is_still_counted_and_not_called_budget():
     data = build_report_data(**_kwargs([("x.bin", "something new")]))
     assert data["incomplete"] == ["1 file(s) were not fully scanned"]
+
+
+def test_a_multi_line_rule_message_is_one_list_item_in_the_raw_report():
+    # GitLab's go_unsafe_rule-unsafe message is a multi-line description with
+    # its own "- [link]" bullets; printed as-is it broke the findings list.
+    from codeguard.pipeline.models import DismissedFinding
+    from codeguard.severity import Severity
+    from codeguard.tools.models import Finding
+
+    message = "The `unsafe` package allows low-level access.\nThis includes pointers.\n\n- [Buffer overflows](https://x)\n  which\ncan lead to code execution."
+    kwargs = _kwargs([("big/a.py", "dropped by audit_max_files_ceiling\n(over the cap)")])
+    kwargs["passthrough_findings"] = [Finding.create(file="now_windows.go", start_line=26, end_line=26, severity=Severity.LOW,
+                                                     source_tool="gitlab-sast", rule_id="go_unsafe_rule-unsafe", message=message)]
+    kwargs["dismissed"] = [DismissedFinding(file="a.go", start_line=3, rule_id="r", reason="Jitter only.\nNothing secret.")]
+    report = render_report(**kwargs)
+    one = ("The `unsafe` package allows low-level access. This includes pointers. - [Buffer overflows](https://x) "
+           "which can lead to code execution.")
+    assert f"[go_unsafe_rule-unsafe] {one}" in report
+    assert "[r] Jitter only. Nothing secret." in report
+    assert "dropped by audit_max_files_ceiling (over the cap)" in report
+    # No list item spills onto a following line.
+    assert "\nThis includes pointers." not in report and "\ncan lead to code execution." not in report

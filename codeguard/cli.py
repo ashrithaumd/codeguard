@@ -1020,6 +1020,13 @@ def build_report_data(
     }
 
 
+def _one_line(text: str) -> str:
+    """One markdown list item: a rule's multi-line description (GitLab's
+    go_unsafe_rule-unsafe carries its own bullets) would otherwise spill out
+    of the list."""
+    return " ".join(str(text).split())
+
+
 def render_report(**kwargs) -> str:
     """The markdown report, rendered from build_report_data's output --
     see that function for the arguments and why there is one source."""
@@ -1064,7 +1071,7 @@ def render_report(**kwargs) -> str:
         lines.append("")
         for f in group:
             mark = " **(unreviewed)**" if f.get("unreviewed") else ""
-            lines.append(f"- `{f['file']}:{f['start_line']}` [{', '.join(f['rules'])}]{mark} {f['message']}")
+            lines.append(f"- `{f['file']}:{f['start_line']}` [{', '.join(f['rules'])}]{mark} {_one_line(f['message'])}")
         lines.append("")
 
     if not data["findings"] and not data["repo_level"]:
@@ -1081,14 +1088,14 @@ def render_report(**kwargs) -> str:
         lines.append("## Repository-level")
         lines.append("")
         for f in data["repo_level"]:
-            lines.append(f"- **{f['severity'].capitalize()}** [{', '.join(f['rules'])}] {f['message']}")
+            lines.append(f"- **{f['severity'].capitalize()}** [{', '.join(f['rules'])}] {_one_line(f['message'])}")
         lines.append("")
 
     if data["dismissed"]:
         lines.append("## Dismissed (reviewed by an AI agent, judged not a real issue)")
         lines.append("")
         for d in data["dismissed"]:
-            lines.append(f"- `{d['file']}:{d['start_line']}` [{d['rule_id']}] {d['reason']}")
+            lines.append(f"- `{d['file']}:{d['start_line']}` [{d['rule_id']}] {_one_line(d['reason'])}")
         lines.append("")
 
     if (data["skipped_files"] or data["verdict_call_failures"] or data.get("not_covered")
@@ -1099,7 +1106,7 @@ def render_report(**kwargs) -> str:
             lines.append(kind.report_header.format(n=len(group)))
             lines.append("")
             for path, reason in group:
-                lines.append(f"- `{path}`: {reason}")
+                lines.append(f"- `{path}`: {_one_line(reason)}")
             lines.append("")
         if data["verdict_call_failures"]:
             lines.append(
