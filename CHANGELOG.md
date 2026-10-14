@@ -9,9 +9,9 @@ CodeGuard is marked **ACTION REQUIRED**.
 
 #### Measured
 
-Measured 2026-10-14 at `8971862`, local stack, Claude Sonnet 4.5 for every
-verdict agent. No model call failed in any run below; a run with a failed
-call would have been withheld.
+Final measurement 2026-10-14 at `234a699`, local stack, Claude Sonnet 4.5
+for every verdict agent. No model call failed in any run below; a run with
+a failed call would have been withheld.
 
 **Python is unchanged.** `evals/run_full_harness.py`, 3 runs, the same 37
 fixtures as the 2026-10-09 measurement:
@@ -23,35 +23,42 @@ fixtures as the 2026-10-09 measurement:
 | Quality | 0.75 | 1.00 | as before |
 | Test | 1.00 | 1.00 | as before |
 
-The confirmed and dismissed rule sets are identical in all three runs and
-equal the ground truth for every AI-aware and security fixture; only the
-wording of dismissal reasons varies. Credential dismissals citing anything
-but the shape: 0. The scanners' raw Python findings match the committed
-snapshot (`tests/tooling/test_scanner_snapshot.py`). Cost per review
-(per-PR equivalent): $0.193, $0.186, $0.184.
+- The confirmed and dismissed rule sets are identical in all three runs,
+  identical to the runs earlier the same day (at `8971862`, before the fixes
+  below), and equal the ground truth for every AI-aware and security
+  fixture; only the wording of dismissal reasons varies. Credential
+  dismissals citing anything but the shape: 0.
+- **Severities match main.** With the model stubbed to confirm every rule at
+  one fixed severity (Low, then Critical), every Python finding on the 30
+  AI-aware and security fixtures and on a codeguard-playground audit (63
+  findings, 43 of them Python LLM rules) comes out byte-identical on main
+  and on this branch. The scanners' raw Python findings, severity included,
+  match the committed snapshot (`tests/tooling/test_scanner_snapshot.py`).
+- Cost per review (per-PR equivalent): $0.196, $0.186, $0.188.
 
-**New languages.** `evals/fixtures_lang/` (26 fixtures), the verdict call
-live, 3 runs (20 model calls each, $0.104, $0.100, $0.098 per run, about
+**New languages.** `evals/fixtures_lang/` (30 fixtures), the verdict call
+live, 3 runs (23 model calls each; $0.125, $0.121, $0.120 per run, about
 $0.005 a file):
 
 | Category | Fixtures | TP / FP / FN / TN (3 runs) | Precision | Recall |
 | --- | --- | --- | --- | --- |
-| JavaScript/TypeScript | 12 | 21 / 3 / 0 / 12 | 0.88 | 1.00 |
+| JavaScript/TypeScript | 13 | 24 / 0 / 0 / 15 | 1.00 | 1.00 |
 | Go | 5 | 9 / 0 / 0 / 6 | 1.00 | 1.00 |
 | Java | 3 | 6 / 0 / 0 / 3 | 1.00 | 1.00 |
+| C# | 3 | 6 / 0 / 0 / 3 | 1.00 | 1.00 |
 | Dockerfile | 2 | 3 / 0 / 0 / 3 | 1.00 | 1.00 |
 | GitHub Actions | 2 | 3 / 0 / 0 / 3 | 1.00 | 1.00 |
 | Secrets (decided by shape, no model) | 2 | 6 / 0 / 0 / 0 | 1.00 | 1.00 |
-| C# | 0 | not measured: no C# fixture | - | - |
-| Dependency CVEs | 0 | not measured here: no model, no fixture; see the live audits | - | - |
+| Dependency CVEs | – | not measured here: no model, no fixture; see the live audits | – | – |
 
 The fixture counts include the near misses no rule raises, counted as
 correct negatives; the two credential fixtures (one JS, one Dockerfile) are
-counted under Secrets only. The one miss is the same in all three runs:
-`typescript/near_miss_sanitized_html.tsx`, `dangerouslySetInnerHTML` on
-`DOMPurify.sanitize()` output, is confirmed instead of dismissed.
+counted under Secrets only. Before the fixes below (at `8971862`, 26
+fixtures, no C#) JavaScript/TypeScript precision was 0.88: the
+DOMPurify-sanitized near miss was confirmed in all three runs.
 
-**Live audits**, two small public repositories we did not write:
+**Live audits** (at `8971862`, before the fixes below), two small public
+repositories we did not write:
 
 | Repo (commit) | Findings | Dismissed | Not covered | Tokens in / out | Cost | Time |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -66,18 +73,45 @@ counted under Secrets only. The one miss is the same in all three runs:
   High; 15 advisories on `golang.org/x/net` and `golang.org/x/text` from
   `go.mod`; 4 zizmor findings on the CI workflow; `unsafe` in
   `now_windows.go` reported Low by the GitLab rule.
-- Total spend for everything above: $0.996.
+- After the fixes below, the YAML files are no longer listed, and the
+  quickstart-node findings of our own rules take their rules' severity
+  (Medium) instead of the Medium or Low the model picked per file.
 
-Seen in these runs, not changed here:
-- The `go_unsafe_rule-unsafe` message is the GitLab rule's multi-line
-  description, so it spans several lines in the raw report's list.
-- Configuration YAML (`.travis.yml`, issue templates) is listed as "Not
-  covered by any scanner — YAML".
-- The report's first line counts Python "with an LLM SDK import" only, so it
-  says 0 on a JavaScript repository whose LLM code was reviewed.
-- An OSV summary with no closing period runs into "Fixed in".
-- The same rule (`codeguard-js-llm-call-missing-timeout`) was kept Medium on
-  some files and Low on others.
+Total model spend on this branch: $1.93 ($0.996 for the first measurement,
+$0.936 for the final one).
+
+#### Fixes before merge
+
+- **C# is measured**: three fixtures, written as ordinary ASP.NET code (SQL
+  built by concatenation; a query value in a shell command line; System.Random
+  for retry jitter as the near miss). An ETag fingerprinted with MD5 was tried
+  first and is not raised: the vendored weak-hash rule only matches fully
+  qualified `System.Security.Cryptography.MD5` calls (a coverage gap, recorded,
+  not worked around).
+- **`dangerouslySetInnerHTML` fed by `DOMPurify.sanitize()` is not raised.** A
+  suppressor rule of ours (`rules_lang/suppress-*.yaml`) drops the vendored
+  finding on the lines it matches -- inline, through a `const`, or in
+  `createElement` -- and is never reported itself. The vendored pack stays
+  byte-exact. Raw input, a reassigned variable, and a sanitized value that is
+  computed but not the one rendered are still raised (new planted fixture).
+- **"Secrets only (Kotlin)"**: Gitleaks scans every non-Python text file, so a
+  file in a language no code scanner covers was never "not covered by any
+  scanner". Same lists and sections, accurate label; the PR summary line reads
+  "Secrets only, no code scanner: Kotlin 2, Ruby 1." Configuration YAML is "not
+  source code" and is no longer listed.
+- **The audit's first line** counts LLM-SDK files in JavaScript/TypeScript as
+  well as Python (the languages with AI-aware rules; test files excluded).
+- **CodeGuard's own rules keep their severity** in `security_generic`: the model
+  picked a severity per file, so one rule came back Medium in four files and Low
+  in seven of the same audit. Vendored findings and the Python agents keep the
+  model's severity.
+- The raw report keeps every list item on one line (GitLab's multi-line rule
+  descriptions broke the list), and OSV-Scanner findings put a period before
+  "Fixed in". Python's own OSV path is unchanged.
+- Why quality and test showed identical token counts in every run: not a cache
+  hit (the harness passes no cache, latencies differed, and ~850 input tokens a
+  call is under the prompt cache's minimum) -- the same input, temperature 0,
+  and short answers give the same output.
 
 #### Fixes from the UI check
 
