@@ -7,6 +7,90 @@ CodeGuard is marked **ACTION REQUIRED**.
 
 ### Multi-language support (feat/multi-language)
 
+#### Measured
+
+Measured 2026-10-14 at `8971862`, local stack, Claude Sonnet 4.5 for every
+verdict agent. No model call failed in any run below; a run with a failed
+call would have been withheld.
+
+**Python is unchanged.** `evals/run_full_harness.py`, 3 runs, the same 37
+fixtures as the 2026-10-09 measurement:
+
+| Agent | Precision | Recall | Runs |
+| --- | --- | --- | --- |
+| AI-aware | 1.00 | 1.00 (24/24) | 1.00 ×3 |
+| Security | 1.00 | 1.00 (8/8) | 1.00 ×3 |
+| Quality | 0.75 | 1.00 | as before |
+| Test | 1.00 | 1.00 | as before |
+
+The confirmed and dismissed rule sets are identical in all three runs and
+equal the ground truth for every AI-aware and security fixture; only the
+wording of dismissal reasons varies. Credential dismissals citing anything
+but the shape: 0. The scanners' raw Python findings match the committed
+snapshot (`tests/tooling/test_scanner_snapshot.py`). Cost per review
+(per-PR equivalent): $0.193, $0.186, $0.184.
+
+**New languages.** `evals/fixtures_lang/` (26 fixtures), the verdict call
+live, 3 runs (20 model calls each, $0.104, $0.100, $0.098 per run, about
+$0.005 a file):
+
+| Category | Fixtures | TP / FP / FN / TN (3 runs) | Precision | Recall |
+| --- | --- | --- | --- | --- |
+| JavaScript/TypeScript | 12 | 21 / 3 / 0 / 12 | 0.88 | 1.00 |
+| Go | 5 | 9 / 0 / 0 / 6 | 1.00 | 1.00 |
+| Java | 3 | 6 / 0 / 0 / 3 | 1.00 | 1.00 |
+| Dockerfile | 2 | 3 / 0 / 0 / 3 | 1.00 | 1.00 |
+| GitHub Actions | 2 | 3 / 0 / 0 / 3 | 1.00 | 1.00 |
+| Secrets (decided by shape, no model) | 2 | 6 / 0 / 0 / 0 | 1.00 | 1.00 |
+| C# | 0 | not measured: no C# fixture | - | - |
+| Dependency CVEs | 0 | not measured here: no model, no fixture; see the live audits | - | - |
+
+The fixture counts include the near misses no rule raises, counted as
+correct negatives; the two credential fixtures (one JS, one Dockerfile) are
+counted under Secrets only. The one miss is the same in all three runs:
+`typescript/near_miss_sanitized_html.tsx`, `dangerouslySetInnerHTML` on
+`DOMPurify.sanitize()` output, is confirmed instead of dismissed.
+
+**Live audits**, two small public repositories we did not write:
+
+| Repo (commit) | Findings | Dismissed | Not covered | Tokens in / out | Cost | Time |
+| --- | --- | --- | --- | --- | --- | --- |
+| openai/openai-quickstart-node (`6e6e034`) | 25: 1 Critical, 1 High, 10 Medium, 13 Low; 1 repo-level | 0 | 3 (YAML) | 6,740 / 5,235 | $0.1041 | 134s |
+| rakyll/hey (`5626f79`) | 22: 1 High, 18 Medium, 3 Low | 0 | 1 (YAML) | 2,952 / 1,092 | $0.0261 | 49s |
+
+- quickstart-node: 23 JS LLM findings (client with no timeout, no
+  max_tokens, a `-latest` model alias, a logged model response, no system
+  message), all confirmed; `missing-evals-js` once, repo-level; 2 npm
+  advisories on `form-data@4.0.1` from the lockfile.
+- hey: `InsecureSkipVerify: true` in the load tester's transport confirmed
+  High; 15 advisories on `golang.org/x/net` and `golang.org/x/text` from
+  `go.mod`; 4 zizmor findings on the CI workflow; `unsafe` in
+  `now_windows.go` reported Low by the GitLab rule.
+- Total spend for everything above: $0.996.
+
+Seen in these runs, not changed here:
+- The `go_unsafe_rule-unsafe` message is the GitLab rule's multi-line
+  description, so it spans several lines in the raw report's list.
+- Configuration YAML (`.travis.yml`, issue templates) is listed as "Not
+  covered by any scanner — YAML".
+- The report's first line counts Python "with an LLM SDK import" only, so it
+  says 0 on a JavaScript repository whose LLM code was reviewed.
+- An OSV summary with no closing period runs into "Fixed in".
+- The same rule (`codeguard-js-llm-call-missing-timeout`) was kept Medium on
+  some files and Low on others.
+
+#### Fixes from the UI check
+
+- **Skipped files are named by their real reason** in the audit's
+  incomplete list and the raw report: budget ceiling, too large to scan,
+  invalid YAML, lockfile too large, or the AI review cap. Both used to call
+  every skipped file "dropped by the audit budget ceiling". A Python audit
+  that only hits the budget reads byte for byte as before.
+- The "Files" tooltip no longer says non-Python files are skipped (wording
+  only).
+- Sample data: the multi-language sample audit's cards have real titles, and
+  PR 9005's summary says 9 high, matching its rows.
+
 #### Eval hygiene for JavaScript/TypeScript
 
 - **New repo-level finding** `eval-hygiene.missing-evals-js` (MEDIUM, no
